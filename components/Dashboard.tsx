@@ -207,6 +207,60 @@ const CalendarMeetingList: React.FC<{
   );
 };
 
+const MeetingList: React.FC<{ meetings: Meeting[]; onSelectPerson: (person: Person) => void; onGoToSettings: () => void; }> = ({ meetings, onSelectPerson, onGoToSettings }) => {
+    const getSourceIcon = (source?: string) => {
+        switch(source) {
+            case 'google': return <GoogleIcon />;
+            case 'zoho': return <ZohoIcon />;
+            case 'microsoft': return <MicrosoftIcon />;
+            default: return null;
+        }
+    }
+    return (
+    <div className="mt-8 animate-slide-up-fade" style={{animationDelay: '200ms'}}>
+        <h2 className="flex items-center text-xl font-exo text-cyan-300 mb-4">
+            <CalendarIcon className="mr-3" />
+            Upcoming Transmissions (Demo Data)
+        </h2>
+        <div className="space-y-4 stagger-in">
+            {meetings.map((meeting, index) => (
+                <div 
+                    key={meeting.id} 
+                    className="p-4 bg-gray-900/40 border border-cyan-500/20 rounded-lg backdrop-blur-sm transition-all duration-300 hover:border-cyan-400/50 hover:shadow-cyan-500/10 hover:shadow-lg"
+                    style={{animationDelay: `${index * 100 + 300}ms`}}
+                >
+                    <div className="flex justify-between items-start">
+                        <div>
+                            <h3 className="font-bold text-white font-exo">{meeting.title}</h3>
+                            <p className="text-sm text-gray-400">{meeting.time}</p>
+                        </div>
+                         <div className="text-gray-400" title={`From ${meeting.source} calendar`}>
+                           {getSourceIcon(meeting.source)}
+                        </div>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                        {meeting.attendees.map(attendee => (
+                            <button
+                                key={attendee.id}
+                                onClick={() => onSelectPerson(attendee)}
+                                className="flex items-center space-x-2 px-3 py-1 bg-cyan-900/30 hover:bg-cyan-800/50 border border-cyan-600/30 rounded-full transition-all duration-200 hover:scale-105"
+                            >
+                                <img src={attendee.photoUrl} alt={attendee.name} className="w-6 h-6 rounded-full" />
+                                <span className="text-sm text-cyan-200">{attendee.name}</span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            ))}
+        </div>
+        <div className="text-center mt-6">
+            <button onClick={onGoToSettings} className="px-6 py-2 text-sm text-cyan-300 border border-cyan-400/50 rounded-full hover:bg-cyan-900/50 transition-colors btn-glow">
+                Manage Calendar Sync
+            </button>
+        </div>
+    </div>
+)};
+
 const Dashboard: React.FC<DashboardProps> = ({ 
   meetings, 
   people, 
@@ -224,12 +278,14 @@ const Dashboard: React.FC<DashboardProps> = ({
     <div className="max-w-4xl mx-auto p-2">
       <SearchBar people={people} onSelectPerson={onSelectPerson} onOpenScanner={onOpenScanner} initialSearch={initialSearch} />
       
-      {user && !isLoading && calendarEvents ? (
+      {user && !isLoading && calendarEvents && calendarEvents.length > 0 ? (
         <CalendarMeetingList 
           events={calendarEvents} 
           onSelectAttendee={onSelectAttendee}
           onGoToUpcomingMeetings={onGoToUpcomingMeetings}
         />
+      ) : user && meetings.length > 0 ? (
+        <MeetingList meetings={meetings} onSelectPerson={onSelectPerson} onGoToSettings={onGoToSettings} />
       ) : null}
     </div>
   );
