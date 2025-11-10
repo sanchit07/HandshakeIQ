@@ -408,17 +408,21 @@ const Dashboard: React.FC<DashboardProps> = ({
 
   return (
     <div className="max-w-4xl mx-auto p-2">
-      <SearchBar people={people} onSelectPerson={onSelectPerson} onOpenScanner={onOpenScanner} initialSearch={initialSearch} />
+      <div className="relative z-[100]">
+        <SearchBar people={people} onSelectPerson={onSelectPerson} onOpenScanner={onOpenScanner} initialSearch={initialSearch} />
+      </div>
       
-      {user && !isLoading && calendarEvents && calendarEvents.length > 0 ? (
-        <CalendarMeetingList 
-          events={calendarEvents} 
-          onSelectAttendee={onSelectAttendee}
-          onGoToUpcomingMeetings={onGoToUpcomingMeetings}
-        />
-      ) : user && meetings.length > 0 ? (
-        <MeetingList meetings={meetings} onSelectPerson={onSelectPerson} onGoToSettings={onGoToSettings} />
-      ) : null}
+      <div className="relative z-0">
+        {user && !isLoading && calendarEvents && calendarEvents.length > 0 ? (
+          <CalendarMeetingList 
+            events={calendarEvents} 
+            onSelectAttendee={onSelectAttendee}
+            onGoToUpcomingMeetings={onGoToUpcomingMeetings}
+          />
+        ) : user && meetings.length > 0 ? (
+          <MeetingList meetings={meetings} onSelectPerson={onSelectPerson} onGoToSettings={onGoToSettings} />
+        ) : null}
+      </div>
     </div>
   );
 };
