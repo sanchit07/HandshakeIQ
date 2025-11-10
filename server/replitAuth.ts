@@ -80,6 +80,12 @@ export async function setupAuth(app: Express) {
     verified(null, user);
   };
 
+  // Get the actual domain from environment or request
+  const getDomain = (req: any) => {
+    // Use REPLIT_DEV_DOMAIN in development, or req.hostname in production
+    return process.env.REPLIT_DEV_DOMAIN || req.hostname;
+  };
+
   // Keep track of registered strategies
   const registeredStrategies = new Set<string>();
 
@@ -105,16 +111,18 @@ export async function setupAuth(app: Express) {
   passport.deserializeUser((user: Express.User, cb) => cb(null, user));
 
   app.get("/api/login", (req, res, next) => {
-    ensureStrategy(req.hostname);
-    passport.authenticate(`replitauth:${req.hostname}`, {
+    const domain = getDomain(req);
+    ensureStrategy(domain);
+    passport.authenticate(`replitauth:${domain}`, {
       prompt: "login consent",
       scope: ["openid", "email", "profile", "offline_access"],
     })(req, res, next);
   });
 
   app.get("/api/callback", (req, res, next) => {
-    ensureStrategy(req.hostname);
-    passport.authenticate(`replitauth:${req.hostname}`, {
+    const domain = getDomain(req);
+    ensureStrategy(domain);
+    passport.authenticate(`replitauth:${domain}`, {
       successReturnToOrRedirect: "/",
       failureRedirect: "/api/login",
     })(req, res, next);
