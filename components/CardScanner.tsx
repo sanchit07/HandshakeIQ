@@ -62,7 +62,7 @@ const CardScanner: React.FC<CardScannerProps> = ({ onClose }) => {
     };
 
     return (
-        <div className="fixed inset-0 bg-black/95 z-50 flex flex-col items-center justify-center p-4 animate-fade-in">
+        <div className="fixed inset-0 bg-black/95 z-70 flex flex-col items-center justify-center p-4 animate-fade-in">
             <button onClick={() => onClose()} className="absolute top-3 right-3 sm:top-4 sm:right-4 text-white z-20 p-2 rounded-full hover:bg-white/10 transition-colors">
                 <CloseIcon />
             </button>

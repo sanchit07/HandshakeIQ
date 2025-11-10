@@ -145,7 +145,7 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen text-cyan-200 animated-background">
       <div className="relative isolate min-h-screen flex flex-col p-2 sm:p-4 lg:p-6">
-        <header className="flex justify-between items-center mb-4 sm:mb-6 z-30 px-2 sm:px-4 py-2 sm:py-3 bg-black/20 backdrop-blur-sm border-b border-cyan-500/10 rounded-lg animate-slide-down-fade">
+        <header className="flex justify-between items-center mb-4 sm:mb-6 z-60 relative px-2 sm:px-4 py-2 sm:py-3 bg-black/20 backdrop-blur-sm border-b border-cyan-500/10 rounded-lg animate-slide-down-fade">
           <div className="flex items-center space-x-1.5 sm:space-x-3 flex-shrink-0">
             <HandshakeIQLogo />
             <h1 className="font-exo text-sm sm:text-lg md:text-xl lg:text-2xl font-bold text-white tracking-wide sm:tracking-widest whitespace-nowrap">HandshakeIQ</h1>
