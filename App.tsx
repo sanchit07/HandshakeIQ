@@ -114,12 +114,12 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen text-cyan-200 animated-background">
       <div className="relative isolate min-h-screen flex flex-col p-2 sm:p-4 lg:p-6">
-        <header className="flex justify-between items-center mb-4 sm:mb-6 z-30 px-3 sm:px-4 py-2 sm:py-3 bg-black/20 backdrop-blur-sm border-b border-cyan-500/10 rounded-lg animate-slide-down-fade">
-          <div className="flex items-center space-x-2 sm:space-x-4">
+        <header className="flex justify-between items-center mb-4 sm:mb-6 z-30 px-2 sm:px-4 py-2 sm:py-3 bg-black/20 backdrop-blur-sm border-b border-cyan-500/10 rounded-lg animate-slide-down-fade">
+          <div className="flex items-center space-x-1.5 sm:space-x-3 flex-shrink-0">
             <HandshakeIQLogo />
-            <h1 className="font-exo text-base sm:text-xl md:text-2xl font-bold text-white tracking-wider sm:tracking-widest">HandshakeIQ</h1>
+            <h1 className="font-exo text-sm sm:text-lg md:text-xl lg:text-2xl font-bold text-white tracking-wide sm:tracking-widest whitespace-nowrap">HandshakeIQ</h1>
           </div>
-          <div className="flex items-center space-x-2 sm:space-x-4">
+          <div className="flex items-center space-x-1 sm:space-x-3 flex-shrink min-w-0">
             {showAppContent && (
               <>
                 {guestMode && (
@@ -128,20 +128,20 @@ const App: React.FC = () => {
                       setGuestMode(false);
                       setView('login');
                     }}
-                    className="text-xs px-3 py-1.5 bg-cyan-600/80 hover:bg-cyan-500 rounded-md text-white font-medium transition-colors"
+                    className="text-xs px-2 sm:px-3 py-1.5 bg-cyan-600/80 hover:bg-cyan-500 rounded-md text-white font-medium transition-colors whitespace-nowrap"
                   >
                     Sign In
                   </button>
                 )}
                 {isAuthenticated && (
-                  <button onClick={() => setIsMenuOpen(true)} className="text-cyan-400 hover:text-white transition-colors p-2 rounded-full hover:bg-cyan-500/20" aria-label="Open Menu">
+                  <button onClick={() => setIsMenuOpen(true)} className="text-cyan-400 hover:text-white transition-colors p-1.5 sm:p-2 rounded-full hover:bg-cyan-500/20" aria-label="Open Menu">
                     <MenuIcon />
                   </button>
                 )}
               </>
             )}
-            <div className="flex items-center space-x-2">
-              <span className="text-xs text-gray-400 hidden sm:inline">Powered by</span>
+            <div className="flex items-center space-x-1 sm:space-x-2 min-w-0">
+              <span className="text-xs text-gray-400 hidden md:inline">Powered by</span>
               <MovingWallsLogo />
             </div>
           </div>
