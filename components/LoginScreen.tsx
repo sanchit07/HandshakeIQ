@@ -2,17 +2,33 @@ import React, { useState } from 'react';
 import { GoogleIcon, ZohoIcon } from './icons/BrandIcons';
 import { UserIcon, LockIcon } from './icons/UIIcons';
 
-const LoginButton: React.FC<{ icon: React.ReactNode; label: string; href: string }> = ({ icon, label, href }) => (
-  <a
-    href={href}
-    target="_top"
-    className="w-full flex items-center justify-center space-x-4 px-6 py-3 border border-cyan-400/30 bg-cyan-900/20 rounded-lg backdrop-blur-sm
-               hover:bg-cyan-700/40 hover:border-cyan-300 transition-all duration-300 group btn-glow"
-  >
-    <span className="text-cyan-300 group-hover:text-white transition-colors">{icon}</span>
-    <span className="font-exo text-base text-cyan-200 group-hover:text-white transition-colors">{label}</span>
-  </a>
-);
+const LoginButton: React.FC<{ icon: React.ReactNode; label: string; href: string }> = ({ icon, label, href }) => {
+  const handleClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    // Open in new window to avoid iframe restrictions
+    const authWindow = window.open(href, '_blank', 'width=500,height=700,scrollbars=yes');
+    
+    // Poll for window close and reload page
+    const pollTimer = setInterval(() => {
+      if (authWindow?.closed) {
+        clearInterval(pollTimer);
+        window.location.reload();
+      }
+    }, 500);
+  };
+
+  return (
+    <a
+      href={href}
+      onClick={handleClick}
+      className="w-full flex items-center justify-center space-x-4 px-6 py-3 border border-cyan-400/30 bg-cyan-900/20 rounded-lg backdrop-blur-sm
+                 hover:bg-cyan-700/40 hover:border-cyan-300 transition-all duration-300 group btn-glow cursor-pointer"
+    >
+      <span className="text-cyan-300 group-hover:text-white transition-colors">{icon}</span>
+      <span className="font-exo text-base text-cyan-200 group-hover:text-white transition-colors">{label}</span>
+    </a>
+  );
+};
 
 const InputField: React.FC<{ icon: React.ReactNode, type: string, placeholder: string, value: string, onChange: (e: React.ChangeEvent<HTMLInputElement>) => void }> = 
 ({ icon, type, placeholder, value, onChange }) => (
