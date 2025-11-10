@@ -144,10 +144,10 @@ const App: React.FC = () => {
                   isSettingsVisible ? 'transform translate-x-0 opacity-100 scale-100' : 'transform translate-x-full opacity-0 scale-95'
                 }`}
               >
-                <SettingsScreen userEmail={user?.email || ''} onBack={handleBackToDashboard} />
+                <SettingsScreen userEmail={(user as any)?.email || ''} onBack={handleBackToDashboard} />
               </div>
             </div>
-          )}
+          ) : null}
         </main>
         {view === 'scanner' && <CardScanner onClose={handleCloseScanner} />}
         {isAuthenticated && (
