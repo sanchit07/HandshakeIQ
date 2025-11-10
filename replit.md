@@ -68,8 +68,15 @@ HandshakeIQ utilizes a full-stack architecture with a React 19 (TypeScript) fron
   - All error messages include user-friendly guidance and retry options
   
 - **Architecture Notes**:
-  - Z-index scale documented: Dashboard (default) < SideMenu (55-60) < Modals (70) < Dropdowns (100)
-  - Future full-screen modals should use z-[110]+ if they need to cover dropdowns
+  - **FINAL Z-Index Scale** (all values use Tailwind arbitrary notation):
+    - Dashboard content: z-0/auto (default)
+    - Header: z-[40]
+    - SideMenu overlay: z-[80]
+    - SideMenu panel: z-[90]
+    - Search dropdown: z-[100]
+    - Modals (CardScanner, SaveConfirmation): z-[110]
+  - This scale ensures proper layering: Dashboard < Header < SideMenu < Dropdown < Modals
+  - Use z-[120]+ for system-level alerts or toasts if needed in future
 
 ### 2025-11-10: Fixed Z-Index Layering, LinkedIn Logo Filtering & Enhanced Deduplication
 - **Z-Index Hierarchy Fix**:
