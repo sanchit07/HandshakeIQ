@@ -41,3 +41,41 @@ HandshakeIQ utilizes a full-stack architecture with a React 19 (TypeScript) fron
 - **`connect-pg-simple`**: For PostgreSQL-backed session management.
 - **`google-auth-library`**: For Google OAuth 2.0 integration.
 - **`googleapis`**: For Google Calendar API access.
+
+## Recent Changes
+
+### 2024-11-10: Search UX Improvements - Enter Key Search & Menu Overlay Fix
+- **Z-Index Hierarchy Overhaul**:
+  - Fixed menu overlapping with search results dropdown
+  - Modals and CardScanner elevated to z-70 (top layer for blocking overlays)
+  - Header elevated to z-60 (above in-page content)
+  - Search dropdown set to z-50 (above side menu)
+  - Side menu remains at z-40 (no longer overlaps search results)
+  - Proper stacking order ensures all UI elements layer correctly
+  
+- **Enter Key Search Implementation**:
+  - Removed auto-search on typing (500ms debounce removed)
+  - Search now triggers exclusively when user presses Enter key
+  - Added keyboard event handler to input field
+  - Prevents accidental API calls while user is still typing
+  
+- **Enhanced UX Cues**:
+  - Updated placeholder text: "Type a name and press Enter to search..."
+  - Clear instruction tells users exactly how to trigger search
+  - Reduced confusion about when search will execute
+  
+- **Input Disabled State During Search**:
+  - Input field disabled while search is in progress
+  - Visual feedback: reduced opacity (70%), cursor-not-allowed
+  - Background darkens slightly to indicate inactive state
+  - aria-busy attribute for accessibility
+  - Prevents user from modifying query during API call
+  
+- **Search Results in Dropdown**:
+  - Results appear in dropdown menu anchored to search input
+  - Proper z-index ensures dropdown appears above all other content except modals
+  - Loading spinner remains visible during search
+  - Person selection cards with preview info (name, title, company, social links)
+  - Smooth transitions and animations maintained
+  
+- Architect review passed: All UX requirements met, proper layering confirmed
