@@ -6,18 +6,17 @@ const LoginButton: React.FC<{ icon: React.ReactNode; label: string; href: string
   const handleClick = (e: React.MouseEvent) => {
     e.preventDefault();
     
-    if (!usePopup) {
-      // Direct redirect approach (for Zoho)
-      window.top!.location.href = href;
+    // Open authentication in a new tab/window
+    const authWindow = window.open(href, '_blank', usePopup ? 'width=500,height=700,scrollbars=yes' : '');
+    
+    if (!authWindow) {
+      alert('Please allow popups for this site to sign in.');
       return;
     }
     
-    // Popup approach (for Google)
-    const authWindow = window.open(href, '_blank', 'width=500,height=700,scrollbars=yes');
-    
     // Listen for auth success messages
     const messageHandler = (event: MessageEvent) => {
-      if (event.data?.type === 'auth_success') {
+      if (event.data?.type === 'auth_success' || event.data?.type === 'zoho-auth-success') {
         window.removeEventListener('message', messageHandler);
         clearInterval(pollTimer);
         window.location.reload();

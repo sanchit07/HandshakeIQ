@@ -101,8 +101,25 @@ export function setupZohoAuth(app: Express) {
         });
       }
 
-      // Redirect back to main app
-      res.redirect('/');
+      // Send success message and close window
+      res.send(`
+        <html>
+          <head>
+            <title>Zoho Sign-In Successful</title>
+          </head>
+          <body>
+            <script>
+              if (window.opener) {
+                window.opener.postMessage({ type: 'zoho-auth-success' }, '*');
+                window.close();
+              } else {
+                window.location.href = '/';
+              }
+            </script>
+            <p>Signing in... This window should close automatically.</p>
+          </body>
+        </html>
+      `);
     } catch (error) {
       console.error('Zoho OAuth error:', error);
       res.status(400).send(`
