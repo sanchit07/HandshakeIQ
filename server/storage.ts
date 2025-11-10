@@ -2,7 +2,7 @@ import {
   users,
   type User,
   type UpsertUser,
-} from "@shared/schema";
+} from "../shared/schema.js";
 import { db } from "./db";
 import { eq } from "drizzle-orm";
 
