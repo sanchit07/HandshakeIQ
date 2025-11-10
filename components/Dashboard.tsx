@@ -56,12 +56,12 @@ const SearchBar: React.FC<{
         }
     }, []);
 
-    useEffect(() => {
-        const timeoutId = setTimeout(() => {
-            performSearch(query);
-        }, 500);
-        return () => clearTimeout(timeoutId);
-    }, [query, performSearch]);
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            performSearch(query.trim());
+        }
+    };
 
     const handleSelectSearchResult = (result: PersonSearchResult) => {
         setSelectedResult(result);
@@ -94,10 +94,13 @@ const SearchBar: React.FC<{
                     type="text"
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={handleKeyDown}
                     onFocus={() => setIsFocused(true)}
                     onBlur={() => setTimeout(() => setIsFocused(false), 200)}
-                    placeholder="Search for anyone by name..."
-                    className="w-full pl-10 sm:pl-12 pr-10 sm:pr-12 py-2.5 sm:py-3 bg-gray-900/50 border border-cyan-500/30 rounded-full text-white text-sm sm:text-base placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:shadow-cyan-500/30 transition-all duration-300 shadow-lg shadow-cyan-500/10 animate-pulse-glow"
+                    placeholder="Type a name and press Enter to search..."
+                    disabled={isSearching}
+                    className={`w-full pl-10 sm:pl-12 pr-10 sm:pr-12 py-2.5 sm:py-3 bg-gray-900/50 border border-cyan-500/30 rounded-full text-white text-sm sm:text-base placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:shadow-cyan-500/30 transition-all duration-300 shadow-lg shadow-cyan-500/10 animate-pulse-glow ${isSearching ? 'opacity-70 cursor-not-allowed bg-gray-900/40' : ''}`}
+                    aria-busy={isSearching}
                 />
                 <button 
                     onClick={onOpenScanner} 
@@ -110,8 +113,8 @@ const SearchBar: React.FC<{
                     <div className="absolute inset-0 rounded-full border border-cyan-400 animate-pulse pointer-events-none"></div>
                 )}
             </div>
-            {isFocused && query && (
-                <div className="absolute z-10 w-full mt-2 bg-gray-900/95 backdrop-blur-md border border-cyan-500/40 rounded-lg shadow-2xl shadow-cyan-500/20 max-h-96 overflow-y-auto animate-slide-down-fade">
+            {(isFocused || isSearching) && (query || searchResults.length > 0) && (
+                <div className="absolute z-50 w-full mt-2 bg-gray-900/95 backdrop-blur-md border border-cyan-500/40 rounded-lg shadow-2xl shadow-cyan-500/20 max-h-96 overflow-y-auto animate-slide-down-fade">
                     {isSearching ? (
                         <div className="p-8 text-center">
                             <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-cyan-400 mx-auto"></div>
