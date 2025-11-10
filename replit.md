@@ -103,7 +103,22 @@ The app requires a **GEMINI_API_KEY** environment variable to function. This key
 - **sessions**: Manages active user sessions (connect-pg-simple)
 
 ## Recent Changes
-- **2024-11-10 (Latest)**: Complete mobile responsiveness and enhanced sci-fi effects
+- **2024-11-10 (Latest Update)**: Fixed header mobile responsiveness and loader animation consistency
+  - **Header Mobile Fixes**:
+    - Logo scales from h-8 (mobile) to h-10 (desktop)
+    - "HandshakeIQ" text scales from text-sm to text-2xl across breakpoints
+    - "MOVINGWALLS" text scales from text-xs to text-lg
+    - Reduced spacing on mobile (space-x-1.5 → space-x-3 on larger screens)
+    - Added whitespace-nowrap to prevent text wrapping and overlap
+    - Added flex-shrink properties for proper element sizing
+  - **Loading Animation Consistency**:
+    - Implemented minimum 2-second loader duration at UI layer (PersonProfile)
+    - Ensures smooth animation display regardless of API response speed
+    - Both guest and authenticated modes now show consistent loading visuals
+    - Delay only affects UI state transition, not actual data fetching
+  - Architect review passed: No performance regressions, proper UI-layer implementation
+  
+- **2024-11-10 (Earlier)**: Complete mobile responsiveness and enhanced sci-fi effects
   - **New Animated Loaders Suite** (components/loaders/NeonLoader.tsx):
     - NeonLoader: Spinning neon rings with customizable sizes (default, small, large)
     - DataStreamLoader: Scanning lines effect for data processing states
