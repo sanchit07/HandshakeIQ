@@ -1,0 +1,86 @@
+import React from 'react';
+import { Person } from '../types';
+import { RefreshIcon, SettingsIcon, LogoutIcon } from './icons/UIIcons';
+
+interface SideMenuProps {
+    isOpen: boolean;
+    onClose: () => void;
+    history: Person[];
+    dossiers: Person[];
+    onSelectPerson: (person: Person) => void;
+    onRefreshPerson: (person: Person) => void;
+    onGoToSettings: () => void;
+    onLogout: () => void;
+}
+
+const SideMenu: React.FC<SideMenuProps> = ({ isOpen, onClose, history, dossiers, onSelectPerson, onRefreshPerson, onGoToSettings, onLogout }) => {
+    
+    const PersonListItem: React.FC<{person: Person, onRefresh?: (person: Person) => void}> = ({person, onRefresh}) => (
+        <div className="flex items-center justify-between p-2 rounded-md hover:bg-cyan-900/50 group">
+            <button onClick={() => onSelectPerson(person)} className="flex items-center space-x-3 text-left w-full">
+                <img src={person.photoUrl} alt={person.name} className="w-8 h-8 rounded-full" />
+                <div>
+                    <p className="text-sm font-bold text-white">{person.name}</p>
+                    <p className="text-xs text-cyan-300">{person.company}</p>
+                </div>
+            </button>
+            {onRefresh && (
+                <button onClick={() => onRefresh(person)} className="text-cyan-400 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity" title="Refresh Intel">
+                    <RefreshIcon />
+                </button>
+            )}
+        </div>
+    );
+
+    return (
+        <>
+            <div 
+                className={`fixed inset-0 bg-black/60 z-30 transition-opacity duration-300 ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+                onClick={onClose}
+            ></div>
+            <aside className={`fixed top-0 right-0 h-full w-[280px] bg-gray-900/90 backdrop-blur-lg border-l border-cyan-500/20 z-40
+                             transform transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+                <div className="h-full flex flex-col p-4">
+                    <h2 className="font-exo text-xl text-white mb-6">Navigation</h2>
+                    
+                    <div className="flex-grow overflow-y-auto pr-2 space-y-6">
+                        {/* Search History */}
+                        <div>
+                            <h3 className="text-cyan-300 font-bold mb-2 font-exo">Search History</h3>
+                            {history.length > 0 ? (
+                                <div className="space-y-1">
+                                    {history.map(p => <PersonListItem key={`h-${p.id}`} person={p} onRefresh={onRefreshPerson} />)}
+                                </div>
+                            ) : (
+                                <p className="text-sm text-gray-500">No recent searches.</p>
+                            )}
+                        </div>
+
+                        {/* Saved Dossiers */}
+                        <div>
+                            <h3 className="text-cyan-300 font-bold mb-2 font-exo">Saved Dossiers</h3>
+                            {dossiers.length > 0 ? (
+                                <div className="space-y-1">
+                                    {dossiers.map(p => <PersonListItem key={`d-${p.id}`} person={p} />)}
+                                </div>
+                            ) : (
+                                <p className="text-sm text-gray-500">No saved dossiers.</p>
+                            )}
+                        </div>
+                    </div>
+                    
+                    <div className="flex-shrink-0 border-t border-cyan-500/20 pt-4 space-y-2">
+                        <button onClick={onGoToSettings} className="w-full flex items-center space-x-3 px-4 py-2 text-cyan-200 hover:bg-cyan-800/60 rounded transition-colors text-left">
+                            <SettingsIcon /> <span>Settings</span>
+                        </button>
+                        <button onClick={onLogout} className="w-full flex items-center space-x-3 px-4 py-2 text-cyan-200 hover:bg-cyan-800/60 rounded transition-colors text-left">
+                           <LogoutIcon /> <span>Logout</span>
+                        </button>
+                    </div>
+                </div>
+            </aside>
+        </>
+    );
+};
+
+export default SideMenu;

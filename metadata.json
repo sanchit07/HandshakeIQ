@@ -1,0 +1,7 @@
+{
+  "name": "HandshakeIQ",
+  "description": "A pre-meeting intelligence application with a sci-fi theme, designed to provide insights on individuals before meetings.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
