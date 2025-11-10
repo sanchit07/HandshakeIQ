@@ -176,7 +176,7 @@ const PersonProfile: React.FC<{ person: Person; onBack: () => void; onSave: (per
         const MIN_LOADER_DURATION = 2000; // 2 seconds to ensure smooth animation display
         
         try {
-            const { report: fetchedReport, sources: fetchedSources } = await generateIntelligenceReport(person.name, person.company);
+            const { report: fetchedReport, sources: fetchedSources } = await generateIntelligenceReport(person.name, person.company, person.allLinks);
             setReport(fetchedReport);
             setSources(fetchedSources);
 
