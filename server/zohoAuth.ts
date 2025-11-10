@@ -101,25 +101,8 @@ export function setupZohoAuth(app: Express) {
         });
       }
 
-      // Redirect to close the popup window and refresh parent
-      res.send(`
-        <html>
-          <head>
-            <title>Zoho Sign-In Successful</title>
-          </head>
-          <body>
-            <script>
-              if (window.opener) {
-                window.opener.postMessage({ type: 'zoho-auth-success' }, '*');
-                window.close();
-              } else {
-                window.location.href = '/';
-              }
-            </script>
-            <p>Signing in... This window should close automatically.</p>
-          </body>
-        </html>
-      `);
+      // Redirect back to main app
+      res.redirect('/');
     } catch (error) {
       console.error('Zoho OAuth error:', error);
       res.status(400).send(`
@@ -130,12 +113,7 @@ export function setupZohoAuth(app: Express) {
           <body>
             <h1>Authentication Failed</h1>
             <p>There was an error signing in with Zoho. Please try again.</p>
-            <script>
-              if (window.opener) {
-                window.opener.postMessage({ type: 'zoho-auth-error' }, '*');
-                setTimeout(() => window.close(), 3000);
-              }
-            </script>
+            <p><a href="/">Return to Home</a></p>
           </body>
         </html>
       `);
