@@ -2,17 +2,12 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupGoogleAuth, requireAuth, attachSessionIfPresent } from "./googleAuth";
-import { setupZohoAuth } from "./zohoAuth";
 import { generateIntelligenceReport, extractTextFromImage } from "../services/geminiService";
 import { CalendarService } from "../services/calendarService";
-import { searchPerson } from "./googleSearchService";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Setup Google OAuth authentication
   await setupGoogleAuth(app);
-  
-  // Setup Zoho OAuth authentication
-  setupZohoAuth(app);
 
   // Auth routes - check if user is logged in (optional, returns null if not)
   app.get('/api/auth/user', attachSessionIfPresent, async (req: any, res) => {
@@ -36,11 +31,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Gemini API routes - NO AUTH REQUIRED for guest access
   app.post('/api/intelligence-report', async (req, res) => {
     try {
-      const { personName, company, allLinks } = req.body;
+      const { personName, company } = req.body;
       if (!personName || !company) {
         return res.status(400).json({ message: "personName and company are required" });
       }
-      const result = await generateIntelligenceReport(personName, company, allLinks);
+      const result = await generateIntelligenceReport(personName, company);
       res.json(result);
     } catch (error) {
       console.error("Error generating intelligence report:", error);
@@ -59,28 +54,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error extracting card text:", error);
       res.status(500).json({ message: "Failed to extract card text" });
-    }
-  });
-
-  // Google Search API routes - NO AUTH REQUIRED for guest access
-  app.get('/api/search/person', async (req, res) => {
-    try {
-      const { name, company, designation } = req.query;
-      
-      if (!name || typeof name !== 'string') {
-        return res.status(400).json({ message: "name query parameter is required" });
-      }
-
-      const results = await searchPerson(
-        name,
-        company as string | undefined,
-        designation as string | undefined
-      );
-      
-      res.json(results);
-    } catch (error) {
-      console.error("Error searching for person:", error);
-      res.status(500).json({ message: "Failed to search for person" });
     }
   });
 

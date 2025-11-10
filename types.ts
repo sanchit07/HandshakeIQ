@@ -5,7 +5,6 @@ export interface Person {
   company: string;
   photoUrl: string;
   email: string;
-  allLinks?: string[];
 }
 
 export interface CalendarAttendee {

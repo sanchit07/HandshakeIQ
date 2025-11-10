@@ -33,33 +33,3 @@ export const users = pgTable("users", {
 
 export type UpsertUser = typeof users.$inferInsert;
 export type User = typeof users.$inferSelect;
-
-export const savedDossiers = pgTable("saved_dossiers", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id),
-  personName: varchar("person_name").notNull(),
-  personTitle: varchar("person_title"),
-  personCompany: varchar("person_company"),
-  personEmail: varchar("person_email"),
-  personPhotoUrl: varchar("person_photo_url"),
-  personLinkedInUrl: varchar("person_linkedin_url"),
-  intelligenceReport: jsonb("intelligence_report").notNull(),
-  allLinks: jsonb("all_links"),
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
-});
-
-export type SavedDossier = typeof savedDossiers.$inferSelect;
-export type InsertSavedDossier = typeof savedDossiers.$inferInsert;
-
-export const notes = pgTable("notes", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  dossierId: varchar("dossier_id").notNull().references(() => savedDossiers.id, { onDelete: 'cascade' }),
-  userId: varchar("user_id").notNull().references(() => users.id),
-  content: varchar("content", { length: 10000 }).notNull(),
-  createdAt: timestamp("created_at").defaultNow(),
-  updatedAt: timestamp("updated_at").defaultNow(),
-});
-
-export type Note = typeof notes.$inferSelect;
-export type InsertNote = typeof notes.$inferInsert;

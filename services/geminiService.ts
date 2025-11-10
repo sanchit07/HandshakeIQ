@@ -11,23 +11,11 @@ if (!API_KEY) {
 
 const ai = new GoogleGenAI({ apiKey: API_KEY! });
 
-export const generateIntelligenceReport = async (personName: string, company: string, allLinks?: string[]): Promise<{ report: IntelligenceReport, sources: any[] }> => {
+export const generateIntelligenceReport = async (personName: string, company: string): Promise<{ report: IntelligenceReport, sources: any[] }> => {
   try {
-    let prompt = `
+    const prompt = `
       Generate a detailed professional and personal intelligence report for "${personName}", associated with "${company}".
-      Use information available on the public web via Google Search.`;
-    
-    if (allLinks && allLinks.length > 0) {
-      prompt += `
-      
-      IMPORTANT: Focus your search on these specific web sources that have already been identified for this person:
-      ${allLinks.map((link, index) => `${index + 1}. ${link}`).join('\n')}
-      
-      Prioritize information from these URLs, especially LinkedIn profiles, social media accounts, blog posts, and news articles. 
-      These sources are known to be related to this specific person, so use them to generate more accurate and comprehensive insights.`;
-    }
-    
-    prompt += `
+      Use information available on the public web via Google Search.
       The output MUST be a single, valid JSON object. Do not include any text, code block markers, or formatting outside of the JSON object itself.
       For each point in the arrays below, you MUST include a "source_indices" field. This field must be an array of zero-based integer indices that correspond to the grounding sources that support the statement in the "text" field.
       The JSON object must have the following structure:

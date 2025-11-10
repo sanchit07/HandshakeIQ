@@ -2,34 +2,16 @@ import React, { useState } from 'react';
 import { GoogleIcon, ZohoIcon } from './icons/BrandIcons';
 import { UserIcon, LockIcon } from './icons/UIIcons';
 
-const LoginButton: React.FC<{ icon: React.ReactNode; label: string; href: string; usePopup?: boolean }> = ({ icon, label, href, usePopup = true }) => {
+const LoginButton: React.FC<{ icon: React.ReactNode; label: string; href: string }> = ({ icon, label, href }) => {
   const handleClick = (e: React.MouseEvent) => {
     e.preventDefault();
-    
-    // Open authentication in a new tab/window
-    const authWindow = window.open(href, '_blank', usePopup ? 'width=500,height=700,scrollbars=yes' : '');
-    
-    if (!authWindow) {
-      alert('Please allow popups for this site to sign in.');
-      return;
-    }
-    
-    // Listen for auth success messages
-    const messageHandler = (event: MessageEvent) => {
-      if (event.data?.type === 'auth_success' || event.data?.type === 'zoho-auth-success') {
-        window.removeEventListener('message', messageHandler);
-        clearInterval(pollTimer);
-        window.location.reload();
-      }
-    };
-    
-    window.addEventListener('message', messageHandler);
+    // Open in new window to avoid iframe restrictions
+    const authWindow = window.open(href, '_blank', 'width=500,height=700,scrollbars=yes');
     
     // Poll for window close and reload page
     const pollTimer = setInterval(() => {
       if (authWindow?.closed) {
         clearInterval(pollTimer);
-        window.removeEventListener('message', messageHandler);
         window.location.reload();
       }
     }, 500);
@@ -93,8 +75,8 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest }) => {
               <p className="mt-2 text-sm sm:text-base text-cyan-300">Authenticate for full access</p>
             </div>
             <div className="space-y-2 sm:space-y-3">
-              <LoginButton icon={<GoogleIcon />} label="Sign in with Google" href="/api/login" usePopup={true} />
-              <LoginButton icon={<ZohoIcon />} label="Sign in with Zoho" href="/auth/zoho" usePopup={false} />
+              <LoginButton icon={<GoogleIcon />} label="Sign in with Google" href="/api/login" />
+              <LoginButton icon={<ZohoIcon />} label="Sign in with Zoho" href="/api/login/zoho" />
             </div>
             
             {onContinueAsGuest && (
