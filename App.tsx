@@ -12,7 +12,7 @@ import { MenuIcon } from './components/icons/UIIcons';
 import { useAuth } from './client/hooks/useAuth';
 
 const App: React.FC = () => {
-  const { user, isLoading, isAuthenticated, isGuest } = useAuth();
+  const { user, isLoading, isAuthenticated, isGuest, hasError } = useAuth();
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
   const [view, setView] = useState<'dashboard' | 'profile' | 'settings' | 'scanner' | 'login'>('dashboard');
   const [scannedSearchTerm, setScannedSearchTerm] = useState<string>('');
@@ -41,8 +41,9 @@ const App: React.FC = () => {
   const handleSaveDossier = useCallback((person: Person) => {
     // Require authentication for saving
     if (guestMode || !isAuthenticated) {
-      // Show login prompt
+      // Show login prompt and clear guest mode
       alert('Please sign in to save dossiers. This feature requires authentication.');
+      setGuestMode(false);
       setView('login');
       return;
     }
@@ -82,7 +83,11 @@ const App: React.FC = () => {
   const showAppContent = isAuthenticated || guestMode;
   
   // Show login screen if loading is done and user hasn't authenticated or chosen guest mode
-  const showLoginScreen = !isLoading && !showAppContent;
+  // Also show login if there's an error (network/server issue)
+  const showLoginScreen = !isLoading && !showAppContent && !hasError;
+  
+  // If there's a network/server error, show an error message
+  const showError = !isLoading && hasError;
 
   return (
     <div className="min-h-screen text-cyan-200 animated-background">
@@ -97,7 +102,10 @@ const App: React.FC = () => {
               <>
                 {guestMode && (
                   <button 
-                    onClick={() => setView('login')}
+                    onClick={() => {
+                      setGuestMode(false);
+                      setView('login');
+                    }}
                     className="text-xs px-3 py-1.5 bg-cyan-600/80 hover:bg-cyan-500 rounded-md text-white font-medium transition-colors"
                   >
                     Sign In
@@ -118,7 +126,28 @@ const App: React.FC = () => {
         </header>
 
         <main className={`flex-grow overflow-hidden transition-transform duration-500 ease-in-out ${isMenuOpen ? 'translate-x-[-280px]' : ''}`}>
-          {showLoginScreen || isLoginVisible ? (
+          {showError ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center p-8 bg-red-900/20 border border-red-500/30 rounded-lg max-w-md">
+                <h2 className="font-exo text-2xl font-bold text-red-400 mb-4">Connection Error</h2>
+                <p className="text-red-300 mb-6">Unable to connect to the server. You can try again or continue as guest.</p>
+                <div className="flex flex-col gap-3">
+                  <button
+                    onClick={() => window.location.reload()}
+                    className="px-6 py-3 bg-cyan-600/80 hover:bg-cyan-500 rounded-lg text-white font-medium transition-colors"
+                  >
+                    Retry Connection
+                  </button>
+                  <button
+                    onClick={handleContinueAsGuest}
+                    className="px-6 py-3 border border-gray-500/30 bg-gray-800/20 rounded-lg hover:bg-gray-700/40 hover:border-gray-400 transition-all text-gray-300 hover:text-white"
+                  >
+                    Continue as Guest
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : showLoginScreen || isLoginVisible ? (
             <LoginScreen onContinueAsGuest={handleContinueAsGuest} />
           ) : showAppContent ? (
             <div className="relative w-full h-full">

@@ -21,7 +21,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(user);
     } catch (error) {
       console.error("Error fetching user:", error);
-      res.status(500).json({ message: "Failed to fetch user" });
+      // Return null instead of 500 so user can fall back to guest mode
+      // This handles DB connectivity issues gracefully
+      return res.json(null);
     }
   });
 

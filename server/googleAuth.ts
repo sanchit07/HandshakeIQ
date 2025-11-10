@@ -153,9 +153,23 @@ export const attachSessionIfPresent: RequestHandler = async (req, res, next) => 
         });
         const { credentials } = await oauth2Client.refreshAccessToken();
         
-        // Update session with new tokens
+        // Update session with new tokens and persist back to session
         user.accessToken = credentials.access_token;
         user.expiresAt = credentials.expiry_date;
+        (req.session as any).user = user;
+        
+        // Save the session to persist changes
+        try {
+          await new Promise<void>((resolve, reject) => {
+            req.session.save((err) => {
+              if (err) reject(err);
+              else resolve();
+            });
+          });
+        } catch (saveError) {
+          console.error('Session save failed after token refresh:', saveError);
+          // Continue anyway - the in-memory session is updated for this request
+        }
         
         (req as any).user = user;
         return next();

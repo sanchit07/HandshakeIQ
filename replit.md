@@ -8,11 +8,11 @@ HandshakeIQ is an AI-powered professional intelligence platform that helps users
 - **Build Tool**: Vite 6
 - **Backend**: Express.js with TypeScript
 - **Database**: PostgreSQL (Replit-managed) with Drizzle ORM
-- **Authentication**: Replit Auth (Google, GitHub, Email/Password, Apple, X)
+- **Authentication**: Direct Google OAuth 2.0 (google-auth-library) with guest mode support
 - **State Management**: React Query (@tanstack/react-query)
 - **Styling**: Tailwind CSS (via CDN)
 - **AI Service**: Google Gemini API (@google/genai)
-- **Features**: Business card scanning, intelligent report generation, real authentication
+- **Features**: Guest mode access, business card scanning, intelligent report generation, conditional authentication
 
 ## Project Structure
 ```
@@ -31,7 +31,8 @@ HandshakeIQ is an AI-powered professional intelligence platform that helps users
 ├── server/              # Express backend
 │   ├── db.ts           # Drizzle database connection
 │   ├── index.ts        # Express server setup
-│   ├── replitAuth.ts   # Replit Auth configuration
+│   ├── googleAuth.ts   # Google OAuth 2.0 configuration
+│   ├── routes.ts       # API route handlers
 │   └── storage.ts      # User data operations
 ├── services/
 │   └── geminiService.ts
@@ -50,25 +51,41 @@ HandshakeIQ is an AI-powered professional intelligence platform that helps users
 - **Host**: 0.0.0.0 (allows Replit proxy access)
 - **Required Secrets**: 
   - `GEMINI_API_KEY` - Google Gemini API key
+  - `GOOGLE_CLIENT_ID` - Google OAuth client ID
+  - `GOOGLE_CLIENT_SECRET` - Google OAuth client secret
   - `DATABASE_URL` - Auto-configured by Replit
-  - Session secrets - Auto-managed by Replit Auth
+  - `SESSION_SECRET` - Session encryption key
 
 ## Key Features
-1. **Real Authentication**: Replit Auth with Google Sign-In, GitHub, Email/Password, Apple, and X
-2. **Session Management**: Secure PostgreSQL-backed sessions with automatic token refresh
-3. **Dashboard**: View upcoming meetings and search for people
-4. **AI Intelligence Reports**: Generate comprehensive profiles using Gemini with web search
-5. **Business Card Scanner**: Extract contact info from business card images using Gemini vision
-6. **Person Profiles**: Detailed view with professional background, activities, interests, and discussion points
-7. **Search History & Dossiers**: Track viewed profiles and save important contacts
+1. **Guest Mode**: Access core features (search, AI reports) without authentication
+2. **Conditional Authentication**: Login only required for advanced features (save insights, calendar sync)
+3. **Google OAuth**: Direct Google Sign-In with secure session management
+4. **Session Management**: PostgreSQL-backed sessions with automatic token refresh
+5. **Dashboard**: View upcoming meetings and search for people
+6. **AI Intelligence Reports**: Generate comprehensive profiles using Gemini with web search (no auth required)
+7. **Business Card Scanner**: Extract contact info from business card images using Gemini vision (no auth required)
+8. **Person Profiles**: Detailed view with professional background, activities, interests, and discussion points
+9. **Protected Features**: Save dossiers and calendar sync require authentication
 
 ## Authentication Flow
-1. User clicks "Sign in with Google" (or other providers)
-2. Redirects to `/api/login` → Replit Auth OAuth flow
-3. Returns to `/api/callback` → Creates session and stores user in PostgreSQL
-4. Frontend checks `/api/auth/user` via React Query hook
-5. Protected routes verify authentication via middleware
-6. Logout via `/api/logout` destroys session
+
+### Guest Mode
+1. User clicks "Continue as Guest" on login screen
+2. Full access to search, dashboard, and AI intelligence reports
+3. Attempting to save insights prompts for authentication
+
+### Authenticated Mode
+1. User clicks "Sign in with Google"
+2. Popup window opens → Google OAuth consent screen
+3. After authorization → `/auth/google/callback` creates session
+4. User data stored in PostgreSQL, popup closes, main window reloads
+5. Frontend checks `/api/auth/user` via React Query (returns user or null)
+6. Protected routes use `requireAuth` middleware to block unauthenticated requests
+7. Logout via `/api/logout` destroys session
+
+### Middleware Layers
+- `attachSessionIfPresent`: Optionally attaches session, doesn't block (used for optional auth)
+- `requireAuth`: Blocks requests without valid session (used for save/calendar features)
 
 ## API Integration
 The app requires a **GEMINI_API_KEY** environment variable to function. This key enables:
@@ -81,13 +98,27 @@ The app requires a **GEMINI_API_KEY** environment variable to function. This key
 - **sessions**: Manages active user sessions (connect-pg-simple)
 
 ## Recent Changes
-- **2024-11-10**: Full-stack transformation with real authentication
+- **2024-11-10 (Latest)**: Implemented guest mode with conditional authentication
+  - Added "Continue as Guest" button for immediate access to core features
+  - Removed authentication requirement from intelligence reports and card scanning
+  - Implemented two-tier middleware: `attachSessionIfPresent` (optional) and `requireAuth` (strict)
+  - Updated `useAuth` hook to properly distinguish guest mode from errors
+  - Added proper session persistence for token refresh
+  - Protected save/calendar features now prompt for authentication
+  - Improved error handling (network errors vs. guest mode)
+  
+- **2024-11-10 (Earlier)**: Google OAuth integration
+  - Migrated from Replit Auth to direct Google OAuth 2.0
+  - Implemented popup-based OAuth flow to work around iframe restrictions
+  - Created `googleAuth.ts` with OAuth 2.0 client setup
+  - Added automatic token refresh with session persistence
+  - Redirect URI configured for Replit deployment (uses REPLIT_DEV_DOMAIN)
+  
+- **2024-11-10 (Initial)**: Full-stack transformation
   - Migrated from Google AI Studio to Replit environment
   - Removed AI Studio importmap, fixed Vite config for Replit proxy
   - Implemented Express backend server (port 3000)
   - Added PostgreSQL database with Drizzle ORM
-  - Integrated Replit Auth blueprint with Google Sign-In support
-  - Created full authentication flow (login, callback, logout routes)
   - Set up session management with PostgreSQL backing
   - Updated React frontend with React Query for auth state
   - Configured two workflows: backend (console) and frontend (webview)
@@ -103,11 +134,17 @@ None documented yet.
 
 ## Notes
 - The application currently uses mock data for meetings and people (see constants.ts)
-- Authentication is fully functional with real user sessions stored in PostgreSQL
+- **Guest Mode**: Users can search people and generate AI reports without signing in
+- **Protected Features**: Saving insights and calendar sync require Google Sign-In
+- Authentication uses direct Google OAuth 2.0 with secure session management
 - All Gemini API calls include proper error handling with fallback messages
+- Redirect URI for Google OAuth must be configured in Google Cloud Console after deployment
 
 ## Production Deployment
 Before deploying:
 1. Ensure database migrations are pushed (`npm run db:push`)
-2. Verify environment variables are set (DATABASE_URL, GEMINI_API_KEY)
-3. Replit Auth automatically configures REPL_ID and session secrets
+2. Verify environment variables are set (DATABASE_URL, GEMINI_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, SESSION_SECRET)
+3. **Configure Google OAuth Redirect URI**: Add your published app's callback URL to Google Cloud Console
+   - Format: `https://[your-published-domain]/auth/google/callback`
+   - Go to Google Cloud Console → Credentials → OAuth 2.0 Client ID → Add authorized redirect URI
+4. Test the complete authentication flow after deployment
