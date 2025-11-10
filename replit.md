@@ -44,6 +44,24 @@ HandshakeIQ utilizes a full-stack architecture with a React 19 (TypeScript) fron
 
 ## Recent Changes
 
+### 2025-11-10: CRITICAL FIX - Database Connection & Intelligence Report Generation
+- **Root Cause Identified**: Backend server failing to start due to missing PostgreSQL database
+  - Session store (`connect-pg-simple`) requires PostgreSQL connection during server initialization
+  - Server appeared to be running but was not actually listening on port 3000
+  - Frontend showing "Connection Error: Unable to connect to the server" message
+  
+- **Permanent Fix Applied**:
+  1. Created PostgreSQL database using Replit's database provisioning
+  2. Verified database schema with `npm run db:push` (tables already existed)
+  3. Restarted backend server - now successfully listening on port 3000
+  4. Fixed Gemini API key environment variable: Changed `API_KEY` to `GEMINI_API_KEY` in `services/geminiService.ts`
+  
+- **Verified Working**:
+  - Backend server responding to API requests (`/api/auth/user` returns `null` for guest mode) ✅
+  - Frontend-backend proxy connection established ✅
+  - Database connection successful ✅
+  - Intelligence report generation ready for testing ✅
+
 ### 2025-11-10: Critical UX Fixes - Search Dropdown Layering, CardScanner Preview & Error Handling
 - **Search Dropdown Z-Index Fix (CRITICAL)**:
   - Increased search results dropdown from z-50 to z-[100]
