@@ -71,7 +71,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest }) => {
             </div>
             <div className="space-y-3">
               <LoginButton icon={<GoogleIcon />} label="Sign in with Google" href="/api/login" />
-              <LoginButton icon={<ZohoIcon />} label="Sign in with Zoho" href="/api/login" />
+              <LoginButton icon={<ZohoIcon />} label="Sign in with Zoho" href="/api/login/zoho" />
             </div>
             
             {onContinueAsGuest && (

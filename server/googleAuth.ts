@@ -122,6 +122,42 @@ export async function setupGoogleAuth(app: Express) {
     }
   });
 
+  // Test Zoho login - creates a session for test user
+  app.get('/api/login/zoho', async (req, res) => {
+    try {
+      // Test user credentials
+      const testUser = {
+        id: 'zoho-test-user-001',
+        email: 'sanchit@movingwalls.com',
+        firstName: 'Sanchit',
+        lastName: 'Neema',
+        profileImageUrl: null,
+      };
+
+      // Store user in database
+      const user = await storage.upsertUser(testUser);
+
+      // Create session for test user
+      (req.session as any).user = {
+        id: user.id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        profileImageUrl: user.profileImageUrl,
+        // Mock tokens for testing (not real Zoho tokens)
+        accessToken: 'test-access-token',
+        refreshToken: 'test-refresh-token',
+        expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000), // 7 days from now
+      };
+
+      // Redirect back to home page
+      res.redirect('/');
+    } catch (error) {
+      console.error('Error during test Zoho login:', error);
+      res.status(500).send('Test login failed');
+    }
+  });
+
   // Logout
   app.get('/api/logout', (req, res) => {
     req.session.destroy((err) => {
