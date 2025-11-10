@@ -12,6 +12,9 @@ const CardScanner: React.FC<CardScannerProps> = ({ onClose }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [extractedData, setExtractedData] = useState<{ name: string; company: string } | null>(null);
+    const [editedName, setEditedName] = useState('');
+    const [editedCompany, setEditedCompany] = useState('');
 
     const startCamera = useCallback(async () => {
         try {
@@ -53,11 +56,38 @@ const CardScanner: React.FC<CardScannerProps> = ({ onClose }) => {
         
         try {
             const { name, company } = await extractTextFromImage(base64Image);
-            onClose(`${name} ${company}`);
+            
+            if (!name && !company) {
+                setError("No business card detected. Please ensure the card is clearly visible and try again.");
+                setIsLoading(false);
+                return;
+            }
+            
+            if (!name || !company) {
+                setError("Incomplete data extracted. Please review and edit the fields below.");
+            }
+            
+            setExtractedData({ name, company });
+            setEditedName(name);
+            setEditedCompany(company);
         } catch (err) {
-            setError("Failed to analyze image. Please try again.");
+            setError("Failed to analyze image. Please ensure you're scanning a business card and try again.");
         } finally {
             setIsLoading(false);
+        }
+    };
+
+    const handleSearch = () => {
+        if (!editedName.trim()) {
+            setError("Please enter a name before searching.");
+            return;
+        }
+        onClose(`${editedName.trim()} ${editedCompany.trim()}`);
+    };
+
+    const handleKeyPress = (e: React.KeyboardEvent) => {
+        if (e.key === 'Enter') {
+            handleSearch();
         }
     };
 
@@ -66,32 +96,96 @@ const CardScanner: React.FC<CardScannerProps> = ({ onClose }) => {
             <button onClick={() => onClose()} className="absolute top-3 right-3 sm:top-4 sm:right-4 text-white z-20 p-2 rounded-full hover:bg-white/10 transition-colors">
                 <CloseIcon />
             </button>
-            <div className="relative w-full max-w-2xl h-auto aspect-[4/3] rounded-lg overflow-hidden border-2 border-cyan-500/50 shadow-2xl shadow-cyan-500/30 animate-pulse-glow">
-                <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
-                {isLoading && (
-                    <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-4">
-                        <DataStreamLoader text="Extracting contact data..." />
+            
+            {!extractedData ? (
+                <>
+                    <div className="relative w-full max-w-2xl h-auto aspect-[4/3] rounded-lg overflow-hidden border-2 border-cyan-500/50 shadow-2xl shadow-cyan-500/30 animate-pulse-glow">
+                        <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+                        {isLoading && (
+                            <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-4">
+                                <DataStreamLoader text="Extracting contact data..." />
+                            </div>
+                        )}
+                        <div className="scanner-animation"></div>
+                        <div className="absolute inset-0 border-4 sm:border-8 border-black/30 pointer-events-none"></div>
+                        <div className="absolute top-4 left-4 right-4 flex items-center justify-between">
+                            <div className="w-8 h-8 border-t-2 border-l-2 border-cyan-400"></div>
+                            <div className="w-8 h-8 border-t-2 border-r-2 border-cyan-400"></div>
+                        </div>
+                        <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between">
+                            <div className="w-8 h-8 border-b-2 border-l-2 border-cyan-400"></div>
+                            <div className="w-8 h-8 border-b-2 border-r-2 border-cyan-400"></div>
+                        </div>
                     </div>
-                )}
-                 <div className="scanner-animation"></div>
-                 <div className="absolute inset-0 border-4 sm:border-8 border-black/30 pointer-events-none"></div>
-                 <div className="absolute top-4 left-4 right-4 flex items-center justify-between">
-                    <div className="w-8 h-8 border-t-2 border-l-2 border-cyan-400"></div>
-                    <div className="w-8 h-8 border-t-2 border-r-2 border-cyan-400"></div>
-                 </div>
-                 <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between">
-                    <div className="w-8 h-8 border-b-2 border-l-2 border-cyan-400"></div>
-                    <div className="w-8 h-8 border-b-2 border-r-2 border-cyan-400"></div>
-                 </div>
-            </div>
-            {error && <p className="mt-4 text-red-400 text-sm sm:text-base text-center px-4">{error}</p>}
-            <button
-                onClick={handleCapture}
-                disabled={isLoading}
-                className="mt-6 sm:mt-8 px-6 sm:px-8 py-3 sm:py-4 bg-cyan-600/80 text-white font-exo text-lg sm:text-xl rounded-full border-2 border-cyan-400 hover:bg-cyan-500 disabled:bg-gray-600 disabled:border-gray-500 transition-all duration-300 shadow-lg shadow-cyan-500/30 btn-glow hover:scale-105 active:scale-95"
-            >
-                {isLoading ? 'ANALYZING...' : 'SCAN CARD'}
-            </button>
+                    {error && <p className="mt-4 text-red-400 text-sm sm:text-base text-center px-4">{error}</p>}
+                    <button
+                        onClick={handleCapture}
+                        disabled={isLoading}
+                        className="mt-6 sm:mt-8 px-6 sm:px-8 py-3 sm:py-4 bg-cyan-600/80 text-white font-exo text-lg sm:text-xl rounded-full border-2 border-cyan-400 hover:bg-cyan-500 disabled:bg-gray-600 disabled:border-gray-500 transition-all duration-300 shadow-lg shadow-cyan-500/30 btn-glow hover:scale-105 active:scale-95"
+                    >
+                        {isLoading ? 'ANALYZING...' : 'SCAN CARD'}
+                    </button>
+                </>
+            ) : (
+                <div className="w-full max-w-lg bg-gray-900/90 border-2 border-cyan-500/50 rounded-lg p-6 sm:p-8 shadow-2xl shadow-cyan-500/30 animate-slide-up-fade">
+                    <h2 className="text-xl sm:text-2xl font-exo text-cyan-300 mb-6 text-center">Extracted Data</h2>
+                    
+                    <div className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-cyan-400 mb-2">Name</label>
+                            <input
+                                type="text"
+                                value={editedName}
+                                onChange={(e) => setEditedName(e.target.value)}
+                                onKeyPress={handleKeyPress}
+                                className="w-full px-4 py-3 bg-gray-800/50 border border-cyan-500/30 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400"
+                                placeholder="Enter name"
+                                autoFocus
+                            />
+                        </div>
+                        
+                        <div>
+                            <label className="block text-sm font-medium text-cyan-400 mb-2">Company</label>
+                            <input
+                                type="text"
+                                value={editedCompany}
+                                onChange={(e) => setEditedCompany(e.target.value)}
+                                onKeyPress={handleKeyPress}
+                                className="w-full px-4 py-3 bg-gray-800/50 border border-cyan-500/30 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400"
+                                placeholder="Enter company (optional)"
+                            />
+                        </div>
+                    </div>
+                    
+                    {error && <p className="mt-4 text-red-400 text-sm text-center">{error}</p>}
+                    
+                    <div className="mt-6 space-y-3">
+                        <button
+                            onClick={handleSearch}
+                            className="w-full px-6 py-3 bg-cyan-600/80 text-white font-exo text-lg rounded-lg border-2 border-cyan-400 hover:bg-cyan-500 transition-all duration-300 shadow-lg shadow-cyan-500/30 btn-glow hover:scale-105 active:scale-95"
+                        >
+                            Search Intelligence
+                        </button>
+                        
+                        <button
+                            onClick={() => {
+                                setExtractedData(null);
+                                setEditedName('');
+                                setEditedCompany('');
+                                setError(null);
+                            }}
+                            className="w-full px-6 py-3 bg-gray-700/50 text-gray-300 font-exo rounded-lg border border-gray-500/50 hover:bg-gray-600/50 hover:text-white transition-all duration-300"
+                        >
+                            Scan Again
+                        </button>
+                    </div>
+                    
+                    <p className="mt-4 text-xs text-gray-500 text-center">
+                        Press Enter to search or edit the fields above
+                    </p>
+                </div>
+            )}
+            
             <canvas ref={canvasRef} className="hidden" />
              <style>{`
                 @keyframes scan-line {

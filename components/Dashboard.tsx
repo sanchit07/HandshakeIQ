@@ -28,6 +28,7 @@ const SearchBar: React.FC<{
     const [isSearching, setIsSearching] = useState(false);
     const [searchResults, setSearchResults] = useState<PersonSearchResult[]>([]);
     const [selectedResult, setSelectedResult] = useState<PersonSearchResult | null>(null);
+    const [searchError, setSearchError] = useState<string | null>(null);
 
     useEffect(() => {
         if (initialSearch) {
@@ -43,14 +44,28 @@ const SearchBar: React.FC<{
         }
         
         setIsSearching(true);
+        setSearchError(null);
         try {
             const response = await axios.post('/api/search-person', {
                 personName: searchQuery
             });
-            setSearchResults(response.data.results || []);
-        } catch (error) {
+            const results = response.data.results || [];
+            setSearchResults(results);
+            
+            if (results.length === 0) {
+                setSearchError('No results found. Try adding company name or different keywords.');
+            }
+        } catch (error: any) {
             console.error('Search error:', error);
             setSearchResults([]);
+            
+            if (error.response?.status === 500) {
+                setSearchError('Search service unavailable. Please try again later.');
+            } else if (error.code === 'ERR_NETWORK') {
+                setSearchError('Network error. Please check your connection and try again.');
+            } else {
+                setSearchError('Search failed. Please try again or contact support.');
+            }
         } finally {
             setIsSearching(false);
         }
@@ -114,7 +129,7 @@ const SearchBar: React.FC<{
                 )}
             </div>
             {(isFocused || isSearching) && (query || searchResults.length > 0) && (
-                <div className="absolute z-50 w-full mt-2 bg-slate-950 border border-cyan-500/40 rounded-lg shadow-2xl shadow-cyan-500/20 max-h-96 overflow-y-auto animate-slide-down-fade">
+                <div className="absolute z-[100] w-full mt-2 bg-slate-950 border border-cyan-500/40 rounded-lg shadow-2xl shadow-cyan-500/20 max-h-96 overflow-y-auto animate-slide-down-fade">
                     {isSearching ? (
                         <div className="p-8 text-center">
                             <div className="relative">
@@ -133,6 +148,16 @@ const SearchBar: React.FC<{
                                     </div>
                                 </div>
                             )}
+                        </div>
+                    ) : searchError ? (
+                        <div className="p-6 text-center">
+                            <p className="text-red-400 text-sm sm:text-base mb-2">❌ {searchError}</p>
+                            <button
+                                onClick={() => performSearch(query)}
+                                className="mt-3 text-xs sm:text-sm text-cyan-400 hover:text-cyan-300 transition-colors"
+                            >
+                                Try Again
+                            </button>
                         </div>
                     ) : searchResults.length > 0 ? (
                         <>

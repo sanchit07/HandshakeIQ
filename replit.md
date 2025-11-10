@@ -44,6 +44,33 @@ HandshakeIQ utilizes a full-stack architecture with a React 19 (TypeScript) fron
 
 ## Recent Changes
 
+### 2025-11-10: Critical UX Fixes - Search Dropdown Layering, CardScanner Preview & Error Handling
+- **Search Dropdown Z-Index Fix (CRITICAL)**:
+  - Increased search results dropdown from z-50 to z-[100]
+  - Search results now appear above all dashboard content (calendar events, transmissions boxes)
+  - Fixed critical issue where users couldn't click on search results
+  - Proper layering: Dashboard content < SideMenu (z-[55]/z-[60]) < Modals (z-70) < Search dropdown (z-[100])
+  
+- **CardScanner UX Overhaul**:
+  - Now shows extracted data (name, company) in a form before searching
+  - Users can review and edit extracted information
+  - Press Enter or click "Search Intelligence" button to initiate search
+  - Added "Scan Again" button for re-scanning if extraction was incorrect
+  - Camera view → Extraction → Review/Edit → Search workflow
+  
+- **Comprehensive Error Handling**:
+  - **Search errors**: Detects network errors, 500 server errors, empty results with specific messages
+  - **CardScanner errors**: 
+    - "No business card detected" when image doesn't contain a card
+    - "Incomplete data extracted" when name or company is missing
+    - Camera access permission errors
+    - Image analysis failure handling
+  - All error messages include user-friendly guidance and retry options
+  
+- **Architecture Notes**:
+  - Z-index scale documented: Dashboard (default) < SideMenu (55-60) < Modals (70) < Dropdowns (100)
+  - Future full-screen modals should use z-[110]+ if they need to cover dropdowns
+
 ### 2025-11-10: Fixed Z-Index Layering, LinkedIn Logo Filtering & Enhanced Deduplication
 - **Z-Index Hierarchy Fix**:
   - Fixed SideMenu using invalid Tailwind classes (z-55, z-60)
