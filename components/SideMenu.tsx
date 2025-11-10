@@ -1,12 +1,12 @@
 import React from 'react';
-import { Person } from '../types';
+import { Person, Dossier } from '../types';
 import { RefreshIcon, SettingsIcon, LogoutIcon, CalendarIcon } from './icons/UIIcons';
 
 interface SideMenuProps {
     isOpen: boolean;
     onClose: () => void;
     history: Person[];
-    dossiers: Person[];
+    dossiers: Dossier[];
     onSelectPerson: (person: Person) => void;
     onRefreshPerson: (person: Person) => void;
     onGoToSettings: () => void;
@@ -32,6 +32,16 @@ const SideMenu: React.FC<SideMenuProps> = ({ isOpen, onClose, history, dossiers,
             )}
         </div>
     );
+
+    const convertDossierToPerson = (dossier: Dossier): Person => ({
+        id: dossier.id,
+        name: dossier.personName,
+        title: dossier.personTitle || '',
+        company: dossier.personCompany || '',
+        email: dossier.personEmail || '',
+        photoUrl: dossier.personPhotoUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(dossier.personName)}&background=0891b2&color=fff`,
+        socialMediaLinks: dossier.socialMediaLinks || []
+    });
 
     return (
         <>
@@ -62,7 +72,7 @@ const SideMenu: React.FC<SideMenuProps> = ({ isOpen, onClose, history, dossiers,
                             <h3 className="text-cyan-300 font-bold mb-2 font-exo">Saved Dossiers</h3>
                             {dossiers.length > 0 ? (
                                 <div className="space-y-1">
-                                    {dossiers.map(p => <PersonListItem key={`d-${p.id}`} person={p} />)}
+                                    {dossiers.map(d => <PersonListItem key={`d-${d.id}`} person={convertDossierToPerson(d)} />)}
                                 </div>
                             ) : (
                                 <p className="text-sm text-gray-500">No saved dossiers.</p>

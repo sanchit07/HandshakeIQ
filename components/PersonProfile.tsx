@@ -1,9 +1,10 @@
 
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Person, GroundingChunk, Insight, IntelligenceReport } from '../types';
+import { Person, GroundingChunk, Insight, IntelligenceReport, Note } from '../types';
 import { generateIntelligenceReport } from '../services/geminiService';
-import { BackIcon, CommentIcon, CrmIcon, SaveIcon, LinkIcon, ReminderIcon, LinkedInSourceIcon, NewsArticleIcon, BlogPostIcon, BookmarkIcon, ChevronDownIcon, RefreshIcon } from './icons/UIIcons';
+import { BackIcon, CommentIcon, CrmIcon, SaveIcon, LinkIcon, ReminderIcon, LinkedInSourceIcon, NewsArticleIcon, BlogPostIcon, BookmarkIcon, ChevronDownIcon, RefreshIcon, TrashIcon, EditIcon } from './icons/UIIcons';
+import axios from 'axios';
 import { ScanningLoader, ProfileBuildingLoader } from './loaders/NeonLoader';
 
 const LoadingIndicator: React.FC = () => (
@@ -155,7 +156,196 @@ const InsightSection: React.FC<{
 
 
 
-const PersonProfile: React.FC<{ person: Person; onBack: () => void; onSave: (person: Person) => void; }> = ({ person, onBack, onSave }) => {
+interface PersonProfileProps {
+    person: Person;
+    onBack: () => void;
+    onSave: (person: Person, dossierId?: string) => void;
+    dossierId?: string;
+}
+
+const NotesSection: React.FC<{ dossierId?: string }> = ({ dossierId }) => {
+    const [notes, setNotes] = useState<Note[]>([]);
+    const [newNoteContent, setNewNoteContent] = useState('');
+    const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+    const [editContent, setEditContent] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+
+    useEffect(() => {
+        if (dossierId) {
+            fetchNotes();
+        }
+    }, [dossierId]);
+
+    const fetchNotes = async () => {
+        if (!dossierId) return;
+        try {
+            const response = await axios.get(`/api/notes/${dossierId}`);
+            setNotes(response.data);
+        } catch (error) {
+            console.error('Error fetching notes:', error);
+        }
+    };
+
+    const handleAddNote = async () => {
+        if (!dossierId || !newNoteContent.trim()) return;
+        
+        setIsLoading(true);
+        try {
+            const response = await axios.post('/api/notes', {
+                dossierId,
+                content: newNoteContent
+            });
+            setNotes([...notes, response.data]);
+            setNewNoteContent('');
+        } catch (error) {
+            console.error('Error adding note:', error);
+            alert('Failed to add note. Please ensure you have saved the dossier first.');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleUpdateNote = async (noteId: string) => {
+        if (!editContent.trim()) return;
+        
+        setIsLoading(true);
+        try {
+            const response = await axios.put(`/api/notes/${noteId}`, {
+                content: editContent
+            });
+            setNotes(notes.map(n => n.id === noteId ? response.data : n));
+            setEditingNoteId(null);
+            setEditContent('');
+        } catch (error) {
+            console.error('Error updating note:', error);
+            alert('Failed to update note');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const handleDeleteNote = async (noteId: string) => {
+        if (!confirm('Are you sure you want to delete this note?')) return;
+        
+        setIsLoading(true);
+        try {
+            await axios.delete(`/api/notes/${noteId}`);
+            setNotes(notes.filter(n => n.id !== noteId));
+        } catch (error) {
+            console.error('Error deleting note:', error);
+            alert('Failed to delete note');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    const formatNoteTime = (timestamp: string) => {
+        const date = new Date(timestamp);
+        const now = new Date();
+        const diffMs = now.getTime() - date.getTime();
+        const diffMins = Math.floor(diffMs / 60000);
+        
+        if (diffMins < 1) return 'just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        const diffHours = Math.floor(diffMins / 60);
+        if (diffHours < 24) return `${diffHours}h ago`;
+        const diffDays = Math.floor(diffHours / 24);
+        if (diffDays < 7) return `${diffDays}d ago`;
+        return date.toLocaleDateString();
+    };
+
+    return (
+        <div className="p-3 sm:p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg animate-slide-up-fade" style={{animationDelay: '0.3s'}}>
+            <h3 className="font-exo text-base sm:text-lg text-cyan-300 mb-3">Field Notes</h3>
+            
+            <div className="mb-4">
+                <textarea
+                    value={newNoteContent}
+                    onChange={(e) => setNewNoteContent(e.target.value)}
+                    placeholder="Add a note about this person..."
+                    className="w-full px-3 py-2 bg-gray-800/50 border border-cyan-500/30 rounded-lg text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 resize-none"
+                    rows={3}
+                    disabled={isLoading || !dossierId}
+                />
+                <button
+                    onClick={handleAddNote}
+                    disabled={!newNoteContent.trim() || isLoading || !dossierId}
+                    className="mt-2 w-full px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white rounded-lg transition-colors text-sm font-semibold"
+                >
+                    {isLoading ? 'Adding...' : 'Add Note'}
+                </button>
+                {!dossierId && (
+                    <p className="text-xs text-gray-500 mt-2">Save the dossier first to add notes</p>
+                )}
+            </div>
+
+            {notes.length > 0 && (
+                <div className="space-y-3 max-h-80 overflow-y-auto pr-2">
+                    {notes.map((note) => (
+                        <div key={note.id} className="p-3 bg-gray-800/50 border border-cyan-500/20 rounded-lg">
+                            {editingNoteId === note.id ? (
+                                <div>
+                                    <textarea
+                                        value={editContent}
+                                        onChange={(e) => setEditContent(e.target.value)}
+                                        className="w-full px-3 py-2 bg-gray-700/50 border border-cyan-500/30 rounded text-white text-sm resize-none"
+                                        rows={3}
+                                    />
+                                    <div className="flex space-x-2 mt-2">
+                                        <button
+                                            onClick={() => handleUpdateNote(note.id)}
+                                            disabled={isLoading}
+                                            className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-xs"
+                                        >
+                                            Save
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                setEditingNoteId(null);
+                                                setEditContent('');
+                                            }}
+                                            className="px-3 py-1 bg-gray-600 hover:bg-gray-500 text-white rounded text-xs"
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                </div>
+                            ) : (
+                                <>
+                                    <p className="text-gray-300 text-sm">{note.content}</p>
+                                    <div className="flex items-center justify-between mt-2">
+                                        <span className="text-xs text-gray-500">{formatNoteTime(note.createdAt)}</span>
+                                        <div className="flex space-x-2">
+                                            <button
+                                                onClick={() => {
+                                                    setEditingNoteId(note.id);
+                                                    setEditContent(note.content);
+                                                }}
+                                                className="text-cyan-400 hover:text-cyan-300 transition-colors"
+                                                title="Edit note"
+                                            >
+                                                <EditIcon />
+                                            </button>
+                                            <button
+                                                onClick={() => handleDeleteNote(note.id)}
+                                                className="text-red-400 hover:text-red-300 transition-colors"
+                                                title="Delete note"
+                                            >
+                                                <TrashIcon />
+                                            </button>
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+
+const PersonProfile: React.FC<PersonProfileProps> = ({ person, onBack, onSave, dossierId }) => {
     const [report, setReport] = useState<IntelligenceReport | null>(null);
     const [sources, setSources] = useState<GroundingChunk[]>([]);
     const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -311,6 +501,8 @@ const PersonProfile: React.FC<{ person: Person; onBack: () => void; onSave: (per
                                 </div>
                             </div>
                         )}
+
+                        <NotesSection dossierId={dossierId} />
                     </div>
 
                     {/* Right Column - Intel Report */}

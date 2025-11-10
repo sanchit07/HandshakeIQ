@@ -11,42 +11,73 @@ if (!API_KEY) {
 
 const ai = new GoogleGenAI({ apiKey: API_KEY! });
 
-export const generateIntelligenceReport = async (personName: string, company: string): Promise<{ report: IntelligenceReport, sources: any[] }> => {
+export const generateIntelligenceReport = async (
+  personName: string, 
+  company: string, 
+  additionalLinks?: string[]
+): Promise<{ report: IntelligenceReport, sources: any[] }> => {
   try {
+    let contextInfo = '';
+    if (additionalLinks && additionalLinks.length > 0) {
+      contextInfo = `\n\nAdditional context from search results:\n${additionalLinks.join('\n')}`;
+    }
+    
     const prompt = `
       Generate a detailed professional and personal intelligence report for "${personName}", associated with "${company}".
-      Use information available on the public web via Google Search.
+      Use information available on the public web via Google Search.${contextInfo}
+      
       The output MUST be a single, valid JSON object. Do not include any text, code block markers, or formatting outside of the JSON object itself.
-      For each point in the arrays below, you MUST include a "source_indices" field. This field must be an array of zero-based integer indices that correspond to the grounding sources that support the statement in the "text" field.
+      For each point in the arrays below, you MUST include:
+      - "source_indices" field: an array of zero-based integer indices corresponding to grounding sources
+      - "timestamp" field (for recentActivities only): Include actual dates/times when the activity occurred (e.g., "January 2025", "Dec 15, 2024")
+      
       The JSON object must have the following structure:
       {
         "summary": "A brief, one-paragraph summary of the person, synthesizing the most important findings.",
         "professionalBackground": {
           "category": "Professional Background",
           "points": [
-            { "text": "A bullet point about their career, roles, and key achievements.", "confidence": <A number between 0 and 100 representing confidence in this point based on source quality and corroboration>, "source_indices": [<integer index of source>] },
-            { "text": "Another bullet point about their career.", "confidence": <number>, "source_indices": [<integer index>, <another index>] }
+            { 
+              "text": "A bullet point about their career, roles, and key achievements with specific details.", 
+              "confidence": <A number between 0 and 100>, 
+              "source_indices": [<integer index of source>] 
+            }
           ]
         },
         "recentActivities": {
           "category": "Recent Activities & Online Presence",
           "points": [
-            { "text": "A bullet point about recent posts, articles, news, or social media activity.", "confidence": <number>, "source_indices": [<integer index>] }
+            { 
+              "text": "A bullet point about recent posts, articles, news, or social media activity with specific details.", 
+              "confidence": <number>, 
+              "source_indices": [<integer index>],
+              "timestamp": "Month Year or exact date when this occurred"
+            }
           ]
         },
         "personalInterests": {
           "category": "Personal Interests & Hobbies",
           "points": [
-            { "text": "A bullet point about their known hobbies or interests mentioned publicly.", "confidence": <number>, "source_indices": [<integer index>] }
+            { 
+              "text": "A bullet point about their known hobbies or interests mentioned publicly.", 
+              "confidence": <number>, 
+              "source_indices": [<integer index>] 
+            }
           ]
         },
         "discussionPoints": {
           "category": "Potential Discussion Points",
           "points": [
-            { "text": "A bullet point suggesting a relevant conversation starter or topic for a meeting.", "confidence": <number>, "source_indices": [<integer index>] }
+            { 
+              "text": "A bullet point suggesting a relevant conversation starter or topic for a meeting.", 
+              "confidence": <number>, 
+              "source_indices": [<integer index>] 
+            }
           ]
         }
       }
+      
+      Focus on providing actionable, specific, and recent information. Include at least 3-5 points in each category if available.
     `;
     
     const response: GenerateContentResponse = await ai.models.generateContent({
@@ -57,8 +88,8 @@ export const generateIntelligenceReport = async (personName: string, company: st
         },
     });
 
-    const text = response.text;
-    const sources = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    const text = response.response?.text() || '';
+    const sources = response.response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
 
     let report: IntelligenceReport;
     
@@ -125,7 +156,7 @@ export const extractTextFromImage = async (base64Image: string): Promise<{name: 
             }
         });
 
-        const text = response.text;
+        const text = response.response?.text() || '{}';
         const data = JSON.parse(text);
         return { name: data.name || '', company: data.company || '' };
 

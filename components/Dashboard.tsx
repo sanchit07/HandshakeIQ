@@ -1,9 +1,10 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { Person, Meeting, CalendarEvent, CalendarAttendee } from '../types';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import { Person, Meeting, CalendarEvent, CalendarAttendee, PersonSearchResult } from '../types';
 import { SearchIcon, CalendarIcon, CameraIcon } from './icons/UIIcons';
-import { GoogleIcon, ZohoIcon, MicrosoftIcon } from './icons/BrandIcons';
+import { GoogleIcon, ZohoIcon, MicrosoftIcon, LinkedInIcon } from './icons/BrandIcons';
 import { useTodayTomorrowEvents } from '../client/hooks/useCalendar';
 import { useAuth } from '../client/hooks/useAuth';
+import axios from 'axios';
 
 interface DashboardProps {
   meetings: Meeting[];
@@ -24,6 +25,9 @@ const SearchBar: React.FC<{
 }> = ({ people, onSelectPerson, onOpenScanner, initialSearch }) => {
     const [query, setQuery] = useState('');
     const [isFocused, setIsFocused] = useState(false);
+    const [isSearching, setIsSearching] = useState(false);
+    const [searchResults, setSearchResults] = useState<PersonSearchResult[]>([]);
+    const [selectedResult, setSelectedResult] = useState<PersonSearchResult | null>(null);
 
     useEffect(() => {
         if (initialSearch) {
@@ -32,20 +36,52 @@ const SearchBar: React.FC<{
         }
     }, [initialSearch]);
 
-    const filteredPeople = useMemo(() => {
-        if (!query) return [];
-        const lowerCaseQuery = query.toLowerCase();
-        return people.filter(p => 
-            p.name.toLowerCase().includes(lowerCaseQuery) || 
-            p.company.toLowerCase().includes(lowerCaseQuery) ||
-            p.email.toLowerCase().includes(lowerCaseQuery)
-        );
-    }, [query, people]);
+    const performSearch = useCallback(async (searchQuery: string) => {
+        if (!searchQuery || searchQuery.length < 2) {
+            setSearchResults([]);
+            return;
+        }
+        
+        setIsSearching(true);
+        try {
+            const response = await axios.post('/api/search-person', {
+                personName: searchQuery
+            });
+            setSearchResults(response.data.results || []);
+        } catch (error) {
+            console.error('Search error:', error);
+            setSearchResults([]);
+        } finally {
+            setIsSearching(false);
+        }
+    }, []);
 
-    const handleSelect = (person: Person) => {
+    useEffect(() => {
+        const timeoutId = setTimeout(() => {
+            performSearch(query);
+        }, 500);
+        return () => clearTimeout(timeoutId);
+    }, [query, performSearch]);
+
+    const handleSelectSearchResult = (result: PersonSearchResult) => {
+        setSelectedResult(result);
         setQuery('');
-        onSelectPerson(person);
+        setSearchResults([]);
         setIsFocused(false);
+        
+        // Convert PersonSearchResult to Person
+        const person: Person = {
+            id: result.email || `search-${Date.now()}`,
+            name: result.name,
+            title: result.title || '',
+            company: result.company || '',
+            email: result.email || '',
+            photoUrl: result.photoUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(result.name)}&background=0891b2&color=fff`,
+            searchLinks: result.links,
+            socialMediaLinks: result.socialMediaLinks
+        };
+        
+        onSelectPerson(person);
     };
 
     return (
@@ -60,7 +96,7 @@ const SearchBar: React.FC<{
                     onChange={(e) => setQuery(e.target.value)}
                     onFocus={() => setIsFocused(true)}
                     onBlur={() => setTimeout(() => setIsFocused(false), 200)}
-                    placeholder="Search operative by name, company, or email..."
+                    placeholder="Search for anyone by name..."
                     className="w-full pl-10 sm:pl-12 pr-10 sm:pr-12 py-2.5 sm:py-3 bg-gray-900/50 border border-cyan-500/30 rounded-full text-white text-sm sm:text-base placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:shadow-cyan-500/30 transition-all duration-300 shadow-lg shadow-cyan-500/10 animate-pulse-glow"
                 />
                 <button 
@@ -75,34 +111,68 @@ const SearchBar: React.FC<{
                 )}
             </div>
             {isFocused && query && (
-                <div className="z-10 w-full mt-2 bg-gray-900/95 backdrop-blur-md border border-cyan-500/40 rounded-lg shadow-2xl shadow-cyan-500/20 max-h-80 overflow-y-auto animate-slide-down-fade">
-                    {filteredPeople.length > 0 ? (
+                <div className="absolute z-10 w-full mt-2 bg-gray-900/95 backdrop-blur-md border border-cyan-500/40 rounded-lg shadow-2xl shadow-cyan-500/20 max-h-96 overflow-y-auto animate-slide-down-fade">
+                    {isSearching ? (
+                        <div className="p-8 text-center">
+                            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-cyan-400 mx-auto"></div>
+                            <p className="text-cyan-300 mt-3 text-sm">Searching...</p>
+                        </div>
+                    ) : searchResults.length > 0 ? (
                         <>
                             <div className="px-3 py-2 border-b border-cyan-500/20 bg-cyan-900/20">
-                                <p className="text-xs sm:text-sm text-cyan-300 font-exo">Found {filteredPeople.length} operative{filteredPeople.length !== 1 ? 's' : ''}</p>
+                                <p className="text-xs sm:text-sm text-cyan-300 font-exo">Found {searchResults.length} result{searchResults.length !== 1 ? 's' : ''}</p>
                             </div>
-                            {filteredPeople.map((person, index) => (
+                            {searchResults.map((result, index) => (
                                 <div 
-                                    key={person.id} 
-                                    onMouseDown={() => handleSelect(person)} 
-                                    className="flex items-center p-2 sm:p-3 hover:bg-cyan-900/50 cursor-pointer transition-all duration-300 border-b border-cyan-500/10 last:border-b-0 group"
+                                    key={index} 
+                                    onMouseDown={() => handleSelectSearchResult(result)} 
+                                    className="p-3 sm:p-4 hover:bg-cyan-900/50 cursor-pointer transition-all duration-300 border-b border-cyan-500/10 last:border-b-0 group"
                                     style={{animationDelay: `${index * 50}ms`}}
                                 >
-                                    <img src={person.photoUrl} alt={person.name} className="w-10 h-10 sm:w-12 sm:h-12 rounded-full mr-3 sm:mr-4 border-2 border-cyan-600/50 group-hover:border-cyan-400 group-hover:shadow-lg group-hover:shadow-cyan-500/30 transition-all duration-300" />
-                                    <div className="flex-1 min-w-0">
-                                        <p className="font-bold text-white text-sm sm:text-base truncate">{person.name}</p>
-                                        <p className="text-xs sm:text-sm text-cyan-300 truncate">{person.title} at {person.company}</p>
-                                    </div>
-                                    <div className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                                        <span className="text-cyan-400">→</span>
+                                    <div className="flex items-start space-x-3">
+                                        <img 
+                                            src={result.photoUrl || `https://ui-avatars.com/api/?name=${encodeURIComponent(result.name)}&background=0891b2&color=fff`} 
+                                            alt={result.name} 
+                                            className="w-12 h-12 sm:w-14 sm:h-14 rounded-full border-2 border-cyan-600/50 group-hover:border-cyan-400 group-hover:shadow-lg group-hover:shadow-cyan-500/30 transition-all duration-300 flex-shrink-0" 
+                                        />
+                                        <div className="flex-1 min-w-0">
+                                            <p className="font-bold text-white text-sm sm:text-base">{result.name}</p>
+                                            {result.title && result.company && (
+                                                <p className="text-xs sm:text-sm text-cyan-300 mt-0.5">{result.title} at {result.company}</p>
+                                            )}
+                                            {result.snippet && (
+                                                <p className="text-xs text-gray-400 mt-1 line-clamp-2">{result.snippet}</p>
+                                            )}
+                                            {result.socialMediaLinks.length > 0 && (
+                                                <div className="flex items-center space-x-2 mt-2">
+                                                    {result.socialMediaLinks.slice(0, 3).map((link, idx) => (
+                                                        <span key={idx} className="text-cyan-400 text-xs" title={link.platform}>
+                                                            {link.platform === 'linkedin' && '💼'}
+                                                            {link.platform === 'twitter' && '🐦'}
+                                                            {link.platform === 'github' && '💻'}
+                                                            {link.platform === 'facebook' && '👤'}
+                                                            {link.platform === 'instagram' && '📷'}
+                                                            {!['linkedin', 'twitter', 'github', 'facebook', 'instagram'].includes(link.platform) && '🔗'}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                                            <span className="text-cyan-400 text-xl">→</span>
+                                        </div>
                                     </div>
                                 </div>
                             ))}
                         </>
+                    ) : query.length >= 2 ? (
+                        <div className="p-6 text-center">
+                            <p className="text-gray-400 text-sm sm:text-base">No results found for "{query}"</p>
+                            <p className="text-xs text-gray-500 mt-1">Try a different name or spelling</p>
+                        </div>
                     ) : (
-                        <div className="p-4 text-center">
-                            <p className="text-gray-400 text-sm sm:text-base">No operatives found matching "{query}"</p>
-                            <p className="text-xs text-gray-500 mt-1">Try searching by name, company, or email</p>
+                        <div className="p-6 text-center">
+                            <p className="text-gray-400 text-sm">Type at least 2 characters to search</p>
                         </div>
                     )}
                 </div>

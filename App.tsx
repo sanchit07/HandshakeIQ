@@ -6,21 +6,28 @@ import SettingsScreen from './components/SettingsScreen';
 import CardScanner from './components/CardScanner';
 import SideMenu from './components/SideMenu';
 import UpcomingMeetings from './components/UpcomingMeetings';
-import { Person, CalendarAttendee } from './types';
+import SaveConfirmation from './components/modals/SaveConfirmation';
+import { Person, CalendarAttendee, Dossier, IntelligenceReport, GroundingChunk, SocialMediaLink } from './types';
 import { MOCK_PEOPLE, MOCK_MEETINGS } from './constants';
 import { MovingWallsLogo, HandshakeIQLogo } from './components/icons/Logos';
 import { MenuIcon } from './components/icons/UIIcons';
 import { useAuth } from './client/hooks/useAuth';
+import axios from 'axios';
 
 const App: React.FC = () => {
   const { user, isLoading, isAuthenticated, isGuest, hasError } = useAuth();
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
+  const [currentDossierId, setCurrentDossierId] = useState<string | undefined>(undefined);
+  const [currentReport, setCurrentReport] = useState<IntelligenceReport | undefined>(undefined);
+  const [currentSources, setCurrentSources] = useState<GroundingChunk[]>([]);
   const [view, setView] = useState<'dashboard' | 'profile' | 'settings' | 'scanner' | 'login' | 'upcoming-meetings'>('dashboard');
   const [scannedSearchTerm, setScannedSearchTerm] = useState<string>('');
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [searchHistory, setSearchHistory] = useState<Person[]>([]);
-  const [savedDossiers, setSavedDossiers] = useState<Person[]>([]);
+  const [savedDossiers, setSavedDossiers] = useState<Dossier[]>([]);
   const [guestMode, setGuestMode] = useState<boolean>(false);
+  const [showSaveConfirmation, setShowSaveConfirmation] = useState<boolean>(false);
+  const [isSavingDossier, setIsSavingDossier] = useState<boolean>(false);
 
   const handleLogout = useCallback(() => {
     window.location.href = '/api/logout';
@@ -39,7 +46,7 @@ const App: React.FC = () => {
     setView('dashboard');
   }, []);
 
-  const handleSaveDossier = useCallback((person: Person) => {
+  const handleSaveDossier = useCallback(async (person: Person, dossierId?: string) => {
     // Require authentication for saving
     if (guestMode || !isAuthenticated) {
       // Show login prompt and clear guest mode
@@ -49,13 +56,37 @@ const App: React.FC = () => {
       return;
     }
     
-    setSavedDossiers(prev => {
-        if (prev.find(p => p.id === person.id)) {
-            return prev; // Already saved
-        }
-        return [...prev, person];
-    });
-  }, [guestMode, isAuthenticated]);
+    setIsSavingDossier(true);
+    try {
+      const response = await axios.post('/api/dossiers', {
+        personName: person.name,
+        personTitle: person.title,
+        personCompany: person.company,
+        personEmail: person.email,
+        personPhotoUrl: person.photoUrl,
+        intelligenceReport: currentReport,
+        sources: currentSources,
+        socialMediaLinks: person.socialMediaLinks,
+        searchQuery: person.name
+      });
+      
+      const savedDossier: Dossier = response.data;
+      setCurrentDossierId(savedDossier.id);
+      setShowSaveConfirmation(true);
+      
+      // Update saved dossiers list
+      setSavedDossiers(prev => {
+        const exists = prev.find(d => d.id === savedDossier.id);
+        if (exists) return prev;
+        return [savedDossier, ...prev];
+      });
+    } catch (error) {
+      console.error('Error saving dossier:', error);
+      alert('Failed to save dossier. Please try again.');
+    } finally {
+      setIsSavingDossier(false);
+    }
+  }, [guestMode, isAuthenticated, currentReport, currentSources]);
 
   const handleOpenScanner = useCallback(() => setView('scanner'), []);
   const handleCloseScanner = useCallback((searchTerm?: string) => {
@@ -190,7 +221,7 @@ const App: React.FC = () => {
                   isProfileVisible ? 'transform translate-x-0 opacity-100 scale-100' : 'transform translate-x-full opacity-0 scale-95'
                 }`}
               >
-                {selectedPerson && <PersonProfile person={selectedPerson} onBack={handleBackToDashboard} onSave={handleSaveDossier} />}
+                {selectedPerson && <PersonProfile person={selectedPerson} onBack={handleBackToDashboard} onSave={handleSaveDossier} dossierId={currentDossierId} />}
               </div>
                <div
                 className={`absolute top-0 left-0 w-full h-full transition-all duration-500 ease-in-out ${
@@ -223,6 +254,11 @@ const App: React.FC = () => {
                 onLogout={handleLogout}
             />
         )}
+        <SaveConfirmation 
+          isOpen={showSaveConfirmation} 
+          onClose={() => setShowSaveConfirmation(false)} 
+          personName={selectedPerson?.name || ''}
+        />
       </div>
     </div>
   );
