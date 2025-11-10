@@ -113,13 +113,13 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen text-cyan-200 animated-background">
-      <div className="relative isolate min-h-screen flex flex-col p-4 sm:p-6 lg:p-8">
-        <header className="flex justify-between items-center mb-6 z-30 px-4 py-2 bg-black/20 backdrop-blur-sm border-b border-cyan-500/10 rounded-lg">
-          <div className="flex items-center space-x-4">
+      <div className="relative isolate min-h-screen flex flex-col p-2 sm:p-4 lg:p-6">
+        <header className="flex justify-between items-center mb-4 sm:mb-6 z-30 px-3 sm:px-4 py-2 sm:py-3 bg-black/20 backdrop-blur-sm border-b border-cyan-500/10 rounded-lg animate-slide-down-fade">
+          <div className="flex items-center space-x-2 sm:space-x-4">
             <HandshakeIQLogo />
-            <h1 className="font-exo text-xl md:text-2xl font-bold text-white tracking-widest">HandshakeIQ</h1>
+            <h1 className="font-exo text-base sm:text-xl md:text-2xl font-bold text-white tracking-wider sm:tracking-widest">HandshakeIQ</h1>
           </div>
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2 sm:space-x-4">
             {showAppContent && (
               <>
                 {guestMode && (

@@ -44,16 +44,16 @@ const MeetingCard: React.FC<{
   const hasMoreAttendees = event.attendees.length > 5;
 
   return (
-    <div className="bg-black/30 border border-cyan-500/20 rounded-lg p-4 hover:border-cyan-400/40 transition-all animate-fade-in">
-      <div className="flex items-start justify-between mb-3">
-        <div className="flex-1">
-          <h3 className="text-lg font-semibold text-white mb-1">{event.summary}</h3>
-          <p className="text-sm text-cyan-300 flex items-center gap-2">
+    <div className="bg-black/30 border border-cyan-500/20 rounded-lg p-3 sm:p-4 hover:border-cyan-400/40 transition-all animate-fade-in">
+      <div className="flex items-start justify-between mb-2 sm:mb-3">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-base sm:text-lg font-semibold text-white mb-1 truncate">{event.summary}</h3>
+          <p className="text-xs sm:text-sm text-cyan-300 flex items-center gap-1 sm:gap-2">
             <CalendarIcon />
-            {formatDateTime(event.start)}
+            <span className="truncate">{formatDateTime(event.start)}</span>
           </p>
           {event.location && (
-            <p className="text-sm text-gray-400 mt-1">📍 {event.location}</p>
+            <p className="text-xs sm:text-sm text-gray-400 mt-1 truncate">📍 {event.location}</p>
           )}
         </div>
       </div>
@@ -63,18 +63,18 @@ const MeetingCard: React.FC<{
           <p className="text-xs text-gray-400 mb-2">
             Participants ({event.attendees.length})
           </p>
-          <div className="space-y-2">
+          <div className="space-y-1.5 sm:space-y-2">
             {attendeesToShow.map((attendee, index) => (
               <button
                 key={index}
                 onClick={() => onSelectAttendee(attendee)}
-                className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-cyan-900/30 transition-colors group text-left"
+                className="w-full flex items-center gap-2 sm:gap-3 p-2 rounded-lg hover:bg-cyan-900/30 transition-colors group text-left"
               >
-                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-semibold text-sm">
+                <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-semibold text-xs sm:text-sm neon-glow flex-shrink-0">
                   {(attendee.displayName || attendee.email || '?')[0].toUpperCase()}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white group-hover:text-cyan-300 transition-colors truncate">
+                  <p className="text-xs sm:text-sm text-white group-hover:text-cyan-300 transition-colors truncate">
                     {attendee.displayName || attendee.email}
                   </p>
                   {attendee.email && attendee.displayName && (
@@ -82,12 +82,12 @@ const MeetingCard: React.FC<{
                   )}
                 </div>
                 {attendee.organizer && (
-                  <span className="text-xs bg-cyan-600/30 text-cyan-300 px-2 py-1 rounded">
+                  <span className="text-xs bg-cyan-600/30 text-cyan-300 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded whitespace-nowrap">
                     Organizer
                   </span>
                 )}
                 {attendee.optional && (
-                  <span className="text-xs bg-gray-600/30 text-gray-300 px-2 py-1 rounded">
+                  <span className="text-xs bg-gray-600/30 text-gray-300 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded whitespace-nowrap">
                     Optional
                   </span>
                 )}
@@ -112,17 +112,17 @@ const UpcomingMeetings: React.FC<UpcomingMeetingsProps> = ({ onBack, onSelectAtt
   const { data: events, isLoading, error } = useUpcomingEvents(30);
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
-      <div className="flex items-center mb-6 animate-slide-down-fade">
+    <div className="h-full flex flex-col overflow-hidden p-3 sm:p-4">
+      <div className="flex items-center mb-4 sm:mb-6 animate-slide-down-fade">
         <button
           onClick={onBack}
-          className="mr-4 p-2 hover:bg-cyan-500/20 rounded-full transition-colors group"
+          className="mr-2 sm:mr-4 p-2 hover:bg-cyan-500/20 rounded-full transition-colors group"
           aria-label="Go back"
         >
           <BackIcon />
         </button>
         <div>
-          <h1 className="font-exo text-3xl font-bold text-white">Upcoming Meetings</h1>
+          <h1 className="font-exo text-xl sm:text-3xl font-bold text-white">Upcoming Meetings</h1>
           <p className="text-cyan-300 text-sm mt-1">Next 30 days from your Google Calendar</p>
         </div>
       </div>

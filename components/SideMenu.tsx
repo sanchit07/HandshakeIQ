@@ -39,10 +39,10 @@ const SideMenu: React.FC<SideMenuProps> = ({ isOpen, onClose, history, dossiers,
                 className={`fixed inset-0 bg-black/60 z-30 transition-opacity duration-300 ${isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
                 onClick={onClose}
             ></div>
-            <aside className={`fixed top-0 right-0 h-full w-[280px] bg-gray-900/90 backdrop-blur-lg border-l border-cyan-500/20 z-40
-                             transform transition-transform duration-300 ease-in-out ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}>
-                <div className="h-full flex flex-col p-4">
-                    <h2 className="font-exo text-xl text-white mb-6">Navigation</h2>
+            <aside className={`fixed top-0 right-0 h-full w-[280px] sm:w-[320px] bg-gray-900/95 backdrop-blur-lg border-l border-cyan-500/20 z-40
+                             transform transition-transform duration-300 ease-in-out shadow-2xl shadow-black/50 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+                <div className="h-full flex flex-col p-3 sm:p-4">
+                    <h2 className="font-exo text-lg sm:text-xl text-white mb-4 sm:mb-6">Navigation</h2>
                     
                     <div className="flex-grow overflow-y-auto pr-2 space-y-6">
                         {/* Search History */}

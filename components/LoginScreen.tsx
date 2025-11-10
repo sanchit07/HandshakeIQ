@@ -61,20 +61,20 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest }) => {
   };
 
   return (
-    <div className="flex items-center justify-center h-full relative">
+    <div className="flex items-center justify-center h-full relative p-4">
       <div 
         className="absolute inset-0 bg-cover bg-center opacity-20"
         style={{ backgroundImage: "url('/generated_images/Professional_meeting_intelligence_background_cd6dfd30.png')" }}
       />
       <div className="absolute inset-0 bg-gradient-to-b from-transparent via-black/40 to-black/60" />
-      <div className="relative w-full max-w-md p-8 space-y-6 bg-black/40 rounded-2xl shadow-2xl shadow-cyan-500/10 border border-cyan-500/20 backdrop-blur-xl animate-slide-up-fade">
+      <div className="relative w-full max-w-md p-6 sm:p-8 space-y-4 sm:space-y-6 bg-black/40 rounded-2xl shadow-2xl shadow-cyan-500/10 border border-cyan-500/20 backdrop-blur-xl animate-slide-up-fade">
         {view === 'login' ? (
           <>
             <div className="text-center">
-              <h2 className="font-exo text-3xl font-bold text-white">Access Terminal</h2>
-              <p className="mt-2 text-cyan-300">Authenticate for full access</p>
+              <h2 className="font-exo text-2xl sm:text-3xl font-bold text-white">Access Terminal</h2>
+              <p className="mt-2 text-sm sm:text-base text-cyan-300">Authenticate for full access</p>
             </div>
-            <div className="space-y-3">
+            <div className="space-y-2 sm:space-y-3">
               <LoginButton icon={<GoogleIcon />} label="Sign in with Google" href="/api/login" />
               <LoginButton icon={<ZohoIcon />} label="Sign in with Zoho" href="/api/login/zoho" />
             </div>
