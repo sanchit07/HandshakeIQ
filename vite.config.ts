@@ -25,7 +25,9 @@ export default defineConfig(({ mode }) => {
         alias: {
           '@': path.resolve(__dirname, '.'),
           '@shared': path.resolve(__dirname, './shared'),
+          '@assets': path.resolve(__dirname, './attached_assets'),
         }
-      }
+      },
+      publicDir: 'attached_assets'
     };
 });

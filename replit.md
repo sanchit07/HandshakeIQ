@@ -103,7 +103,14 @@ The app requires a **GEMINI_API_KEY** environment variable to function. This key
 - **sessions**: Manages active user sessions (connect-pg-simple)
 
 ## Recent Changes
-- **2024-11-10 (Latest)**: Google Calendar integration complete
+- **2024-11-10 (Latest)**: Branding and visual enhancements
+  - Replaced text logo with actual Moving Walls logo image
+  - Added professional meeting intelligence background to login screen
+  - Generated custom background image with blurred office/meeting room aesthetic
+  - Configured Vite to serve assets from attached_assets directory
+  - All logos and images maintain proper aspect ratios
+  
+- **2024-11-10 (Earlier)**: Google Calendar integration complete
   - Added `calendar.readonly` scope to Google OAuth
   - Installed googleapis package for Calendar API access
   - Created CalendarService to fetch real meetings from Google Calendar

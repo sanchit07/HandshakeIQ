@@ -61,8 +61,13 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest }) => {
   };
 
   return (
-    <div className="flex items-center justify-center h-full">
-      <div className="w-full max-w-md p-8 space-y-6 bg-black/30 rounded-2xl shadow-2xl shadow-cyan-500/10 border border-cyan-500/20 backdrop-blur-lg animate-slide-up-fade">
+    <div className="flex items-center justify-center h-full relative">
+      <div 
+        className="absolute inset-0 bg-cover bg-center opacity-20"
+        style={{ backgroundImage: "url('/generated_images/Professional_meeting_intelligence_background_cd6dfd30.png')" }}
+      />
+      <div className="absolute inset-0 bg-gradient-to-b from-transparent via-black/40 to-black/60" />
+      <div className="relative w-full max-w-md p-8 space-y-6 bg-black/40 rounded-2xl shadow-2xl shadow-cyan-500/10 border border-cyan-500/20 backdrop-blur-xl animate-slide-up-fade">
         {view === 'login' ? (
           <>
             <div className="text-center">
