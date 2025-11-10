@@ -1,6 +1,6 @@
 import React from 'react';
 import { Person } from '../types';
-import { RefreshIcon, SettingsIcon, LogoutIcon } from './icons/UIIcons';
+import { RefreshIcon, SettingsIcon, LogoutIcon, CalendarIcon } from './icons/UIIcons';
 
 interface SideMenuProps {
     isOpen: boolean;
@@ -10,10 +10,11 @@ interface SideMenuProps {
     onSelectPerson: (person: Person) => void;
     onRefreshPerson: (person: Person) => void;
     onGoToSettings: () => void;
+    onGoToUpcomingMeetings: () => void;
     onLogout: () => void;
 }
 
-const SideMenu: React.FC<SideMenuProps> = ({ isOpen, onClose, history, dossiers, onSelectPerson, onRefreshPerson, onGoToSettings, onLogout }) => {
+const SideMenu: React.FC<SideMenuProps> = ({ isOpen, onClose, history, dossiers, onSelectPerson, onRefreshPerson, onGoToSettings, onGoToUpcomingMeetings, onLogout }) => {
     
     const PersonListItem: React.FC<{person: Person, onRefresh?: (person: Person) => void}> = ({person, onRefresh}) => (
         <div className="flex items-center justify-between p-2 rounded-md hover:bg-cyan-900/50 group">
@@ -70,6 +71,9 @@ const SideMenu: React.FC<SideMenuProps> = ({ isOpen, onClose, history, dossiers,
                     </div>
                     
                     <div className="flex-shrink-0 border-t border-cyan-500/20 pt-4 space-y-2">
+                        <button onClick={onGoToUpcomingMeetings} className="w-full flex items-center space-x-3 px-4 py-2 text-cyan-200 hover:bg-cyan-800/60 rounded transition-colors text-left">
+                            <CalendarIcon /> <span>Upcoming Meetings</span>
+                        </button>
                         <button onClick={onGoToSettings} className="w-full flex items-center space-x-3 px-4 py-2 text-cyan-200 hover:bg-cyan-800/60 rounded transition-colors text-left">
                             <SettingsIcon /> <span>Settings</span>
                         </button>

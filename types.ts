@@ -7,6 +7,31 @@ export interface Person {
   email: string;
 }
 
+export interface CalendarAttendee {
+  email?: string;
+  displayName?: string;
+  responseStatus?: string;
+  organizer?: boolean;
+  optional?: boolean;
+  self?: boolean;
+}
+
+export interface CalendarEvent {
+  id: string;
+  summary: string;
+  description?: string;
+  start: string;
+  end: string;
+  location?: string;
+  attendees: CalendarAttendee[];
+  organizer?: {
+    email?: string;
+    displayName?: string;
+  };
+  status?: string;
+  htmlLink?: string;
+}
+
 export interface Meeting {
   id:string;
   title: string;

@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupGoogleAuth, requireAuth, attachSessionIfPresent } from "./googleAuth";
 import { generateIntelligenceReport, extractTextFromImage } from "../services/geminiService";
+import { CalendarService } from "../services/calendarService";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Setup Google OAuth authentication
@@ -53,6 +54,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error extracting card text:", error);
       res.status(500).json({ message: "Failed to extract card text" });
+    }
+  });
+
+  // Calendar API routes - REQUIRE AUTH
+  app.get('/api/calendar/today-tomorrow', requireAuth, async (req: any, res) => {
+    try {
+      const user = req.session.user;
+      if (!user.accessToken) {
+        return res.status(401).json({ message: "No access token available" });
+      }
+
+      const calendarService = new CalendarService(user.accessToken, user.refreshToken);
+      const events = await calendarService.getTodayAndTomorrowEvents();
+      res.json(events);
+    } catch (error) {
+      console.error("Error fetching today/tomorrow events:", error);
+      res.status(500).json({ message: "Failed to fetch calendar events" });
+    }
+  });
+
+  app.get('/api/calendar/upcoming', requireAuth, async (req: any, res) => {
+    try {
+      const user = req.session.user;
+      if (!user.accessToken) {
+        return res.status(401).json({ message: "No access token available" });
+      }
+
+      const days = parseInt(req.query.days as string) || 30;
+      const calendarService = new CalendarService(user.accessToken, user.refreshToken);
+      const events = await calendarService.getUpcomingEvents(days);
+      res.json(events);
+    } catch (error) {
+      console.error("Error fetching upcoming events:", error);
+      res.status(500).json({ message: "Failed to fetch calendar events" });
     }
   });
 

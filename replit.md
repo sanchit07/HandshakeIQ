@@ -17,7 +17,7 @@ HandshakeIQ is an AI-powered professional intelligence platform that helps users
 ## Project Structure
 ```
 ├── client/              # Frontend utilities
-│   ├── hooks/          # React hooks (useAuth)
+│   ├── hooks/          # React hooks (useAuth, useCalendar)
 │   └── lib/            # Client libraries (React Query)
 ├── components/          # React components
 │   ├── icons/          # Icon components (brand and UI)
@@ -27,7 +27,8 @@ HandshakeIQ is an AI-powered professional intelligence platform that helps users
 │   ├── LoginScreen.tsx # Real authentication UI
 │   ├── PersonProfile.tsx
 │   ├── SettingsScreen.tsx
-│   └── SideMenu.tsx
+│   ├── SideMenu.tsx
+│   └── UpcomingMeetings.tsx  # Calendar view
 ├── server/              # Express backend
 │   ├── db.ts           # Drizzle database connection
 │   ├── index.ts        # Express server setup
@@ -35,7 +36,8 @@ HandshakeIQ is an AI-powered professional intelligence platform that helps users
 │   ├── routes.ts       # API route handlers
 │   └── storage.ts      # User data operations
 ├── services/
-│   └── geminiService.ts
+│   ├── geminiService.ts
+│   └── calendarService.ts  # Google Calendar API
 ├── shared/
 │   └── schema.ts       # Database schema (users, sessions)
 ├── App.tsx
@@ -61,11 +63,14 @@ HandshakeIQ is an AI-powered professional intelligence platform that helps users
 2. **Conditional Authentication**: Login only required for advanced features (save insights, calendar sync)
 3. **Google OAuth**: Direct Google Sign-In with secure session management
 4. **Session Management**: PostgreSQL-backed sessions with automatic token refresh
-5. **Dashboard**: View upcoming meetings and search for people
-6. **AI Intelligence Reports**: Generate comprehensive profiles using Gemini with web search (no auth required)
-7. **Business Card Scanner**: Extract contact info from business card images using Gemini vision (no auth required)
-8. **Person Profiles**: Detailed view with professional background, activities, interests, and discussion points
-9. **Protected Features**: Save dossiers and calendar sync require authentication
+5. **Dashboard**: View today/tomorrow's meetings and search for people
+6. **Google Calendar Integration**: Real-time calendar sync showing meetings with clickable participants (authenticated users only)
+7. **Upcoming Meetings Page**: Dedicated view showing next 30 days of calendar events with full participant lists
+8. **AI Intelligence Reports**: Generate comprehensive profiles using Gemini with web search (no auth required)
+9. **Business Card Scanner**: Extract contact info from business card images using Gemini vision (no auth required)
+10. **Person Profiles**: Detailed view with professional background, activities, interests, and discussion points
+11. **Protected Features**: Save dossiers and calendar sync require authentication
+12. **Clickable Meeting Participants**: Click any attendee from calendar meetings to generate AI insights about them
 
 ## Authentication Flow
 
@@ -98,7 +103,20 @@ The app requires a **GEMINI_API_KEY** environment variable to function. This key
 - **sessions**: Manages active user sessions (connect-pg-simple)
 
 ## Recent Changes
-- **2024-11-10 (Latest)**: Implemented guest mode with conditional authentication
+- **2024-11-10 (Latest)**: Google Calendar integration complete
+  - Added `calendar.readonly` scope to Google OAuth
+  - Installed googleapis package for Calendar API access
+  - Created CalendarService to fetch real meetings from Google Calendar
+  - Added two API endpoints: `/api/calendar/today-tomorrow` and `/api/calendar/upcoming`
+  - Updated Dashboard to show today/tomorrow's meetings (authenticated users only)
+  - Created UpcomingMeetings component for dedicated calendar view (next 30 days)
+  - Added "Upcoming Meetings" option to side menu
+  - Implemented clickable meeting participants with AI insight generation
+  - Meeting attendees convert to Person objects for seamless profile viewing
+  - Calendar events include meeting title, time, location, and all participants
+  - Test Zoho login route added for testing authenticated features (mock user: Sanchit Neema)
+  
+- **2024-11-10 (Earlier)**: Implemented guest mode with conditional authentication
   - Added "Continue as Guest" button for immediate access to core features
   - Removed authentication requirement from intelligence reports and card scanning
   - Implemented two-tier middleware: `attachSessionIfPresent` (optional) and `requireAuth` (strict)

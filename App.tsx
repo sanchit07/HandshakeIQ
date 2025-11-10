@@ -5,7 +5,8 @@ import PersonProfile from './components/PersonProfile';
 import SettingsScreen from './components/SettingsScreen';
 import CardScanner from './components/CardScanner';
 import SideMenu from './components/SideMenu';
-import { Person } from './types';
+import UpcomingMeetings from './components/UpcomingMeetings';
+import { Person, CalendarAttendee } from './types';
 import { MOCK_PEOPLE, MOCK_MEETINGS } from './constants';
 import { MovingWallsLogo, HandshakeIQLogo } from './components/icons/Logos';
 import { MenuIcon } from './components/icons/UIIcons';
@@ -14,7 +15,7 @@ import { useAuth } from './client/hooks/useAuth';
 const App: React.FC = () => {
   const { user, isLoading, isAuthenticated, isGuest, hasError } = useAuth();
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
-  const [view, setView] = useState<'dashboard' | 'profile' | 'settings' | 'scanner' | 'login'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'profile' | 'settings' | 'scanner' | 'login' | 'upcoming-meetings'>('dashboard');
   const [scannedSearchTerm, setScannedSearchTerm] = useState<string>('');
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [searchHistory, setSearchHistory] = useState<Person[]>([]);
@@ -68,6 +69,26 @@ const App: React.FC = () => {
     setView('settings');
     setIsMenuOpen(false);
   }, []);
+  
+  const handleGoToUpcomingMeetings = useCallback(() => {
+    setView('upcoming-meetings');
+    setIsMenuOpen(false);
+  }, []);
+  
+  const handleSelectAttendee = useCallback((attendee: CalendarAttendee) => {
+    // Convert CalendarAttendee to Person for profile view
+    const person: Person = {
+      id: attendee.email || `attendee-${Date.now()}`,
+      name: attendee.displayName || attendee.email?.split('@')[0] || 'Unknown',
+      email: attendee.email || '',
+      title: '', // Will be filled by AI intelligence report
+      company: attendee.email?.split('@')[1] || '',
+      photoUrl: `https://ui-avatars.com/api/?name=${encodeURIComponent(attendee.displayName || attendee.email || 'U')}&background=0891b2&color=fff`
+    };
+    setSelectedPerson(person);
+    setView('profile');
+    setSearchHistory(prev => [person, ...prev.filter(p => p.id !== person.id)].slice(0, 10));
+  }, []);
 
   const handleBackToDashboard = useCallback(() => {
     setView('dashboard');
@@ -77,6 +98,7 @@ const App: React.FC = () => {
 
   const isProfileVisible = view === 'profile';
   const isSettingsVisible = view === 'settings';
+  const isUpcomingMeetingsVisible = view === 'upcoming-meetings';
   const isLoginVisible = view === 'login';
   
   // Show app content if authenticated OR in guest mode
@@ -151,13 +173,15 @@ const App: React.FC = () => {
             <LoginScreen onContinueAsGuest={handleContinueAsGuest} />
           ) : showAppContent ? (
             <div className="relative w-full h-full">
-               <div className={`transition-all duration-500 ease-in-out ${isProfileVisible || isSettingsVisible ? 'transform -translate-x-full opacity-0 scale-95' : 'transform translate-x-0 opacity-100 scale-100'}`}>
+               <div className={`transition-all duration-500 ease-in-out ${isProfileVisible || isSettingsVisible || isUpcomingMeetingsVisible ? 'transform -translate-x-full opacity-0 scale-95' : 'transform translate-x-0 opacity-100 scale-100'}`}>
                 <Dashboard
                   meetings={MOCK_MEETINGS}
                   people={MOCK_PEOPLE}
                   onSelectPerson={handleSelectPerson}
                   onOpenScanner={handleOpenScanner}
                   onGoToSettings={handleGoToSettings}
+                  onGoToUpcomingMeetings={handleGoToUpcomingMeetings}
+                  onSelectAttendee={handleSelectAttendee}
                   initialSearch={scannedSearchTerm}
                 />
               </div>
@@ -175,6 +199,13 @@ const App: React.FC = () => {
               >
                 <SettingsScreen userEmail={(user as any)?.email || ''} onBack={handleBackToDashboard} />
               </div>
+              <div
+                className={`absolute top-0 left-0 w-full h-full transition-all duration-500 ease-in-out ${
+                  isUpcomingMeetingsVisible ? 'transform translate-x-0 opacity-100 scale-100' : 'transform translate-x-full opacity-0 scale-95'
+                }`}
+              >
+                <UpcomingMeetings onBack={handleBackToDashboard} onSelectAttendee={handleSelectAttendee} />
+              </div>
             </div>
           ) : null}
         </main>
@@ -188,6 +219,7 @@ const App: React.FC = () => {
                 onSelectPerson={handleSelectPerson}
                 onRefreshPerson={handleSelectPerson} // For now, refresh just re-selects
                 onGoToSettings={handleGoToSettings}
+                onGoToUpcomingMeetings={handleGoToUpcomingMeetings}
                 onLogout={handleLogout}
             />
         )}
