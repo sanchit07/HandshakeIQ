@@ -44,6 +44,46 @@ HandshakeIQ utilizes a full-stack architecture with a React 19 (TypeScript) fron
 
 ## Recent Changes
 
+### 2025-11-10: Enhanced Search UX - Progressive Guidance, Keyword Locking & Sci-Fi Loader
+- **Opaque Search Dropdown**:
+  - Changed from semi-transparent `bg-gray-900/95` to solid `bg-gray-900`
+  - Improved readability and visual hierarchy
+  
+- **Progressive Guidance Messages**:
+  - **< 3 characters**: Shows character count and "Type at least 3 characters"
+  - **3+ characters**: Displays "Press Enter to search" with keyboard visual
+  - **Helpful tip**: "💡 Tip: Add company name for better accuracy"
+  - Smart, context-aware messaging guides users through search flow
+  
+- **Locked Keyword During Search**:
+  - Search query "locks" when API call is in progress
+  - Displays locked keyword in animated badge: `Locked: "query"`
+  - Pulsing cyan dot indicator shows active state
+  - Input field disabled with visual feedback (reduced opacity, cursor-not-allowed)
+  - Prevents query modification during search execution
+  
+- **Sci-Fi Dual-Spinner Loader**:
+  - Outer spinner rotates clockwise (cyan border-top)
+  - Inner spinner rotates counter-clockwise (cyan border-bottom)
+  - Animated text: "Scanning the web..." with pulse effect
+  - Subtitle: "Searching LinkedIn, Twitter, GitHub & more"
+  - Locked keyword badge appears below loader
+  - Added `animate-spin-reverse` CSS animation
+  
+- **Improved Profile Cards**:
+  - **Thumbnail**: Left-aligned circular photo (12x12/14x14 responsive)
+  - **Name**: Bold, white, larger font with bottom margin for separation
+  - **Designation**: Cyan color on separate line
+  - **Company**: Gray text with 📍 icon, clearly separated on new line
+  - **Social Links**: Bottom row with platform-specific icons
+  - Proper visual hierarchy with clear segregation between elements
+  
+- **Google Search API Key Fix**:
+  - Resolved invalid API key issue
+  - Updated to working key: `AIzaSyCOxY-Zkt6WhikSHR3prwCZz4hUxLME4MQ`
+  - Search functionality now fully operational
+  - Comprehensive results from LinkedIn, Twitter, Instagram, Wikipedia, GitHub, etc.
+
 ### 2024-11-10: Search UX Improvements - Enter Key Search & Menu Overlay Fix
 - **Z-Index Hierarchy Overhaul**:
   - Fixed menu overlapping with search results dropdown
