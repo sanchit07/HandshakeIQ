@@ -101,6 +101,14 @@
         animation: spin-fast 0.8s linear infinite;
       }
 
+      @keyframes spin-reverse {
+        from { transform: rotate(360deg); }
+        to { transform: rotate(0deg); }
+      }
+      .animate-spin-reverse {
+        animation: spin-reverse 1.5s linear infinite;
+      }
+
       @keyframes shimmer {
         0% { transform: translateX(-100%); }
         100% { transform: translateX(100%); }

@@ -114,11 +114,25 @@ const SearchBar: React.FC<{
                 )}
             </div>
             {(isFocused || isSearching) && (query || searchResults.length > 0) && (
-                <div className="absolute z-50 w-full mt-2 bg-gray-900/95 backdrop-blur-md border border-cyan-500/40 rounded-lg shadow-2xl shadow-cyan-500/20 max-h-96 overflow-y-auto animate-slide-down-fade">
+                <div className="absolute z-50 w-full mt-2 bg-gray-900 backdrop-blur-md border border-cyan-500/40 rounded-lg shadow-2xl shadow-cyan-500/20 max-h-96 overflow-y-auto animate-slide-down-fade">
                     {isSearching ? (
                         <div className="p-8 text-center">
-                            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-cyan-400 mx-auto"></div>
-                            <p className="text-cyan-300 mt-3 text-sm">Searching...</p>
+                            <div className="relative">
+                                <div className="w-16 h-16 border-4 border-cyan-500/20 border-t-cyan-400 rounded-full animate-spin mx-auto"></div>
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                    <div className="w-10 h-10 border-4 border-cyan-400/20 border-b-cyan-300 rounded-full animate-spin-reverse"></div>
+                                </div>
+                            </div>
+                            <p className="text-cyan-300 mt-4 text-sm font-exo animate-pulse">Scanning the web...</p>
+                            <p className="text-cyan-500/60 text-xs mt-1">Searching LinkedIn, Twitter, GitHub & more</p>
+                            {query && (
+                                <div className="mt-3 px-4 py-2 bg-cyan-900/30 border border-cyan-500/30 rounded-lg inline-block">
+                                    <div className="flex items-center space-x-2">
+                                        <div className="w-2 h-2 bg-cyan-400 rounded-full animate-pulse"></div>
+                                        <span className="text-cyan-200 text-xs font-mono">Locked: "{query}"</span>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     ) : searchResults.length > 0 ? (
                         <>
@@ -139,12 +153,12 @@ const SearchBar: React.FC<{
                                             className="w-12 h-12 sm:w-14 sm:h-14 rounded-full border-2 border-cyan-600/50 group-hover:border-cyan-400 group-hover:shadow-lg group-hover:shadow-cyan-500/30 transition-all duration-300 flex-shrink-0" 
                                         />
                                         <div className="flex-1 min-w-0">
-                                            <p className="font-bold text-white text-sm sm:text-base">{result.name}</p>
-                                            {result.title && result.company && (
-                                                <p className="text-xs sm:text-sm text-cyan-300 mt-0.5">{result.title} at {result.company}</p>
+                                            <p className="font-bold text-white text-sm sm:text-base mb-1">{result.name}</p>
+                                            {result.title && (
+                                                <p className="text-xs sm:text-sm text-cyan-300">{result.title}</p>
                                             )}
-                                            {result.snippet && (
-                                                <p className="text-xs text-gray-400 mt-1 line-clamp-2">{result.snippet}</p>
+                                            {result.company && (
+                                                <p className="text-xs sm:text-sm text-gray-400 mt-0.5">📍 {result.company}</p>
                                             )}
                                             {result.socialMediaLinks.length > 0 && (
                                                 <div className="flex items-center space-x-2 mt-2">
@@ -168,16 +182,17 @@ const SearchBar: React.FC<{
                                 </div>
                             ))}
                         </>
-                    ) : query.length >= 2 ? (
+                    ) : query.length >= 3 ? (
                         <div className="p-6 text-center">
-                            <p className="text-gray-400 text-sm sm:text-base">No results found for "{query}"</p>
-                            <p className="text-xs text-gray-500 mt-1">Try a different name or spelling</p>
+                            <p className="text-gray-400 text-sm sm:text-base">Press <kbd className="px-2 py-1 bg-cyan-900/40 border border-cyan-500/40 rounded text-xs text-cyan-300 font-mono">Enter</kbd> to search</p>
+                            <p className="text-xs text-gray-500 mt-2">💡 Tip: Add company name for better accuracy</p>
                         </div>
-                    ) : (
+                    ) : query.length > 0 ? (
                         <div className="p-6 text-center">
-                            <p className="text-gray-400 text-sm">Type at least 2 characters to search</p>
+                            <p className="text-gray-400 text-sm">Type at least 3 characters</p>
+                            <p className="text-xs text-gray-500 mt-1">Current: {query.length} character{query.length !== 1 ? 's' : ''}</p>
                         </div>
-                    )}
+                    ) : null}
                 </div>
             )}
         </div>
