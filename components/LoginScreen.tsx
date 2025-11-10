@@ -33,7 +33,12 @@ const LoginScreen: React.FC = () => {
   const [view, setView] = useState<'login' | 'forgotPassword'>('login');
 
   const handleReplitAuth = () => {
-    window.location.href = '/api/login';
+    // Use window.top to break out of the iframe for OAuth redirect
+    if (window.top) {
+      window.top.location.href = '/api/login';
+    } else {
+      window.location.href = '/api/login';
+    }
   };
 
   const handleFormSubmit = (e: React.FormEvent) => {
