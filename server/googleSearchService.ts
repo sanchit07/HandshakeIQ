@@ -93,7 +93,8 @@ function detectPersonVariants(results: GoogleSearchResult[], searchName: string)
       personName = result.title.split(/[-–|]/)[0].trim() || searchName;
     }
 
-    const key = `${personName.toLowerCase()}_${company.toLowerCase()}`;
+    const urlHost = new URL(result.link).hostname;
+    const key = `${personName.toLowerCase()}_${company.toLowerCase()}_${urlHost}`;
     
     if (!personMap.has(key)) {
       personMap.set(key, {
@@ -115,7 +116,17 @@ function detectPersonVariants(results: GoogleSearchResult[], searchName: string)
     });
 
     if (result.pagemap?.cse_image?.[0]?.src && !person.photoUrl) {
-      person.photoUrl = result.pagemap.cse_image[0].src;
+      const imageUrl = result.pagemap.cse_image[0].src;
+      const isPlaceholderLogo = 
+        imageUrl.includes('linkedin-bug-color.png') ||
+        imageUrl.includes('linkedin.com/scds/common/u/images/email') ||
+        imageUrl.includes('/logos/linkedin') ||
+        imageUrl.includes('default-avatar') ||
+        imageUrl.includes('placeholder');
+      
+      if (!isPlaceholderLogo) {
+        person.photoUrl = imageUrl;
+      }
     }
   }
 
