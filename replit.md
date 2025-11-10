@@ -44,6 +44,29 @@ HandshakeIQ utilizes a full-stack architecture with a React 19 (TypeScript) fron
 
 ## Recent Changes
 
+### 2025-11-10: Fixed Z-Index Layering, LinkedIn Logo Filtering & Enhanced Deduplication
+- **Z-Index Hierarchy Fix**:
+  - Fixed SideMenu using invalid Tailwind classes (z-55, z-60)
+  - Changed to valid arbitrary value syntax: z-[55] for overlay, z-[60] for panel
+  - Proper layering: Dashboard < Search dropdown (z-50) < SideMenu (z-[55]/z-[60]) < Modals (z-70)
+  - SideMenu now properly appears above dashboard content while staying below modals
+  
+- **LinkedIn Logo Placeholder Filter**:
+  - Added intelligent filtering to prevent LinkedIn placeholder logos from displaying as profile pictures
+  - Filters out: linkedin-bug-color.png, linkedin.com/scds/common/u/images/email, /logos/linkedin, default-avatar, placeholder
+  - Falls back to UI Avatars when no valid profile photo found
+  
+- **Improved Person Deduplication**:
+  - Enhanced deduplication key from `${name}_${company}` to `${name}_${company}_${urlHost}`
+  - Creates separate search result cards for same person on different platforms
+  - Example: "Sanchit Neema" now shows distinct cards for LinkedIn, Twitter, personal blog, etc.
+  - Allows users to see all unique profiles across web with proper scrolling
+  
+- **Architecture Notes**:
+  - Tailwind arbitrary values (e.g., z-[55]) required for custom z-index not in default scale
+  - Default Tailwind scale: z-0, z-10, z-20, z-30, z-40, z-50
+  - Custom layering above z-50 requires bracket notation: z-[60], z-[70], etc.
+
 ### 2025-11-10: Enhanced Search UX - Progressive Guidance, Keyword Locking & Sci-Fi Loader
 - **Opaque Search Dropdown**:
   - Changed from semi-transparent `bg-gray-900/95` to solid `bg-gray-900`
