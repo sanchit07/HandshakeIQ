@@ -49,9 +49,9 @@ const SearchBar: React.FC<{
     };
 
     return (
-        <div className="relative w-full max-w-2xl mx-auto animate-slide-up-fade" style={{animationDelay: '100ms'}}>
+        <div className="relative w-full max-w-2xl mx-auto px-3 sm:px-0 animate-slide-up-fade" style={{animationDelay: '100ms'}}>
             <div className="relative">
-                <div className="absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none">
+                <div className="absolute left-3 sm:left-4 top-1/2 -translate-y-1/2 pointer-events-none text-cyan-400">
                     <SearchIcon />
                 </div>
                 <input
@@ -61,30 +61,49 @@ const SearchBar: React.FC<{
                     onFocus={() => setIsFocused(true)}
                     onBlur={() => setTimeout(() => setIsFocused(false), 200)}
                     placeholder="Search operative by name, company, or email..."
-                    className="w-full pl-12 pr-12 py-3 bg-gray-900/50 border border-cyan-500/30 rounded-full text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 transition-all duration-300 shadow-lg shadow-cyan-500/10"
+                    className="w-full pl-10 sm:pl-12 pr-10 sm:pr-12 py-2.5 sm:py-3 bg-gray-900/50 border border-cyan-500/30 rounded-full text-white text-sm sm:text-base placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:border-cyan-400 focus:shadow-cyan-500/30 transition-all duration-300 shadow-lg shadow-cyan-500/10 animate-pulse-glow"
                 />
                 <button 
                     onClick={onOpenScanner} 
-                    className="absolute right-4 top-1/2 -translate-y-1/2 text-cyan-400 hover:text-white transition-colors p-1 rounded-full hover:bg-cyan-500/20"
+                    className="absolute right-3 sm:right-4 top-1/2 -translate-y-1/2 text-cyan-400 hover:text-white transition-all duration-300 p-1 rounded-full hover:bg-cyan-500/20 hover:scale-110"
                     aria-label="Scan business card"
                 >
                     <CameraIcon />
                 </button>
+                {query && (
+                    <div className="absolute inset-0 rounded-full border border-cyan-400 animate-pulse pointer-events-none"></div>
+                )}
             </div>
             {isFocused && query && (
-                <div className="z-10 w-full mt-2 bg-gray-900/90 backdrop-blur-md border border-cyan-500/30 rounded-lg shadow-lg shadow-cyan-500/10 max-h-80 overflow-y-auto animate-fade-in">
+                <div className="z-10 w-full mt-2 bg-gray-900/95 backdrop-blur-md border border-cyan-500/40 rounded-lg shadow-2xl shadow-cyan-500/20 max-h-80 overflow-y-auto animate-slide-down-fade">
                     {filteredPeople.length > 0 ? (
-                        filteredPeople.map(person => (
-                            <div key={person.id} onMouseDown={() => handleSelect(person)} className="flex items-center p-3 hover:bg-cyan-900/50 cursor-pointer transition-colors border-b border-cyan-500/10 last:border-b-0">
-                                <img src={person.photoUrl} alt={person.name} className="w-12 h-12 rounded-full mr-4 border-2 border-cyan-600/50" />
-                                <div>
-                                    <p className="font-bold text-white">{person.name}</p>
-                                    <p className="text-sm text-cyan-300">{person.title} at {person.company}</p>
-                                </div>
+                        <>
+                            <div className="px-3 py-2 border-b border-cyan-500/20 bg-cyan-900/20">
+                                <p className="text-xs sm:text-sm text-cyan-300 font-exo">Found {filteredPeople.length} operative{filteredPeople.length !== 1 ? 's' : ''}</p>
                             </div>
-                        ))
+                            {filteredPeople.map((person, index) => (
+                                <div 
+                                    key={person.id} 
+                                    onMouseDown={() => handleSelect(person)} 
+                                    className="flex items-center p-2 sm:p-3 hover:bg-cyan-900/50 cursor-pointer transition-all duration-300 border-b border-cyan-500/10 last:border-b-0 group"
+                                    style={{animationDelay: `${index * 50}ms`}}
+                                >
+                                    <img src={person.photoUrl} alt={person.name} className="w-10 h-10 sm:w-12 sm:h-12 rounded-full mr-3 sm:mr-4 border-2 border-cyan-600/50 group-hover:border-cyan-400 group-hover:shadow-lg group-hover:shadow-cyan-500/30 transition-all duration-300" />
+                                    <div className="flex-1 min-w-0">
+                                        <p className="font-bold text-white text-sm sm:text-base truncate">{person.name}</p>
+                                        <p className="text-xs sm:text-sm text-cyan-300 truncate">{person.title} at {person.company}</p>
+                                    </div>
+                                    <div className="ml-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <span className="text-cyan-400">→</span>
+                                    </div>
+                                </div>
+                            ))}
+                        </>
                     ) : (
-                        <p className="p-4 text-gray-400">No operatives found matching "{query}".</p>
+                        <div className="p-4 text-center">
+                            <p className="text-gray-400 text-sm sm:text-base">No operatives found matching "{query}"</p>
+                            <p className="text-xs text-gray-500 mt-1">Try searching by name, company, or email</p>
+                        </div>
                     )}
                 </div>
             )}
@@ -126,16 +145,16 @@ const CalendarMeetingList: React.FC<{
   onGoToUpcomingMeetings: () => void;
 }> = ({ events, onSelectAttendee, onGoToUpcomingMeetings }) => {
   return (
-    <div className="mt-8 animate-slide-up-fade" style={{animationDelay: '200ms'}}>
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="flex items-center text-xl font-exo text-cyan-300">
-          <CalendarIcon className="mr-3" />
+    <div className="mt-6 sm:mt-8 px-3 sm:px-0 animate-slide-up-fade" style={{animationDelay: '200ms'}}>
+      <div className="flex items-center justify-between mb-3 sm:mb-4">
+        <h2 className="flex items-center text-base sm:text-xl font-exo text-cyan-300">
+          <CalendarIcon className="mr-2 sm:mr-3" />
           Today & Tomorrow
         </h2>
         {events.length > 0 && (
           <button
             onClick={onGoToUpcomingMeetings}
-            className="text-sm text-cyan-400 hover:text-cyan-300 transition-colors"
+            className="text-xs sm:text-sm text-cyan-400 hover:text-cyan-300 transition-colors"
           >
             View All →
           </button>
@@ -143,48 +162,48 @@ const CalendarMeetingList: React.FC<{
       </div>
       
       {events.length === 0 ? (
-        <div className="bg-black/20 border border-cyan-500/20 rounded-lg p-6 text-center">
-          <p className="text-gray-300">No meetings today or tomorrow</p>
+        <div className="bg-black/20 border border-cyan-500/20 rounded-lg p-4 sm:p-6 text-center animate-pulse-glow">
+          <p className="text-gray-300 text-sm sm:text-base">No meetings today or tomorrow</p>
           <button
             onClick={onGoToUpcomingMeetings}
-            className="mt-3 text-sm text-cyan-400 hover:text-cyan-300 transition-colors"
+            className="mt-3 text-xs sm:text-sm text-cyan-400 hover:text-cyan-300 transition-colors"
           >
             View upcoming meetings →
           </button>
         </div>
       ) : (
-        <div className="space-y-4 stagger-in">
+        <div className="space-y-3 sm:space-y-4 stagger-in">
           {events.map((event, index) => (
             <div 
               key={event.id} 
-              className="p-4 bg-gray-900/40 border border-cyan-500/20 rounded-lg backdrop-blur-sm transition-all duration-300 hover:border-cyan-400/50 hover:shadow-cyan-500/10 hover:shadow-lg"
+              className="p-3 sm:p-4 bg-gray-900/40 border border-cyan-500/20 rounded-lg backdrop-blur-sm transition-all duration-300 hover:border-cyan-400/50 hover:shadow-cyan-500/10 hover:shadow-lg"
               style={{animationDelay: `${index * 100 + 300}ms`}}
             >
-              <div className="flex justify-between items-start">
-                <div>
-                  <h3 className="font-bold text-white font-exo">{event.summary}</h3>
-                  <p className="text-sm text-gray-400">{formatDateTime(event.start)}</p>
+              <div className="flex justify-between items-start gap-2">
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-bold text-white font-exo text-sm sm:text-base truncate">{event.summary}</h3>
+                  <p className="text-xs sm:text-sm text-gray-400">{formatDateTime(event.start)}</p>
                   {event.location && (
-                    <p className="text-xs text-cyan-300 mt-1">📍 {event.location}</p>
+                    <p className="text-xs text-cyan-300 mt-1 truncate">📍 {event.location}</p>
                   )}
                 </div>
-                <div className="text-gray-400" title="From Google Calendar">
+                <div className="text-gray-400 flex-shrink-0" title="From Google Calendar">
                   <GoogleIcon />
                 </div>
               </div>
               
               {event.attendees.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-2">
+                <div className="mt-3 flex flex-wrap gap-1.5 sm:gap-2">
                   {event.attendees.slice(0, 4).map((attendee, idx) => (
                     <button
                       key={idx}
                       onClick={() => onSelectAttendee(attendee)}
-                      className="flex items-center space-x-2 px-3 py-1 bg-cyan-900/30 hover:bg-cyan-800/50 border border-cyan-600/30 rounded-full transition-all duration-200 hover:scale-105"
+                      className="flex items-center space-x-1.5 sm:space-x-2 px-2 sm:px-3 py-1 bg-cyan-900/30 hover:bg-cyan-800/50 border border-cyan-600/30 rounded-full transition-all duration-200 hover:scale-105 text-xs sm:text-sm"
                     >
-                      <div className="w-6 h-6 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white text-xs font-semibold">
+                      <div className="w-5 h-5 sm:w-6 sm:h-6 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white text-xs font-semibold neon-glow">
                         {(attendee.displayName || attendee.email || '?')[0].toUpperCase()}
                       </div>
-                      <span className="text-sm text-cyan-200">
+                      <span className="text-cyan-200 truncate max-w-[100px] sm:max-w-none">
                         {attendee.displayName || attendee.email?.split('@')[0]}
                       </span>
                     </button>
@@ -192,7 +211,7 @@ const CalendarMeetingList: React.FC<{
                   {event.attendees.length > 4 && (
                     <button
                       onClick={onGoToUpcomingMeetings}
-                      className="px-3 py-1 text-sm text-cyan-400 hover:text-cyan-300 transition-colors"
+                      className="px-2 sm:px-3 py-1 text-xs sm:text-sm text-cyan-400 hover:text-cyan-300 transition-colors"
                     >
                       +{event.attendees.length - 4} more
                     </button>

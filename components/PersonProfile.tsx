@@ -212,24 +212,24 @@ const PersonProfile: React.FC<{ person: Person; onBack: () => void; onSave: (per
     const isInsightSaved = (category: string) => savedInsights.some(si => si.category === category);
 
     return (
-        <div className="h-full flex flex-col p-1 md:p-4 bg-black/30 border border-cyan-500/20 rounded-lg backdrop-blur-md overflow-hidden animate-fade-in">
-            <div className="flex-shrink-0 flex items-center justify-between mb-4 p-2">
-                <button onClick={onBack} className="flex items-center space-x-2 text-cyan-300 hover:text-white transition-colors">
+        <div className="h-full flex flex-col p-2 sm:p-4 bg-black/30 border border-cyan-500/20 rounded-lg backdrop-blur-md overflow-hidden animate-fade-in">
+            <div className="flex-shrink-0 flex items-center justify-between mb-3 sm:mb-4 p-2">
+                <button onClick={onBack} className="flex items-center space-x-1 sm:space-x-2 text-cyan-300 hover:text-white transition-colors">
                     <BackIcon />
-                    <span className="font-bold font-exo">Back to Dashboard</span>
+                    <span className="font-bold font-exo text-sm sm:text-base">Back to Dashboard</span>
                 </button>
             </div>
 
             {isLoading ? <LoadingIndicator /> : error ? (
-                <div className="flex items-center justify-center h-full text-center text-red-400 p-8">{error}</div>
+                <div className="flex items-center justify-center h-full text-center text-red-400 p-4 sm:p-8 text-sm sm:text-base">{error}</div>
             ) : report && (
-                <div className="flex-grow grid grid-cols-1 lg:grid-cols-3 gap-6 overflow-hidden">
+                <div className="flex-grow grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6 overflow-hidden">
                     {/* Left Column - Profile & Actions */}
-                    <div className="lg:col-span-1 space-y-4 overflow-y-auto pr-2">
-                        <div className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg text-center">
-                            <img src={person.photoUrl} alt={person.name} className="w-32 h-32 rounded-full mx-auto border-4 border-cyan-500/50 shadow-lg shadow-cyan-500/20" />
-                            <div className="mt-4 flex items-center justify-center space-x-2">
-                                <h2 className="font-exo text-2xl text-white">{person.name}</h2>
+                    <div className="lg:col-span-1 space-y-3 sm:space-y-4 overflow-y-auto pr-1 sm:pr-2">
+                        <div className="p-3 sm:p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg text-center animate-slide-down-fade">
+                            <img src={person.photoUrl} alt={person.name} className="w-24 h-24 sm:w-32 sm:h-32 rounded-full mx-auto border-4 border-cyan-500/50 shadow-lg shadow-cyan-500/20 animate-pulse-glow" />
+                            <div className="mt-3 sm:mt-4 flex items-center justify-center space-x-2">
+                                <h2 className="font-exo text-xl sm:text-2xl text-white">{person.name}</h2>
                                 <button
                                     onClick={fetchReport}
                                     disabled={isLoading}
@@ -237,24 +237,24 @@ const PersonProfile: React.FC<{ person: Person; onBack: () => void; onSave: (per
                                     aria-label="Refresh Intel"
                                     title="Refresh Intel"
                                 >
-                                    <RefreshIcon className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} />
+                                    <RefreshIcon className={`w-4 h-4 sm:w-5 sm:h-5 ${isLoading ? 'animate-spin' : ''}`} />
                                 </button>
                             </div>
-                            <p className="text-cyan-300">{person.title} at {person.company}</p>
+                            <p className="text-cyan-300 text-sm sm:text-base">{person.title} at {person.company}</p>
                         </div>
 
                         {linkedInUrls.length > 0 && (
-                            <div className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg">
-                                <h3 className="font-exo text-lg text-cyan-300 mb-3">LinkedIn Profiles</h3>
+                            <div className="p-3 sm:p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg animate-slide-up-fade" style={{animationDelay: '0.1s'}}>
+                                <h3 className="font-exo text-base sm:text-lg text-cyan-300 mb-2 sm:mb-3">LinkedIn Profiles</h3>
                                 {linkedInUrls.length > 1 ? (
                                     <details className="group">
-                                        <summary className="cursor-pointer flex justify-between items-center text-cyan-200 group-hover:text-white">
+                                        <summary className="cursor-pointer flex justify-between items-center text-cyan-200 group-hover:text-white text-sm sm:text-base">
                                             <span>{linkedInUrls.length} profiles found</span>
                                             <ChevronDownIcon className="transition-transform duration-300 group-open:rotate-180" />
                                         </summary>
                                         <div className="mt-2 space-y-2 pt-2 border-t border-cyan-500/20">
                                             {linkedInUrls.map((url, index) => (
-                                                <a href={url} target="_blank" rel="noopener noreferrer" key={index} className="w-full flex items-center space-x-3 px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow text-sm">
+                                                <a href={url} target="_blank" rel="noopener noreferrer" key={index} className="w-full flex items-center space-x-2 sm:space-x-3 px-3 sm:px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow text-xs sm:text-sm">
                                                     <LinkedInSourceIcon />
                                                     <span className="truncate">{url.replace('https://www.linkedin.com/in/', '')}</span>
                                                 </a>
@@ -262,7 +262,7 @@ const PersonProfile: React.FC<{ person: Person; onBack: () => void; onSave: (per
                                         </div>
                                     </details>
                                 ) : (
-                                    <a href={linkedInUrls[0]} target="_blank" rel="noopener noreferrer" className="w-full flex items-center space-x-3 px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow">
+                                    <a href={linkedInUrls[0]} target="_blank" rel="noopener noreferrer" className="w-full flex items-center space-x-2 sm:space-x-3 px-3 sm:px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow text-sm sm:text-base">
                                         <LinkedInSourceIcon />
                                         <span>View Profile</span>
                                     </a>
@@ -270,13 +270,13 @@ const PersonProfile: React.FC<{ person: Person; onBack: () => void; onSave: (per
                             </div>
                         )}
 
-                        <div className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg">
-                             <h3 className="font-exo text-lg text-cyan-300 mb-3">Actions</h3>
+                        <div className="p-3 sm:p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg animate-slide-up-fade" style={{animationDelay: '0.2s'}}>
+                             <h3 className="font-exo text-base sm:text-lg text-cyan-300 mb-2 sm:mb-3">Actions</h3>
                             <div className="space-y-2">
-                                <button onClick={handleSave} className="w-full flex items-center space-x-3 px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow"><SaveIcon /><span>Save Dossier</span></button>
-                                <button className="w-full flex items-center space-x-3 px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow"><CommentIcon /><span>Add Field Notes</span></button>
-                                <button className="w-full flex items-center space-x-3 px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow"><ReminderIcon /><span>Set Engagement Reminder</span></button>
-                                <button className="w-full flex items-center space-x-3 px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow"><CrmIcon /><span>Send to CRM as Lead</span></button>
+                                <button onClick={handleSave} className="w-full flex items-center space-x-2 sm:space-x-3 px-3 sm:px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow text-sm sm:text-base"><SaveIcon /><span>Save Dossier</span></button>
+                                <button className="w-full flex items-center space-x-2 sm:space-x-3 px-3 sm:px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow text-sm sm:text-base"><CommentIcon /><span>Add Field Notes</span></button>
+                                <button className="w-full flex items-center space-x-2 sm:space-x-3 px-3 sm:px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow text-sm sm:text-base"><ReminderIcon /><span>Set Reminder</span></button>
+                                <button className="w-full flex items-center space-x-2 sm:space-x-3 px-3 sm:px-4 py-2 bg-cyan-900/40 hover:bg-cyan-800/60 rounded transition-colors btn-glow text-sm sm:text-base"><CrmIcon /><span>Send to CRM</span></button>
                             </div>
                         </div>
 

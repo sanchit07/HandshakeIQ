@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { extractTextFromImage } from '../services/geminiService';
 import { CloseIcon } from './icons/UIIcons';
+import { DataStreamLoader } from './loaders/NeonLoader';
 
 interface CardScannerProps {
     onClose: (searchTerm?: string) => void;
@@ -61,29 +62,33 @@ const CardScanner: React.FC<CardScannerProps> = ({ onClose }) => {
     };
 
     return (
-        <div className="fixed inset-0 bg-black/90 z-50 flex flex-col items-center justify-center animate-fade-in">
-            <button onClick={() => onClose()} className="absolute top-4 right-4 text-white z-20 p-2 rounded-full hover:bg-white/10 transition-colors">
+        <div className="fixed inset-0 bg-black/95 z-50 flex flex-col items-center justify-center p-4 animate-fade-in">
+            <button onClick={() => onClose()} className="absolute top-3 right-3 sm:top-4 sm:right-4 text-white z-20 p-2 rounded-full hover:bg-white/10 transition-colors">
                 <CloseIcon />
             </button>
-            <div className="relative w-full max-w-2xl h-auto aspect-[4/3] rounded-lg overflow-hidden border-2 border-cyan-500/50 shadow-2xl shadow-cyan-500/30">
+            <div className="relative w-full max-w-2xl h-auto aspect-[4/3] rounded-lg overflow-hidden border-2 border-cyan-500/50 shadow-2xl shadow-cyan-500/30 animate-pulse-glow">
                 <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
                 {isLoading && (
-                    <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center">
-                        <div className="relative w-24 h-24">
-                            <div className="absolute inset-0 border-4 border-cyan-500/30 rounded-full"></div>
-                            <div className="absolute inset-0 border-t-4 border-cyan-400 rounded-full animate-spin"></div>
-                        </div>
-                        <p className="mt-4 font-exo text-lg text-cyan-300">EXTRACTING DATA...</p>
+                    <div className="absolute inset-0 bg-black/90 flex flex-col items-center justify-center p-4">
+                        <DataStreamLoader text="Extracting contact data..." />
                     </div>
                 )}
                  <div className="scanner-animation"></div>
-                 <div className="absolute inset-0 border-8 border-black/30 pointer-events-none"></div>
+                 <div className="absolute inset-0 border-4 sm:border-8 border-black/30 pointer-events-none"></div>
+                 <div className="absolute top-4 left-4 right-4 flex items-center justify-between">
+                    <div className="w-8 h-8 border-t-2 border-l-2 border-cyan-400"></div>
+                    <div className="w-8 h-8 border-t-2 border-r-2 border-cyan-400"></div>
+                 </div>
+                 <div className="absolute bottom-4 left-4 right-4 flex items-center justify-between">
+                    <div className="w-8 h-8 border-b-2 border-l-2 border-cyan-400"></div>
+                    <div className="w-8 h-8 border-b-2 border-r-2 border-cyan-400"></div>
+                 </div>
             </div>
-            {error && <p className="mt-4 text-red-400">{error}</p>}
+            {error && <p className="mt-4 text-red-400 text-sm sm:text-base text-center px-4">{error}</p>}
             <button
                 onClick={handleCapture}
                 disabled={isLoading}
-                className="mt-8 px-8 py-4 bg-cyan-600/80 text-white font-exo text-xl rounded-full border-2 border-cyan-400 hover:bg-cyan-500 disabled:bg-gray-600 transition-all duration-300 shadow-lg shadow-cyan-500/30 btn-glow"
+                className="mt-6 sm:mt-8 px-6 sm:px-8 py-3 sm:py-4 bg-cyan-600/80 text-white font-exo text-lg sm:text-xl rounded-full border-2 border-cyan-400 hover:bg-cyan-500 disabled:bg-gray-600 disabled:border-gray-500 transition-all duration-300 shadow-lg shadow-cyan-500/30 btn-glow hover:scale-105 active:scale-95"
             >
                 {isLoading ? 'ANALYZING...' : 'SCAN CARD'}
             </button>
