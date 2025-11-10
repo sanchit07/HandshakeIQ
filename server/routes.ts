@@ -2,6 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupGoogleAuth, requireAuth, attachSessionIfPresent } from "./googleAuth";
+import { setupZohoAuth } from "./zohoAuth";
 import { generateIntelligenceReport, extractTextFromImage } from "../services/geminiService";
 import { CalendarService } from "../services/calendarService";
 import { searchPerson } from "./googleSearchService";
@@ -9,6 +10,9 @@ import { searchPerson } from "./googleSearchService";
 export async function registerRoutes(app: Express): Promise<Server> {
   // Setup Google OAuth authentication
   await setupGoogleAuth(app);
+  
+  // Setup Zoho OAuth authentication
+  setupZohoAuth(app);
 
   // Auth routes - check if user is logged in (optional, returns null if not)
   app.get('/api/auth/user', attachSessionIfPresent, async (req: any, res) => {

@@ -8,10 +8,26 @@ const LoginButton: React.FC<{ icon: React.ReactNode; label: string; href: string
     // Open in new window to avoid iframe restrictions
     const authWindow = window.open(href, '_blank', 'width=500,height=700,scrollbars=yes');
     
+    // Listen for auth success messages from both Google and Zoho
+    const messageHandler = (event: MessageEvent) => {
+      if (event.data?.type === 'auth_success' || event.data?.type === 'zoho-auth-success') {
+        window.removeEventListener('message', messageHandler);
+        clearInterval(pollTimer);
+        window.location.reload();
+      } else if (event.data?.type === 'zoho-auth-error') {
+        window.removeEventListener('message', messageHandler);
+        clearInterval(pollTimer);
+        alert('Zoho authentication failed. Please try again.');
+      }
+    };
+    
+    window.addEventListener('message', messageHandler);
+    
     // Poll for window close and reload page
     const pollTimer = setInterval(() => {
       if (authWindow?.closed) {
         clearInterval(pollTimer);
+        window.removeEventListener('message', messageHandler);
         window.location.reload();
       }
     }, 500);
@@ -76,7 +92,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest }) => {
             </div>
             <div className="space-y-2 sm:space-y-3">
               <LoginButton icon={<GoogleIcon />} label="Sign in with Google" href="/api/login" />
-              <LoginButton icon={<ZohoIcon />} label="Sign in with Zoho" href="/api/login/zoho" />
+              <LoginButton icon={<ZohoIcon />} label="Sign in with Zoho" href="/auth/zoho" />
             </div>
             
             {onContinueAsGuest && (
