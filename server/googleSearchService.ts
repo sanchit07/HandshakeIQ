@@ -162,8 +162,11 @@ export async function searchPerson(
 
     const personMap = detectPersonVariants(response.data.items, personName);
     return Array.from(personMap.values());
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error searching for person:', error);
+    if (error.response) {
+      console.error('Google API Error Response:', JSON.stringify(error.response.data, null, 2));
+    }
     throw error;
   }
 }
