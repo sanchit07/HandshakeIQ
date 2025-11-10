@@ -170,6 +170,11 @@ const PersonProfile: React.FC<{ person: Person; onBack: () => void; onSave: (per
         setReport(null);
         setSources([]);
         setLinkedInUrls([]);
+        
+        // Track start time for minimum loader duration
+        const loadStartTime = Date.now();
+        const MIN_LOADER_DURATION = 2000; // 2 seconds to ensure smooth animation display
+        
         try {
             const { report: fetchedReport, sources: fetchedSources } = await generateIntelligenceReport(person.name, person.company);
             setReport(fetchedReport);
@@ -186,6 +191,15 @@ const PersonProfile: React.FC<{ person: Person; onBack: () => void; onSave: (per
             setError('Failed to retrieve intelligence. Network instability detected.');
             console.error(err);
         } finally {
+            // Ensure minimum loader display time for smooth animations
+            const elapsed = Date.now() - loadStartTime;
+            const remainingTime = MIN_LOADER_DURATION - elapsed;
+            
+            if (remainingTime > 0) {
+                // Wait for remaining time to ensure loaders complete their animations
+                await new Promise(resolve => setTimeout(resolve, remainingTime));
+            }
+            
             setIsLoading(false);
         }
     }, [person]);
