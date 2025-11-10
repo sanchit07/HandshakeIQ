@@ -4,19 +4,16 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Person, GroundingChunk, Insight, IntelligenceReport } from '../types';
 import { generateIntelligenceReport } from '../services/geminiService';
 import { BackIcon, CommentIcon, CrmIcon, SaveIcon, LinkIcon, ReminderIcon, LinkedInSourceIcon, NewsArticleIcon, BlogPostIcon, BookmarkIcon, ChevronDownIcon, RefreshIcon } from './icons/UIIcons';
+import { ScanningLoader, ProfileBuildingLoader } from './loaders/NeonLoader';
 
 const LoadingIndicator: React.FC = () => (
-    <div className="flex flex-col items-center justify-center h-full text-center p-4">
-        <div className="w-32 h-32 relative flex items-center justify-center mb-4">
-            <div className="absolute w-full h-full rounded-full border-2 border-cyan-500/20 animate-spin" style={{ animationDuration: '4s' }}></div>
-            <div className="absolute w-2/3 h-2/3 rounded-full border-2 border-cyan-500/30 animate-spin" style={{ animationDuration: '3s', animationDirection: 'reverse' }}></div>
-            <div className="absolute w-1/2 h-1/2 rounded-full bg-cyan-500/10"></div>
-            <svg className="w-10 h-10 text-cyan-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-            </svg>
+    <div className="flex flex-col items-center justify-center h-full text-center p-4 sm:p-8">
+        <div className="animate-slide-up-fade">
+            <ScanningLoader target="operative" />
         </div>
-        <p className="mt-4 font-exo text-lg text-cyan-300 tracking-widest animate-pulse">ANALYZING INTEL...</p>
-        <p className="text-sm text-gray-400">Accessing global network and compiling dossier.</p>
+        <div className="mt-8 w-full max-w-md animate-fade-in" style={{animationDelay: '0.5s'}}>
+            <ProfileBuildingLoader />
+        </div>
     </div>
 );
 
