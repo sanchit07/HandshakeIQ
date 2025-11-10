@@ -1,16 +1,17 @@
 import React, { useState } from 'react';
-import { GoogleIcon, ZohoIcon, LinkedInIcon } from './icons/BrandIcons';
+import { GoogleIcon, ZohoIcon } from './icons/BrandIcons';
 import { UserIcon, LockIcon } from './icons/UIIcons';
 
-const LoginButton: React.FC<{ icon: React.ReactNode; label: string; onClick: () => void }> = ({ icon, label, onClick }) => (
-  <button
-    onClick={onClick}
+const LoginButton: React.FC<{ icon: React.ReactNode; label: string; href: string }> = ({ icon, label, href }) => (
+  <a
+    href={href}
+    target="_top"
     className="w-full flex items-center justify-center space-x-4 px-6 py-3 border border-cyan-400/30 bg-cyan-900/20 rounded-lg backdrop-blur-sm
                hover:bg-cyan-700/40 hover:border-cyan-300 transition-all duration-300 group btn-glow"
   >
     <span className="text-cyan-300 group-hover:text-white transition-colors">{icon}</span>
     <span className="font-exo text-base text-cyan-200 group-hover:text-white transition-colors">{label}</span>
-  </button>
+  </a>
 );
 
 const InputField: React.FC<{ icon: React.ReactNode, type: string, placeholder: string, value: string, onChange: (e: React.ChangeEvent<HTMLInputElement>) => void }> = 
@@ -31,21 +32,6 @@ const LoginScreen: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [view, setView] = useState<'login' | 'forgotPassword'>('login');
-
-  const handleReplitAuth = () => {
-    // Use window.top to break out of the iframe for OAuth redirect
-    if (window.top) {
-      window.top.location.href = '/api/login';
-    } else {
-      window.location.href = '/api/login';
-    }
-  };
-
-  const handleFormSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    // Redirect to Replit Auth
-    handleReplitAuth();
-  };
   
   const handleForgotPasswordSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -63,25 +49,9 @@ const LoginScreen: React.FC = () => {
               <h2 className="font-exo text-3xl font-bold text-white">Access Terminal</h2>
               <p className="mt-2 text-cyan-300">Authenticate to access intelligence data</p>
             </div>
-            <form className="space-y-4" onSubmit={handleFormSubmit}>
-                <InputField icon={<UserIcon />} type="email" placeholder="Email Address" value={email} onChange={(e) => setEmail(e.target.value)} />
-                <InputField icon={<LockIcon />} type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
-                <div className="text-right">
-                    <button type="button" onClick={() => setView('forgotPassword')} className="text-sm text-cyan-400 hover:underline">Forgot Password?</button>
-                </div>
-                <button type="submit" className="w-full font-exo text-lg py-3 bg-cyan-600 hover:bg-cyan-500 rounded-lg text-slate-900 font-bold transition-all duration-300 shadow-lg shadow-cyan-500/20 btn-glow">
-                    Engage
-                </button>
-            </form>
-            <div className="relative flex items-center py-2">
-                <div className="flex-grow border-t border-cyan-500/30"></div>
-                <span className="flex-shrink mx-4 text-gray-400">Or continue with</span>
-                <div className="flex-grow border-t border-cyan-500/30"></div>
-            </div>
             <div className="space-y-3">
-              <LoginButton icon={<GoogleIcon />} label="Sign in with Google" onClick={handleReplitAuth} />
-              <LoginButton icon={<ZohoIcon />} label="Sign in with GitHub" onClick={handleReplitAuth} />
-              <LoginButton icon={<LinkedInIcon />} label="Sign in with Email" onClick={handleReplitAuth} />
+              <LoginButton icon={<GoogleIcon />} label="Sign in with Google" href="/api/login" />
+              <LoginButton icon={<ZohoIcon />} label="Sign in with Zoho" href="/api/login" />
             </div>
           </>
         ) : (
