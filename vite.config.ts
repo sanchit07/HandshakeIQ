@@ -9,6 +9,12 @@ export default defineConfig(({ mode }) => {
         port: 5000,
         host: '0.0.0.0',
         allowedHosts: true,
+        proxy: {
+          '/api': {
+            target: 'http://localhost:3000',
+            changeOrigin: true,
+          },
+        },
       },
       plugins: [react()],
       define: {
@@ -18,6 +24,7 @@ export default defineConfig(({ mode }) => {
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
+          '@shared': path.resolve(__dirname, './shared'),
         }
       }
     };

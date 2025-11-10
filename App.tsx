@@ -4,17 +4,15 @@ import Dashboard from './components/Dashboard';
 import PersonProfile from './components/PersonProfile';
 import SettingsScreen from './components/SettingsScreen';
 import CardScanner from './components/CardScanner';
-import CalendarSyncModal from './components/modals/CalendarSyncModal';
 import SideMenu from './components/SideMenu';
 import { Person } from './types';
 import { MOCK_PEOPLE, MOCK_MEETINGS } from './constants';
 import { MovingWallsLogo, HandshakeIQLogo } from './components/icons/Logos';
 import { MenuIcon } from './components/icons/UIIcons';
+import { useAuth } from './client/hooks/useAuth';
 
 const App: React.FC = () => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
-  const [userEmail, setUserEmail] = useState<string>('');
-  const [showSyncPrompt, setShowSyncPrompt] = useState<boolean>(false);
+  const { user, isLoading, isAuthenticated } = useAuth();
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
   const [view, setView] = useState<'dashboard' | 'profile' | 'settings' | 'scanner'>('dashboard');
   const [scannedSearchTerm, setScannedSearchTerm] = useState<string>('');
@@ -22,25 +20,8 @@ const App: React.FC = () => {
   const [searchHistory, setSearchHistory] = useState<Person[]>([]);
   const [savedDossiers, setSavedDossiers] = useState<Person[]>([]);
 
-  const handleLogin = useCallback((email: string) => {
-    setUserEmail(email);
-    setShowSyncPrompt(true);
-  }, []);
-
   const handleLogout = useCallback(() => {
-    setIsAuthenticated(false);
-    setUserEmail('');
-    setSelectedPerson(null);
-    setSearchHistory([]);
-    setSavedDossiers([]);
-    setView('dashboard');
-    setIsMenuOpen(false);
-  }, []);
-
-  const handleSyncDecision = useCallback(() => {
-    setShowSyncPrompt(false);
-    setIsAuthenticated(true);
-    setView('dashboard');
+    window.location.href = '/api/logout';
   }, []);
 
   const handleSelectPerson = useCallback((person: Person) => {
@@ -104,11 +85,8 @@ const App: React.FC = () => {
         </header>
 
         <main className={`flex-grow overflow-hidden transition-transform duration-500 ease-in-out ${isMenuOpen ? 'translate-x-[-280px]' : ''}`}>
-          {!isAuthenticated ? (
-            <>
-              <LoginScreen onLogin={handleLogin} />
-              {showSyncPrompt && <CalendarSyncModal userEmail={userEmail} onSync={handleSyncDecision} onSkip={handleSyncDecision} />}
-            </>
+          {isLoading || !isAuthenticated ? (
+            <LoginScreen />
           ) : (
             <div className="relative w-full h-full">
                <div className={`transition-all duration-500 ease-in-out ${isProfileVisible || isSettingsVisible ? 'transform -translate-x-full opacity-0 scale-95' : 'transform translate-x-0 opacity-100 scale-100'}`}>
@@ -133,7 +111,7 @@ const App: React.FC = () => {
                   isSettingsVisible ? 'transform translate-x-0 opacity-100 scale-100' : 'transform translate-x-full opacity-0 scale-95'
                 }`}
               >
-                <SettingsScreen userEmail={userEmail} onBack={handleBackToDashboard} />
+                <SettingsScreen userEmail={user?.email || ''} onBack={handleBackToDashboard} />
               </div>
             </div>
           )}

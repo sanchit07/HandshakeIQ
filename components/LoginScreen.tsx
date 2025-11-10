@@ -2,10 +2,6 @@ import React, { useState } from 'react';
 import { GoogleIcon, ZohoIcon, LinkedInIcon } from './icons/BrandIcons';
 import { UserIcon, LockIcon } from './icons/UIIcons';
 
-interface LoginScreenProps {
-  onLogin: (email: string) => void;
-}
-
 const LoginButton: React.FC<{ icon: React.ReactNode; label: string; onClick: () => void }> = ({ icon, label, onClick }) => (
   <button
     onClick={onClick}
@@ -31,20 +27,19 @@ const InputField: React.FC<{ icon: React.ReactNode, type: string, placeholder: s
     </div>
 );
 
-const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
+const LoginScreen: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [view, setView] = useState<'login' | 'forgotPassword'>('login');
 
-  const handleLogin = (simulatedEmail: string) => {
-    onLogin(simulatedEmail);
+  const handleReplitAuth = () => {
+    window.location.href = '/api/login';
   };
 
   const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if(email) {
-      handleLogin(email);
-    }
+    // Redirect to Replit Auth
+    handleReplitAuth();
   };
   
   const handleForgotPasswordSubmit = (e: React.FormEvent) => {
@@ -79,9 +74,9 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 <div className="flex-grow border-t border-cyan-500/30"></div>
             </div>
             <div className="space-y-3">
-              <LoginButton icon={<GoogleIcon />} label="Sign in with Google" onClick={() => handleLogin('user@google.com')} />
-              <LoginButton icon={<ZohoIcon />} label="Sign in with Zoho" onClick={() => handleLogin('user@zoho.com')} />
-              <LoginButton icon={<LinkedInIcon />} label="Sign in with LinkedIn" onClick={() => handleLogin('user@linkedin.com')} />
+              <LoginButton icon={<GoogleIcon />} label="Sign in with Google" onClick={handleReplitAuth} />
+              <LoginButton icon={<ZohoIcon />} label="Sign in with GitHub" onClick={handleReplitAuth} />
+              <LoginButton icon={<LinkedInIcon />} label="Sign in with Email" onClick={handleReplitAuth} />
             </div>
           </>
         ) : (
