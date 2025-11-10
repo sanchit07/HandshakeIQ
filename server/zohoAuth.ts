@@ -9,13 +9,8 @@ if (!ZOHO_CLIENT_ID || !ZOHO_CLIENT_SECRET) {
   console.warn('Zoho OAuth credentials not configured. Zoho sign-in will not be available.');
 }
 
-// Get the redirect URI based on environment
+// Get the redirect URI - always use production domain
 function getZohoRedirectUri(): string {
-  const domain = process.env.REPLIT_DEV_DOMAIN;
-  if (domain) {
-    return `https://${domain}/auth/zoho/callback`;
-  }
-  // Fallback for production
   return 'https://handshake.movingwalls.com/auth/zoho/callback';
 }
 
