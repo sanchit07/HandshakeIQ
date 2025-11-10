@@ -133,11 +133,53 @@ export async function setupGoogleAuth(app: Express) {
   });
 }
 
-export const isAuthenticated: RequestHandler = async (req, res, next) => {
+// Middleware that attaches session user if present, but doesn't block request
+export const attachSessionIfPresent: RequestHandler = async (req, res, next) => {
   const user = (req.session as any)?.user;
 
   if (!user) {
-    return res.status(401).json({ message: 'Unauthorized' });
+    // No session, continue as guest
+    return next();
+  }
+
+  // Check if token is expired
+  const now = Date.now();
+  if (user.expiresAt && now >= user.expiresAt) {
+    // Try to refresh token
+    if (user.refreshToken) {
+      try {
+        oauth2Client.setCredentials({
+          refresh_token: user.refreshToken,
+        });
+        const { credentials } = await oauth2Client.refreshAccessToken();
+        
+        // Update session with new tokens
+        user.accessToken = credentials.access_token;
+        user.expiresAt = credentials.expiry_date;
+        
+        (req as any).user = user;
+        return next();
+      } catch (error) {
+        console.error('Token refresh failed:', error);
+        // Continue as guest if refresh fails
+        return next();
+      }
+    }
+    // Token expired and no refresh token, continue as guest
+    return next();
+  }
+
+  // Attach authenticated user to request
+  (req as any).user = user;
+  next();
+};
+
+// Middleware that requires authentication (blocks request if not authenticated)
+export const requireAuth: RequestHandler = async (req, res, next) => {
+  const user = (req.session as any)?.user;
+
+  if (!user) {
+    return res.status(401).json({ message: 'Authentication required' });
   }
 
   // Check if token is expired
@@ -158,10 +200,10 @@ export const isAuthenticated: RequestHandler = async (req, res, next) => {
         return next();
       } catch (error) {
         console.error('Token refresh failed:', error);
-        return res.status(401).json({ message: 'Unauthorized' });
+        return res.status(401).json({ message: 'Authentication required' });
       }
     }
-    return res.status(401).json({ message: 'Unauthorized' });
+    return res.status(401).json({ message: 'Authentication required' });
   }
 
   next();

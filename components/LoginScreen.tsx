@@ -44,7 +44,11 @@ const InputField: React.FC<{ icon: React.ReactNode, type: string, placeholder: s
     </div>
 );
 
-const LoginScreen: React.FC = () => {
+interface LoginScreenProps {
+  onContinueAsGuest?: () => void;
+}
+
+const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [view, setView] = useState<'login' | 'forgotPassword'>('login');
@@ -63,12 +67,38 @@ const LoginScreen: React.FC = () => {
           <>
             <div className="text-center">
               <h2 className="font-exo text-3xl font-bold text-white">Access Terminal</h2>
-              <p className="mt-2 text-cyan-300">Authenticate to access intelligence data</p>
+              <p className="mt-2 text-cyan-300">Authenticate for full access</p>
             </div>
             <div className="space-y-3">
               <LoginButton icon={<GoogleIcon />} label="Sign in with Google" href="/api/login" />
               <LoginButton icon={<ZohoIcon />} label="Sign in with Zoho" href="/api/login" />
             </div>
+            
+            {onContinueAsGuest && (
+              <>
+                <div className="relative my-6">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-cyan-500/30"></div>
+                  </div>
+                  <div className="relative flex justify-center text-sm">
+                    <span className="px-2 bg-black/30 text-gray-400">Or</span>
+                  </div>
+                </div>
+                
+                <button
+                  onClick={onContinueAsGuest}
+                  className="w-full px-6 py-3 border border-gray-500/30 bg-gray-800/20 rounded-lg backdrop-blur-sm
+                           hover:bg-gray-700/40 hover:border-gray-400 transition-all duration-300 group"
+                >
+                  <span className="font-exo text-base text-gray-300 group-hover:text-white transition-colors">
+                    Continue as Guest
+                  </span>
+                </button>
+                <p className="text-xs text-center text-gray-500 mt-2">
+                  Limited access • Sign in to save insights and sync calendar
+                </p>
+              </>
+            )}
           </>
         ) : (
             <>

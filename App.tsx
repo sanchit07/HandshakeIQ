@@ -12,13 +12,14 @@ import { MenuIcon } from './components/icons/UIIcons';
 import { useAuth } from './client/hooks/useAuth';
 
 const App: React.FC = () => {
-  const { user, isLoading, isAuthenticated } = useAuth();
+  const { user, isLoading, isAuthenticated, isGuest } = useAuth();
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
-  const [view, setView] = useState<'dashboard' | 'profile' | 'settings' | 'scanner'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'profile' | 'settings' | 'scanner' | 'login'>('dashboard');
   const [scannedSearchTerm, setScannedSearchTerm] = useState<string>('');
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [searchHistory, setSearchHistory] = useState<Person[]>([]);
   const [savedDossiers, setSavedDossiers] = useState<Person[]>([]);
+  const [guestMode, setGuestMode] = useState<boolean>(false);
 
   const handleLogout = useCallback(() => {
     window.location.href = '/api/logout';
@@ -32,14 +33,27 @@ const App: React.FC = () => {
     setSearchHistory(prev => [person, ...prev.filter(p => p.id !== person.id)].slice(0, 10));
   }, []);
   
+  const handleContinueAsGuest = useCallback(() => {
+    setGuestMode(true);
+    setView('dashboard');
+  }, []);
+
   const handleSaveDossier = useCallback((person: Person) => {
+    // Require authentication for saving
+    if (guestMode || !isAuthenticated) {
+      // Show login prompt
+      alert('Please sign in to save dossiers. This feature requires authentication.');
+      setView('login');
+      return;
+    }
+    
     setSavedDossiers(prev => {
         if (prev.find(p => p.id === person.id)) {
             return prev; // Already saved
         }
         return [...prev, person];
     });
-  }, []);
+  }, [guestMode, isAuthenticated]);
 
   const handleOpenScanner = useCallback(() => setView('scanner'), []);
   const handleCloseScanner = useCallback((searchTerm?: string) => {
@@ -62,6 +76,13 @@ const App: React.FC = () => {
 
   const isProfileVisible = view === 'profile';
   const isSettingsVisible = view === 'settings';
+  const isLoginVisible = view === 'login';
+  
+  // Show app content if authenticated OR in guest mode
+  const showAppContent = isAuthenticated || guestMode;
+  
+  // Show login screen if loading is done and user hasn't authenticated or chosen guest mode
+  const showLoginScreen = !isLoading && !showAppContent;
 
   return (
     <div className="min-h-screen text-cyan-200 animated-background">
@@ -72,10 +93,22 @@ const App: React.FC = () => {
             <h1 className="font-exo text-xl md:text-2xl font-bold text-white tracking-widest">HandshakeIQ</h1>
           </div>
           <div className="flex items-center space-x-4">
-            {isAuthenticated && (
-              <button onClick={() => setIsMenuOpen(true)} className="text-cyan-400 hover:text-white transition-colors p-2 rounded-full hover:bg-cyan-500/20" aria-label="Open Menu">
-                <MenuIcon />
-              </button>
+            {showAppContent && (
+              <>
+                {guestMode && (
+                  <button 
+                    onClick={() => setView('login')}
+                    className="text-xs px-3 py-1.5 bg-cyan-600/80 hover:bg-cyan-500 rounded-md text-white font-medium transition-colors"
+                  >
+                    Sign In
+                  </button>
+                )}
+                {isAuthenticated && (
+                  <button onClick={() => setIsMenuOpen(true)} className="text-cyan-400 hover:text-white transition-colors p-2 rounded-full hover:bg-cyan-500/20" aria-label="Open Menu">
+                    <MenuIcon />
+                  </button>
+                )}
+              </>
             )}
             <div className="flex items-center space-x-2">
               <span className="text-xs text-gray-400 hidden sm:inline">Powered by</span>
@@ -85,9 +118,9 @@ const App: React.FC = () => {
         </header>
 
         <main className={`flex-grow overflow-hidden transition-transform duration-500 ease-in-out ${isMenuOpen ? 'translate-x-[-280px]' : ''}`}>
-          {isLoading || !isAuthenticated ? (
-            <LoginScreen />
-          ) : (
+          {showLoginScreen || isLoginVisible ? (
+            <LoginScreen onContinueAsGuest={handleContinueAsGuest} />
+          ) : showAppContent ? (
             <div className="relative w-full h-full">
                <div className={`transition-all duration-500 ease-in-out ${isProfileVisible || isSettingsVisible ? 'transform -translate-x-full opacity-0 scale-95' : 'transform translate-x-0 opacity-100 scale-100'}`}>
                 <Dashboard

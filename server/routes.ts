@@ -1,16 +1,21 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { setupGoogleAuth, isAuthenticated } from "./googleAuth";
+import { setupGoogleAuth, requireAuth, attachSessionIfPresent } from "./googleAuth";
 import { generateIntelligenceReport, extractTextFromImage } from "../services/geminiService";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Setup Google OAuth authentication
   await setupGoogleAuth(app);
 
-  // Auth routes
-  app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
+  // Auth routes - check if user is logged in (optional, returns null if not)
+  app.get('/api/auth/user', attachSessionIfPresent, async (req: any, res) => {
     try {
+      // If no user session, return null (guest mode)
+      if (!req.session?.user) {
+        return res.json(null);
+      }
+      
       const userId = req.session.user.id;
       const user = await storage.getUser(userId);
       res.json(user);
@@ -20,8 +25,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Gemini API routes
-  app.post('/api/intelligence-report', isAuthenticated, async (req, res) => {
+  // Gemini API routes - NO AUTH REQUIRED for guest access
+  app.post('/api/intelligence-report', async (req, res) => {
     try {
       const { personName, company } = req.body;
       if (!personName || !company) {
@@ -35,7 +40,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/extract-card', isAuthenticated, async (req, res) => {
+  app.post('/api/extract-card', async (req, res) => {
     try {
       const { base64Image } = req.body;
       if (!base64Image) {
