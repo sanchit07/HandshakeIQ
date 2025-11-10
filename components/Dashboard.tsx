@@ -114,7 +114,7 @@ const SearchBar: React.FC<{
                 )}
             </div>
             {(isFocused || isSearching) && (query || searchResults.length > 0) && (
-                <div className="absolute z-50 w-full mt-2 bg-gray-900 backdrop-blur-md border border-cyan-500/40 rounded-lg shadow-2xl shadow-cyan-500/20 max-h-96 overflow-y-auto animate-slide-down-fade">
+                <div className="absolute z-50 w-full mt-2 bg-slate-950 border border-cyan-500/40 rounded-lg shadow-2xl shadow-cyan-500/20 max-h-96 overflow-y-auto animate-slide-down-fade">
                     {isSearching ? (
                         <div className="p-8 text-center">
                             <div className="relative">
