@@ -10,24 +10,31 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
+const isProduction = process.env.NODE_ENV === 'production';
+
 (async () => {
+  // Register API routes first
   const server = await registerRoutes(app);
 
-  // In production, serve the built frontend files
-  const isProduction = process.env.NODE_ENV === 'production';
+  // In production, serve the built frontend files AFTER API routes
   if (isProduction) {
     const distPath = path.join(__dirname, '../dist');
+    
+    // Serve static assets (js, css, images, etc.)
     app.use(express.static(distPath));
     
-    // Serve index.html for all non-API routes (SPA routing)
-    app.get('*', (req, res) => {
-      if (!req.path.startsWith('/api/')) {
-        res.sendFile(path.join(distPath, 'index.html'));
+    // SPA fallback - serve index.html for all non-API routes
+    app.use((req, res, next) => {
+      // If request is for API, let it through to 404
+      if (req.path.startsWith('/api/')) {
+        return next();
       }
+      // Otherwise serve the index.html for client-side routing
+      res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
-  // Error handling middleware
+  // Error handling middleware (must be last)
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
     const message = err.message || "Internal Server Error";

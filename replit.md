@@ -59,9 +59,10 @@ HandshakeIQ utilizes a full-stack architecture with a React 19 (TypeScript) fron
   1. Updated `server/index.ts` for production mode:
      - Detects production using `NODE_ENV=production`
      - Serves static files from `dist/` folder in production
-     - Handles SPA routing by serving index.html for non-API routes
-     - Changed default port to 5000 (Replit standard)
+     - Handles SPA routing with middleware (Express 5 compatible - cannot use `app.get('*')`)
+     - Uses port 5000 in production, port 3000 in development
      - Binds to 0.0.0.0 for proper network exposure
+     - Fixed Express 5 compatibility issue (wildcard route syntax not supported)
   
   2. Added production start script to `package.json`:
      - `"start": "NODE_ENV=production tsx server/index.ts"`
