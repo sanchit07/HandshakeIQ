@@ -7,7 +7,7 @@ import { CalendarService } from "../services/calendarService";
 import { searchPerson, enhancedPersonSearch } from "./googleSearchService";
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Setup Google OAuth authentication
+  // Setup Google OAuth authentication (includes mock Zoho auth)
   await setupGoogleAuth(app);
 
   // Auth routes - check if user is logged in (optional, returns null if not)

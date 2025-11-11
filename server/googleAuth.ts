@@ -123,39 +123,205 @@ export async function setupGoogleAuth(app: Express) {
     }
   });
 
-  // Test Zoho login - creates a session for test user
-  app.get('/api/login/zoho', async (req, res) => {
+  // Mock Zoho authorization page
+  app.get('/api/login/zoho', (req, res) => {
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Zoho Authorization</title>
+        <style>
+          body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+          }
+          .auth-container {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            max-width: 400px;
+            width: 90%;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            text-align: center;
+          }
+          .zoho-logo {
+            width: 120px;
+            height: 40px;
+            background: #E42527;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            font-weight: bold;
+            margin: 0 auto 30px;
+            border-radius: 4px;
+          }
+          h1 {
+            color: #333;
+            font-size: 24px;
+            margin-bottom: 10px;
+          }
+          .app-name {
+            color: #667eea;
+            font-weight: bold;
+          }
+          p {
+            color: #666;
+            line-height: 1.6;
+            margin-bottom: 30px;
+          }
+          .permissions {
+            background: #f5f5f5;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+            text-align: left;
+          }
+          .permissions h3 {
+            font-size: 14px;
+            color: #333;
+            margin-bottom: 15px;
+          }
+          .permission-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 10px;
+            color: #666;
+            font-size: 14px;
+          }
+          .permission-item::before {
+            content: '✓';
+            color: #4CAF50;
+            font-weight: bold;
+            margin-right: 10px;
+          }
+          .authorize-btn {
+            background: #E42527;
+            color: white;
+            border: none;
+            padding: 14px 40px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 6px;
+            cursor: pointer;
+            width: 100%;
+            transition: background 0.3s;
+          }
+          .authorize-btn:hover {
+            background: #c01f21;
+          }
+          .cancel-btn {
+            background: transparent;
+            color: #666;
+            border: none;
+            padding: 10px;
+            font-size: 14px;
+            cursor: pointer;
+            margin-top: 15px;
+          }
+          .cancel-btn:hover {
+            color: #333;
+            text-decoration: underline;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="auth-container">
+          <div class="zoho-logo">Zoho</div>
+          <h1>Authorize <span class="app-name">HandshakeIQ</span></h1>
+          <p>HandshakeIQ would like to access your Zoho account to provide you with professional intelligence insights.</p>
+          
+          <div class="permissions">
+            <h3>This app will be able to:</h3>
+            <div class="permission-item">View your basic profile information</div>
+            <div class="permission-item">Access your email address</div>
+            <div class="permission-item">Read your calendar events</div>
+          </div>
+
+          <form id="authForm" method="POST" action="/api/zoho/callback">
+            <button type="submit" class="authorize-btn">Authorize HandshakeIQ</button>
+          </form>
+          <button class="cancel-btn" onclick="window.close()">Cancel</button>
+        </div>
+      </body>
+      </html>
+    `;
+    
+    res.setHeader('Content-Type', 'text/html');
+    res.send(htmlContent);
+  });
+
+  // Mock Zoho callback - create session and close popup
+  app.post('/api/zoho/callback', async (req: any, res) => {
     try {
-      // Test user credentials
-      const testUser = {
-        id: 'zoho-test-user-001',
-        email: 'sanchit@movingwalls.com',
-        firstName: 'Sanchit',
-        lastName: 'Neema',
-        profileImageUrl: null,
+      // Create a deterministic mock Zoho user
+      const mockZohoUser = {
+        id: 'zoho_mock_user_12345',
+        email: 'demo@zoho.com',
+        firstName: 'Zoho',
+        lastName: 'Demo',
+        profileImageUrl: 'https://ui-avatars.com/api/?name=Zoho+Demo&background=E42527&color=fff&size=200',
       };
 
-      // Store user in database
-      const user = await storage.upsertUser(testUser);
+      // Store mock user in database
+      const user = await storage.upsertUser(mockZohoUser);
 
-      // Create session for test user
+      // Create session (same pattern as Google OAuth)
       (req.session as any).user = {
         id: user.id,
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
         profileImageUrl: user.profileImageUrl,
-        // Mock tokens for testing (not real Zoho tokens)
-        accessToken: 'test-access-token',
-        refreshToken: 'test-refresh-token',
-        expiresAt: Date.now() + (7 * 24 * 60 * 60 * 1000), // 7 days from now
+        accessToken: 'mock_zoho_access_token',
+        refreshToken: 'mock_zoho_refresh_token',
+        expiresAt: Date.now() + 3600000, // 1 hour from now
       };
 
-      // Redirect back to home page
-      res.redirect('/');
+      // Save session and close popup
+      (req.session as any).save((err: any) => {
+        if (err) {
+          console.error('Session save error:', err);
+          return res.status(500).send('Failed to save session');
+        }
+
+        // Close popup and notify parent window (same as Google OAuth)
+        // Add delay to ensure session cookie is fully written to browser
+        res.send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <title>Authorization Successful</title>
+          </head>
+          <body>
+            <script>
+              // Wait a moment for session cookie to be set before closing
+              setTimeout(function() {
+                if (window.opener) {
+                  window.opener.postMessage({ type: 'auth_success' }, '*');
+                  window.close();
+                } else {
+                  window.location.href = '/';
+                }
+              }, 500);
+            </script>
+            <p>Authorization successful! This window will close automatically...</p>
+          </body>
+          </html>
+        `);
+      });
     } catch (error) {
-      console.error('Error during test Zoho login:', error);
-      res.status(500).send('Test login failed');
+      console.error('Error in Zoho mock callback:', error);
+      res.status(500).send('Authentication failed');
     }
   });
 

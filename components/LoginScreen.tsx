@@ -8,10 +8,23 @@ const LoginButton: React.FC<{ icon: React.ReactNode; label: string; href: string
     // Open in new window to avoid iframe restrictions
     const authWindow = window.open(href, '_blank', 'width=500,height=700,scrollbars=yes');
     
-    // Poll for window close and reload page
+    // Listen for auth success message from popup
+    const messageHandler = (event: MessageEvent) => {
+      if (event.data?.type === 'auth_success') {
+        window.removeEventListener('message', messageHandler);
+        // Small delay to ensure session cookie is processed
+        setTimeout(() => {
+          window.location.reload();
+        }, 300);
+      }
+    };
+    window.addEventListener('message', messageHandler);
+    
+    // Fallback: Poll for window close if message isn't received
     const pollTimer = setInterval(() => {
       if (authWindow?.closed) {
         clearInterval(pollTimer);
+        window.removeEventListener('message', messageHandler);
         window.location.reload();
       }
     }, 500);
