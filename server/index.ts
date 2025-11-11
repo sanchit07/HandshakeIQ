@@ -34,7 +34,9 @@ app.use(express.urlencoded({ extended: false }));
     res.status(status).json({ message });
   });
 
-  const PORT = parseInt(process.env.PORT || '5000', 10);
+  // Use port 5000 in production (Replit deployment standard), 3000 in development
+  const defaultPort = isProduction ? '5000' : '3000';
+  const PORT = parseInt(process.env.PORT || defaultPort, 10);
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT} (${isProduction ? 'production' : 'development'} mode)`);
   });

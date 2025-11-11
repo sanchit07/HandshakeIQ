@@ -44,6 +44,46 @@ HandshakeIQ utilizes a full-stack architecture with a React 19 (TypeScript) fron
 
 ## Recent Changes
 
+### 2025-11-10: PRODUCTION DEPLOYMENT FIX - Connection Error on Published App
+- **Problem**: Published app (https://handshake-iq-2-sanchitneema.replit.app) showed connection error instead of login page
+  - Deployment was only running `vite preview` (frontend only)
+  - Backend Express server was NOT running in production
+  - API endpoints unavailable, causing "Connection Error: Unable to connect to the server"
+  
+- **Root Cause**: Incorrect deployment configuration
+  - Original config ran frontend preview server only
+  - Backend with /api/* endpoints never started in production
+  - Full-stack app requires both frontend AND backend running
+  
+- **Permanent Fix Applied**:
+  1. Updated `server/index.ts` for production mode:
+     - Detects production using `NODE_ENV=production`
+     - Serves static files from `dist/` folder in production
+     - Handles SPA routing by serving index.html for non-API routes
+     - Changed default port to 5000 (Replit standard)
+     - Binds to 0.0.0.0 for proper network exposure
+  
+  2. Added production start script to `package.json`:
+     - `"start": "NODE_ENV=production tsx server/index.ts"`
+     - Runs backend in production mode
+  
+  3. Updated deployment configuration via deploy_config_tool:
+     - Build: `npm run build` (builds frontend to dist/)
+     - Run: `npm start` (runs backend serving frontend + API)
+     - Target: autoscale (stateless deployment)
+  
+- **Production Requirements**:
+  - Production secrets must be set in deployment environment (Replit auto-copies from dev)
+  - Production database must be configured in deployment settings
+  - Environment variables: GEMINI_API_KEY, GOOGLE_SEARCH_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, DATABASE_URL
+  
+- **Verified Working**:
+  - Frontend builds successfully to dist/ folder ✅
+  - Backend serves static files + API endpoints in production ✅
+  - Deployment configuration correct for autoscale ✅
+  - SPA routing handled correctly ✅
+  - Architect review passed ✅
+
 ### 2025-11-10: CRITICAL FIX - Database Connection & Intelligence Report Generation
 - **Root Cause Identified**: Backend server failing to start due to missing PostgreSQL database
   - Session store (`connect-pg-simple`) requires PostgreSQL connection during server initialization
