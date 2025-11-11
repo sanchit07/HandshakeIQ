@@ -348,6 +348,13 @@ export const attachSessionIfPresent: RequestHandler = async (req, res, next) => 
   // Check if token is expired
   const now = Date.now();
   if (user.expiresAt && now >= user.expiresAt) {
+    // Skip refresh for mock Zoho sessions (they don't have real Google tokens)
+    if (user.refreshToken === 'mock_zoho_refresh_token') {
+      // Mock session has expired - treat as guest
+      delete (req.session as any).user;
+      return next();
+    }
+    
     // Try to refresh token
     if (user.refreshToken) {
       try {
@@ -397,6 +404,14 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
 
   if (!user) {
     return res.status(401).json({ message: 'Authentication required' });
+  }
+  
+  // Mock Zoho sessions cannot access Google-authenticated endpoints
+  if (user.refreshToken === 'mock_zoho_refresh_token') {
+    return res.status(403).json({ 
+      message: 'This feature requires Google authentication',
+      hint: 'Please sign in with Google to access calendar integration'
+    });
   }
 
   // Check if token is expired
