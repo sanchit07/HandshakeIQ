@@ -6,6 +6,7 @@ import { generateIntelligenceReport } from '../services/geminiService';
 import { BackIcon, CommentIcon, CrmIcon, SaveIcon, LinkIcon, ReminderIcon, LinkedInSourceIcon, NewsArticleIcon, BlogPostIcon, BookmarkIcon, ChevronDownIcon, RefreshIcon, TrashIcon, EditIcon } from './icons/UIIcons';
 import axios from 'axios';
 import { ScanningLoader, ProfileBuildingLoader } from './loaders/NeonLoader';
+import { MOCK_INTELLIGENCE_REPORTS, MOCK_SOURCES } from '../constants';
 
 const LoadingIndicator: React.FC = () => (
     <div className="flex flex-col items-center justify-center h-full text-center p-4 sm:p-8">
@@ -366,15 +367,35 @@ const PersonProfile: React.FC<PersonProfileProps> = ({ person, onBack, onSave, d
         const MIN_LOADER_DURATION = 2000; // 2 seconds to ensure smooth animation display
         
         try {
-            const { report: fetchedReport, sources: fetchedSources } = await generateIntelligenceReport(person.name, person.company);
-            setReport(fetchedReport);
-            setSources(fetchedSources);
+            // Check if this is a mock person (IDs 1-6) and use mock data
+            const isMockPerson = ['1', '2', '3', '4', '5', '6'].includes(person.id);
+            
+            if (isMockPerson && MOCK_INTELLIGENCE_REPORTS[person.id]) {
+                // Use mock data for demonstration
+                const mockReport = MOCK_INTELLIGENCE_REPORTS[person.id];
+                const personNameKey = person.name.toLowerCase().replace(/\s+/g, '-');
+                const mockSources = MOCK_SOURCES[personNameKey] || [];
+                
+                setReport(mockReport);
+                setSources(mockSources);
+                
+                // Extract LinkedIn URLs from mock sources
+                const linkedInLinks = mockSources
+                    .filter(source => source.web?.uri.includes('linkedin.com/in/'))
+                    .map(source => source.web!.uri);
+                setLinkedInUrls(linkedInLinks);
+            } else {
+                // Use real API for non-mock people
+                const { report: fetchedReport, sources: fetchedSources } = await generateIntelligenceReport(person.name, person.company);
+                setReport(fetchedReport);
+                setSources(fetchedSources);
 
-            if (fetchedReport.rawText) {
-                const regex = /https?:\/\/(?:www\.)?linkedin\.com\/in\/[a-zA-Z0-9_-]+/g;
-                const matches = fetchedReport.rawText.match(regex);
-                if (matches) {
-                    setLinkedInUrls([...new Set(matches)]);
+                if (fetchedReport.rawText) {
+                    const regex = /https?:\/\/(?:www\.)?linkedin\.com\/in\/[a-zA-Z0-9_-]+/g;
+                    const matches = fetchedReport.rawText.match(regex);
+                    if (matches) {
+                        setLinkedInUrls([...new Set(matches)]);
+                    }
                 }
             }
         } catch (err) {
