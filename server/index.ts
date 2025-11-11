@@ -1,24 +1,31 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
-// Serve static files from Vite in development
-app.use((req, res, next) => {
-  const ext = path.extname(req.path);
-  if (ext || req.path.startsWith('/api/')) {
-    return next();
-  }
-  
-  // For non-API routes without extension, let Vite handle them
-  return next();
-});
-
 (async () => {
   const server = await registerRoutes(app);
+
+  // In production, serve the built frontend files
+  const isProduction = process.env.NODE_ENV === 'production';
+  if (isProduction) {
+    const distPath = path.join(__dirname, '../dist');
+    app.use(express.static(distPath));
+    
+    // Serve index.html for all non-API routes (SPA routing)
+    app.get('*', (req, res) => {
+      if (!req.path.startsWith('/api/')) {
+        res.sendFile(path.join(distPath, 'index.html'));
+      }
+    });
+  }
 
   // Error handling middleware
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
@@ -27,8 +34,8 @@ app.use((req, res, next) => {
     res.status(status).json({ message });
   });
 
-  const PORT = process.env.PORT || 3000;
-  server.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  const PORT = parseInt(process.env.PORT || '5000', 10);
+  server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT} (${isProduction ? 'production' : 'development'} mode)`);
   });
 })();
