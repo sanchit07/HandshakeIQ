@@ -30,7 +30,7 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 - Improved person deduplication for distinct profiles across platforms.
 
 ## External Dependencies
-- **Google Gemini API**: For AI intelligence report generation, web search grounding, and business card scanning.
+- **Google Gemini API** (`@google/genai`): For AI intelligence report generation, web search grounding, and business card scanning using gemini-2.5-flash model.
 - **Google OAuth 2.0**: For user authentication and authorization.
 - **Google Custom Search API**: For real-time person search across the web.
 - **Google Calendar API**: For syncing and displaying user's calendar events.
@@ -41,3 +41,15 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 - **`connect-pg-simple`**: For PostgreSQL-backed session management.
 - **`google-auth-library`**: For Google OAuth 2.0 integration.
 - **`googleapis`**: For Google Calendar API access.
+
+## Recent Changes
+
+### November 17, 2025 - Gemini API Integration Fix
+- **Fixed TypeScript errors**: Updated Gemini API calls to use correct syntax for `@google/genai` library (tools parameter moved to config object).
+- **Improved error handling**: Added specific error detection for rate limits (429), authentication (401/403), server errors (500), and network issues.
+- **Enhanced logging**: Added comprehensive logging with `[GEMINI API]` prefix to track API requests, responses, and data flow through both search and structuring steps.
+- **Response validation**: Added validation before JSON parsing to detect empty responses and missing required fields.
+- **API call structure**: 
+  - Step 1: Uses `googleSearch` tool for web-grounded information retrieval.
+  - Step 2: Uses `responseSchema` with structured JSON output for consistent intelligence reports.
+- **Verified functionality**: Successfully tested with real-world data (retrieved 26 sources for test query with detailed intelligence reports).
