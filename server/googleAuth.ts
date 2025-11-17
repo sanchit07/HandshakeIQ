@@ -221,22 +221,32 @@ export async function setupGoogleAuth(app: Express) {
 
       console.log('[ZOHO CALLBACK] Session user set, saving session...');
 
-      // Save session and redirect
-      await new Promise<void>((resolve, reject) => {
-        (req.session as any).save((err: any) => {
-          if (err) {
-            console.error('[ZOHO CALLBACK] Session save error:', err);
-            reject(err);
-          } else {
-            console.log('[ZOHO CALLBACK] Session saved successfully');
-            resolve();
-          }
-        });
-      });
+      // Save session and close popup (same as Google OAuth)
+      (req.session as any).save((err: any) => {
+        if (err) {
+          console.error('[ZOHO CALLBACK] Session save error:', err);
+          return res.status(500).send('Failed to save session');
+        }
 
-      // Redirect to home page - session is now saved
-      console.log('[ZOHO CALLBACK] Redirecting to home page');
-      res.redirect('/');
+        console.log('[ZOHO CALLBACK] Session saved successfully, closing popup');
+
+        // Close popup and notify parent window (same as Google OAuth)
+        res.send(`
+          <html>
+            <body>
+              <script>
+                if (window.opener) {
+                  window.opener.postMessage({ type: 'auth_success' }, '*');
+                  window.close();
+                } else {
+                  window.location.href = '/';
+                }
+              </script>
+              <p>Authorization successful! This window will close automatically...</p>
+            </body>
+          </html>
+        `);
+      });
       
     } catch (error: any) {
       console.error('[ZOHO CALLBACK] Error during authentication:', error.response?.data || error.message);
