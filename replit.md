@@ -44,6 +44,17 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 
 ## Recent Changes
 
+### November 17, 2025 - Zoho OAuth Integration
+- **Real Zoho authentication**: Replaced mock Zoho login with complete OAuth 2.0 integration using Zoho API.
+- **OAuth endpoints**: 
+  - Authorization: Redirects to Zoho's real consent screen at `https://accounts.zoho.com/oauth/v2/auth`
+  - Callback: Exchanges authorization code for access tokens at `/auth/zoho/callback`
+- **User profile fetching**: Retrieves real user data (ZUID, email, name) from Zoho's user info endpoint.
+- **Token management**: Implements automatic token refresh for both Google and Zoho providers.
+- **Secure credential storage**: Zoho Client ID and Client Secret stored as encrypted environment variables.
+- **Multi-provider support**: Enhanced middleware to handle both Google and Zoho authentication flows seamlessly.
+- **Session handling**: Stores Zoho provider metadata (apiDomain, provider flag) for proper API routing.
+
 ### November 17, 2025 - Search History & Caching System
 - **Database schema**: Added `search_history` table to track all person searches with full intelligence reports and metadata.
 - **Smart caching**: Intelligence report endpoint now checks for exact matches (name + company) and returns cached results instantly instead of calling Gemini API again.
