@@ -36,16 +36,27 @@ export const generateIntelligenceReport = async (
       Include specific details, dates, and facts. Cite your sources.
     `;
     
+    console.log(`[GEMINI API] Step 1: Searching for information about "${personName}" at "${company}"`);
+    
     const searchResponse: GenerateContentResponse = await ai.models.generateContent({
         model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: searchPrompt }] }],
-        tools: [{ googleSearch: {} }]
+        config: {
+            tools: [{ googleSearch: {} }]
+        }
+    });
+
+    console.log(`[GEMINI API] Step 1 Response Status:`, {
+      hasResponse: !!(searchResponse as any).response,
+      hasCandidates: !!(searchResponse as any).response?.candidates,
+      candidatesLength: (searchResponse as any).response?.candidates?.length || 0
     });
 
     const searchText = (searchResponse as any).response?.text() || '';
     const sources = (searchResponse as any).response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
     
-    console.log(`Step 1: Retrieved ${sources.length} sources for ${personName}`);
+    console.log(`[GEMINI API] Step 1: Retrieved ${sources.length} sources for ${personName}`);
+    console.log(`[GEMINI API] Step 1: Search text length: ${searchText.length} characters`);
     
     // STEP 2: Structure the gathered information into proper JSON format
     const structurePrompt = `
@@ -104,6 +115,8 @@ export const generateIntelligenceReport = async (
       
       Provide at least 3-5 points in each category if information is available.
     `;
+    
+    console.log(`[GEMINI API] Step 2: Structuring intelligence report for ${personName}`);
     
     const structureResponse: GenerateContentResponse = await ai.models.generateContent({
         model: "gemini-2.5-flash",
@@ -209,17 +222,44 @@ export const generateIntelligenceReport = async (
         },
     });
 
+    console.log(`[GEMINI API] Step 2 Response Status:`, {
+      hasResponse: !!(structureResponse as any).response,
+      hasCandidates: !!(structureResponse as any).response?.candidates,
+      candidatesLength: (structureResponse as any).response?.candidates?.length || 0
+    });
+
     const structuredText = (structureResponse as any).response?.text() || '';
+    console.log(`[GEMINI API] Step 2: Structured text length: ${structuredText.length} characters`);
 
     let report: IntelligenceReport;
     
     try {
-        // Parse the JSON response - responseSchema guarantees proper JSON format
+        if (!structuredText || structuredText.trim() === '') {
+            throw new Error('Empty response from Gemini API');
+        }
+        
         report = JSON.parse(structuredText);
-        console.log(`Step 2: Successfully structured intelligence report for ${personName} with ${sources.length} sources`);
+        
+        if (!report.summary || !report.professionalBackground || !report.recentActivities || 
+            !report.personalInterests || !report.discussionPoints) {
+            throw new Error('Missing required fields in parsed response');
+        }
+        
+        console.log(`[GEMINI API] Step 2: Successfully structured intelligence report for ${personName} with ${sources.length} sources`);
+        console.log(`[GEMINI API] Report structure:`, {
+          hasSummary: !!report.summary,
+          professionalBackgroundPoints: report.professionalBackground.points.length,
+          recentActivitiesPoints: report.recentActivities.points.length,
+          personalInterestsPoints: report.personalInterests.points.length,
+          discussionPointsPoints: report.discussionPoints.points.length
+        });
     } catch (parseError) {
-        console.error("Failed to parse structured JSON response:", parseError, "Raw text:", structuredText);
-        // Create a fallback report if parsing fails
+        console.error("[GEMINI API ERROR] Failed to parse structured JSON response:", {
+          error: parseError instanceof Error ? parseError.message : String(parseError),
+          rawTextPreview: structuredText.substring(0, 500),
+          rawTextLength: structuredText.length
+        });
+        
         report = {
             summary: "The model's response could not be parsed as structured data. The raw, unformatted output is provided below for manual review. This may indicate a temporary issue with the intelligence generation service.",
             professionalBackground: { category: "Professional Background", points: [] },
@@ -235,14 +275,36 @@ export const generateIntelligenceReport = async (
     return { report, sources };
 
   } catch (error) {
-    console.error("Error generating intelligence report:", error);
+    console.error("[GEMINI API ERROR] Error generating intelligence report:", {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+      personName,
+      company
+    });
+    
+    let errorMessage = "A critical error occurred while communicating with the intelligence network.";
+    
+    if (error instanceof Error) {
+      if (error.message.includes('429') || error.message.toLowerCase().includes('rate limit')) {
+        errorMessage = "Rate limit exceeded. The API has received too many requests. Please wait a moment and try again.";
+      } else if (error.message.includes('401') || error.message.toLowerCase().includes('unauthorized')) {
+        errorMessage = "Authentication failed. The API key may be invalid or expired. Please check your Gemini API key configuration.";
+      } else if (error.message.includes('403') || error.message.toLowerCase().includes('forbidden')) {
+        errorMessage = "Access forbidden. The API key may not have permission to use Google Search grounding or this model.";
+      } else if (error.message.includes('500') || error.message.toLowerCase().includes('internal server')) {
+        errorMessage = "Gemini API server error. This is a temporary issue on Google's side. Please try again in a few moments.";
+      } else if (error.message.toLowerCase().includes('network') || error.message.toLowerCase().includes('fetch')) {
+        errorMessage = "Network connection error. Please check your internet connection and try again.";
+      }
+    }
+    
     const errorReport: IntelligenceReport = {
-        summary: "A critical error occurred while communicating with the intelligence network. The connection may be unstable or the API key may be invalid. Please check the console for details and try again.",
+        summary: errorMessage,
         professionalBackground: { category: "Professional Background", points: [] },
         recentActivities: { category: "Recent Activities & Online Presence", points: [] },
         personalInterests: { category: "Personal Interests & Hobbies", points: [] },
         discussionPoints: { category: "Potential Discussion Points", points: [] },
-        rawText: error instanceof Error ? error.message : String(error)
+        rawText: error instanceof Error ? `${error.message}\n\nStack: ${error.stack}` : String(error)
     };
     return { report: errorReport, sources: [] };
   }
@@ -250,6 +312,8 @@ export const generateIntelligenceReport = async (
 
 export const extractTextFromImage = async (base64Image: string): Promise<{name: string, company: string}> => {
     try {
+        console.log('[GEMINI API] Extracting text from business card image');
+        
         const imagePart = {
             inlineData: {
                 mimeType: 'image/jpeg',
@@ -278,11 +342,18 @@ export const extractTextFromImage = async (base64Image: string): Promise<{name: 
         });
 
         const text = (response as any).response?.text() || '{}';
+        console.log('[GEMINI API] Business card extraction response length:', text.length);
+        
         const data = JSON.parse(text);
+        console.log('[GEMINI API] Successfully extracted:', { name: data.name || 'N/A', company: data.company || 'N/A' });
+        
         return { name: data.name || '', company: data.company || '' };
 
     } catch (error) {
-        console.error("Error extracting text from image:", error);
+        console.error("[GEMINI API ERROR] Error extracting text from image:", {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined
+        });
         return { name: '', company: '' };
     }
 };
