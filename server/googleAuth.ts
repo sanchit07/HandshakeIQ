@@ -123,168 +123,88 @@ export async function setupGoogleAuth(app: Express) {
     }
   });
 
-  // Mock Zoho authorization page
+  // Real Zoho OAuth - Redirect to Zoho authorization
   app.get('/api/login/zoho', (req, res) => {
-    const htmlContent = `
-      <!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Zoho Authorization</title>
-        <style>
-          body {
-            margin: 0;
-            padding: 0;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-          }
-          .auth-container {
-            background: white;
-            border-radius: 12px;
-            padding: 40px;
-            max-width: 400px;
-            width: 90%;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            text-align: center;
-          }
-          .zoho-logo {
-            width: 120px;
-            height: 40px;
-            background: #E42527;
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 24px;
-            font-weight: bold;
-            margin: 0 auto 30px;
-            border-radius: 4px;
-          }
-          h1 {
-            color: #333;
-            font-size: 24px;
-            margin-bottom: 10px;
-          }
-          .app-name {
-            color: #667eea;
-            font-weight: bold;
-          }
-          p {
-            color: #666;
-            line-height: 1.6;
-            margin-bottom: 30px;
-          }
-          .permissions {
-            background: #f5f5f5;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 30px;
-            text-align: left;
-          }
-          .permissions h3 {
-            font-size: 14px;
-            color: #333;
-            margin-bottom: 15px;
-          }
-          .permission-item {
-            display: flex;
-            align-items: center;
-            margin-bottom: 10px;
-            color: #666;
-            font-size: 14px;
-          }
-          .permission-item::before {
-            content: '✓';
-            color: #4CAF50;
-            font-weight: bold;
-            margin-right: 10px;
-          }
-          .authorize-btn {
-            background: #E42527;
-            color: white;
-            border: none;
-            padding: 14px 40px;
-            font-size: 16px;
-            font-weight: 600;
-            border-radius: 6px;
-            cursor: pointer;
-            width: 100%;
-            transition: background 0.3s;
-          }
-          .authorize-btn:hover {
-            background: #c01f21;
-          }
-          .cancel-btn {
-            background: transparent;
-            color: #666;
-            border: none;
-            padding: 10px;
-            font-size: 14px;
-            cursor: pointer;
-            margin-top: 15px;
-          }
-          .cancel-btn:hover {
-            color: #333;
-            text-decoration: underline;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="auth-container">
-          <div class="zoho-logo">Zoho</div>
-          <h1>Authorize <span class="app-name">HandshakeIQ</span></h1>
-          <p>HandshakeIQ would like to access your Zoho account to provide you with professional intelligence insights.</p>
-          
-          <div class="permissions">
-            <h3>This app will be able to:</h3>
-            <div class="permission-item">View your basic profile information</div>
-            <div class="permission-item">Access your email address</div>
-            <div class="permission-item">Read your calendar events</div>
-          </div>
-
-          <form id="authForm" method="POST" action="/api/zoho/callback">
-            <button type="submit" class="authorize-btn">Authorize HandshakeIQ</button>
-          </form>
-          <button class="cancel-btn" onclick="window.close()">Cancel</button>
-        </div>
-      </body>
-      </html>
-    `;
+    const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID;
+    const ZOHO_REDIRECT_URI = process.env.REPLIT_DEV_DOMAIN 
+      ? `https://${process.env.REPLIT_DEV_DOMAIN}/auth/zoho/callback`
+      : 'http://localhost:5000/auth/zoho/callback';
     
-    res.setHeader('Content-Type', 'text/html');
-    res.send(htmlContent);
+    if (!ZOHO_CLIENT_ID) {
+      return res.status(500).send('Zoho OAuth not configured');
+    }
+    
+    const authUrl = `https://accounts.zoho.com/oauth/v2/auth?` +
+      `response_type=code&` +
+      `client_id=${ZOHO_CLIENT_ID}&` +
+      `redirect_uri=${encodeURIComponent(ZOHO_REDIRECT_URI)}&` +
+      `scope=AaaServer.profile.READ&` +
+      `access_type=offline&` +
+      `prompt=consent`;
+    
+    res.redirect(authUrl);
   });
 
-  // Mock Zoho callback - create session and close popup
-  app.post('/api/zoho/callback', async (req: any, res) => {
+  // Real Zoho OAuth callback - exchange code for tokens
+  app.get('/auth/zoho/callback', async (req: any, res) => {
+    const { code } = req.query;
+    
+    if (!code || typeof code !== 'string') {
+      return res.status(400).send('Authorization code missing');
+    }
+    
+    const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID;
+    const ZOHO_CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET;
+    const ZOHO_REDIRECT_URI = process.env.REPLIT_DEV_DOMAIN 
+      ? `https://${process.env.REPLIT_DEV_DOMAIN}/auth/zoho/callback`
+      : 'http://localhost:5000/auth/zoho/callback';
+    
+    if (!ZOHO_CLIENT_ID || !ZOHO_CLIENT_SECRET) {
+      return res.status(500).send('Zoho OAuth not configured');
+    }
+    
     try {
-      // Create a deterministic mock Zoho user
-      const mockZohoUser = {
-        id: 'zoho_mock_user_12345',
-        email: 'demo@zoho.com',
-        firstName: 'Zoho',
-        lastName: 'Demo',
-        profileImageUrl: 'https://ui-avatars.com/api/?name=Zoho+Demo&background=E42527&color=fff&size=200',
-      };
+      const axios = require('axios');
+      
+      const tokenResponse = await axios.post('https://accounts.zoho.com/oauth/v2/token', null, {
+        params: {
+          grant_type: 'authorization_code',
+          client_id: ZOHO_CLIENT_ID,
+          client_secret: ZOHO_CLIENT_SECRET,
+          redirect_uri: ZOHO_REDIRECT_URI,
+          code: code
+        }
+      });
+      
+      const { access_token, refresh_token, api_domain, expires_in } = tokenResponse.data;
+      
+      const userResponse = await axios.get(`${api_domain}/oauth/user/info`, {
+        headers: {
+          'Authorization': `Zoho-oauthtoken ${access_token}`
+        }
+      });
+      
+      const zohoUser = userResponse.data;
+      
+      const user = await storage.upsertUser({
+        id: `zoho_${zohoUser.ZUID}`,
+        email: zohoUser.Email || null,
+        firstName: zohoUser.First_Name || null,
+        lastName: zohoUser.Last_Name || null,
+        profileImageUrl: null,
+      });
 
-      // Store mock user in database
-      const user = await storage.upsertUser(mockZohoUser);
-
-      // Create session (same pattern as Google OAuth)
       (req.session as any).user = {
         id: user.id,
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
         profileImageUrl: user.profileImageUrl,
-        accessToken: 'mock_zoho_access_token',
-        refreshToken: 'mock_zoho_refresh_token',
-        expiresAt: Date.now() + 3600000, // 1 hour from now
+        accessToken: access_token,
+        refreshToken: refresh_token,
+        expiresAt: Date.now() + (expires_in * 1000),
+        provider: 'zoho',
+        apiDomain: api_domain
       };
 
       // Save session and close popup
@@ -320,7 +240,7 @@ export async function setupGoogleAuth(app: Express) {
         `);
       });
     } catch (error) {
-      console.error('Error in Zoho mock callback:', error);
+      console.error('Error during Zoho OAuth:', error);
       res.status(500).send('Authentication failed');
     }
   });
@@ -348,41 +268,66 @@ export const attachSessionIfPresent: RequestHandler = async (req, res, next) => 
   // Check if token is expired
   const now = Date.now();
   if (user.expiresAt && now >= user.expiresAt) {
-    // Skip refresh for mock Zoho sessions (they don't have real Google tokens)
-    if (user.refreshToken === 'mock_zoho_refresh_token') {
-      // Mock session has expired - treat as guest
-      delete (req.session as any).user;
-      return next();
-    }
-    
     // Try to refresh token
     if (user.refreshToken) {
       try {
-        oauth2Client.setCredentials({
-          refresh_token: user.refreshToken,
-        });
-        const { credentials } = await oauth2Client.refreshAccessToken();
-        
-        // Update session with new tokens and persist back to session
-        user.accessToken = credentials.access_token;
-        user.expiresAt = credentials.expiry_date;
-        (req.session as any).user = user;
-        
-        // Save the session to persist changes
-        try {
+        // Refresh token based on provider
+        if (user.provider === 'zoho') {
+          // Zoho token refresh
+          const axios = require('axios');
+          const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID;
+          const ZOHO_CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET;
+          
+          const refreshResponse = await axios.post('https://accounts.zoho.com/oauth/v2/token', null, {
+            params: {
+              grant_type: 'refresh_token',
+              client_id: ZOHO_CLIENT_ID,
+              client_secret: ZOHO_CLIENT_SECRET,
+              refresh_token: user.refreshToken
+            }
+          });
+          
+          user.accessToken = refreshResponse.data.access_token;
+          user.expiresAt = Date.now() + (refreshResponse.data.expires_in * 1000);
+          (req.session as any).user = user;
+          
           await new Promise<void>((resolve, reject) => {
             req.session.save((err) => {
               if (err) reject(err);
               else resolve();
             });
           });
-        } catch (saveError) {
-          console.error('Session save failed after token refresh:', saveError);
-          // Continue anyway - the in-memory session is updated for this request
-        }
+          
+          (req as any).user = user;
+          return next();
+        } else {
+          // Google token refresh
+          oauth2Client.setCredentials({
+            refresh_token: user.refreshToken,
+          });
+          const { credentials } = await oauth2Client.refreshAccessToken();
         
-        (req as any).user = user;
-        return next();
+          // Update session with new tokens and persist back to session
+          user.accessToken = credentials.access_token;
+          user.expiresAt = credentials.expiry_date;
+          (req.session as any).user = user;
+          
+          // Save the session to persist changes
+          try {
+            await new Promise<void>((resolve, reject) => {
+              req.session.save((err) => {
+                if (err) reject(err);
+                else resolve();
+              });
+            });
+          } catch (saveError) {
+            console.error('Session save failed after token refresh:', saveError);
+            // Continue anyway - the in-memory session is updated for this request
+          }
+          
+          (req as any).user = user;
+          return next();
+        }
       } catch (error) {
         console.error('Token refresh failed:', error);
         // Continue as guest if refresh fails
@@ -406,30 +351,47 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
     return res.status(401).json({ message: 'Authentication required' });
   }
   
-  // Mock Zoho sessions cannot access Google-authenticated endpoints
-  if (user.refreshToken === 'mock_zoho_refresh_token') {
-    return res.status(403).json({ 
-      message: 'This feature requires Google authentication',
-      hint: 'Please sign in with Google to access calendar integration'
-    });
-  }
-
+  // Note: Zoho users can only access Google-specific features (like Calendar) if they sign in with Google
+  // For now, we allow both providers for non-calendar features
+  
   // Check if token is expired
   const now = Date.now();
   if (user.expiresAt && now >= user.expiresAt) {
     // Try to refresh token
     if (user.refreshToken) {
       try {
-        oauth2Client.setCredentials({
-          refresh_token: user.refreshToken,
-        });
-        const { credentials } = await oauth2Client.refreshAccessToken();
-        
-        // Update session with new tokens
-        user.accessToken = credentials.access_token;
-        user.expiresAt = credentials.expiry_date;
-        
-        return next();
+        if (user.provider === 'zoho') {
+          // Zoho token refresh
+          const axios = require('axios');
+          const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID;
+          const ZOHO_CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET;
+          
+          const refreshResponse = await axios.post('https://accounts.zoho.com/oauth/v2/token', null, {
+            params: {
+              grant_type: 'refresh_token',
+              client_id: ZOHO_CLIENT_ID,
+              client_secret: ZOHO_CLIENT_SECRET,
+              refresh_token: user.refreshToken
+            }
+          });
+          
+          user.accessToken = refreshResponse.data.access_token;
+          user.expiresAt = Date.now() + (refreshResponse.data.expires_in * 1000);
+          
+          return next();
+        } else {
+          // Google token refresh
+          oauth2Client.setCredentials({
+            refresh_token: user.refreshToken,
+          });
+          const { credentials } = await oauth2Client.refreshAccessToken();
+          
+          // Update session with new tokens
+          user.accessToken = credentials.access_token;
+          user.expiresAt = credentials.expiry_date;
+          
+          return next();
+        }
       } catch (error) {
         console.error('Token refresh failed:', error);
         return res.status(401).json({ message: 'Authentication required' });
