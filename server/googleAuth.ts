@@ -3,6 +3,7 @@ import session from 'express-session';
 import type { Express, RequestHandler } from 'express';
 import connectPg from 'connect-pg-simple';
 import { storage } from './storage';
+import axios from 'axios';
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID!;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET!;
@@ -178,8 +179,6 @@ export async function setupGoogleAuth(app: Express) {
     }
     
     try {
-      const axios = require('axios');
-      
       console.log('[ZOHO CALLBACK] Exchanging code for tokens...');
       const tokenResponse = await axios.post('https://accounts.zoho.com/oauth/v2/token', null, {
         params: {
@@ -291,7 +290,6 @@ export const attachSessionIfPresent: RequestHandler = async (req, res, next) => 
         // Refresh token based on provider
         if (user.provider === 'zoho') {
           // Zoho token refresh
-          const axios = require('axios');
           const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID;
           const ZOHO_CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET;
           
@@ -379,7 +377,6 @@ export const requireAuth: RequestHandler = async (req, res, next) => {
       try {
         if (user.provider === 'zoho') {
           // Zoho token refresh
-          const axios = require('axios');
           const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID;
           const ZOHO_CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET;
           
