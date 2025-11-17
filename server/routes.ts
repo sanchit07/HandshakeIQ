@@ -45,14 +45,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Gemini API routes - NO AUTH REQUIRED for guest access
-  app.post('/api/intelligence-report', async (req, res) => {
+  app.post('/api/intelligence-report', attachSessionIfPresent, async (req: any, res) => {
     try {
-      const { personName, company, links } = req.body;
+      const { personName, company, links, personTitle, personPhotoUrl, socialMediaLinks } = req.body;
       if (!personName || !company) {
         return res.status(400).json({ message: "personName and company are required" });
       }
+      
+      const userId = req.session?.user?.id || null;
+      
+      const existingMatch = await storage.findExactMatch(personName, company, userId);
+      if (existingMatch) {
+        console.log(`[SEARCH HISTORY] Found exact match for ${personName} at ${company}`);
+        return res.json({ 
+          report: existingMatch.intelligenceReport, 
+          sources: existingMatch.sources,
+          fromCache: true 
+        });
+      }
+      
       const result = await generateIntelligenceReport(personName, company, links);
-      res.json(result);
+      
+      try {
+        await storage.saveSearchHistory({
+          userId,
+          personName,
+          personCompany: company,
+          personTitle,
+          personPhotoUrl,
+          intelligenceReport: result.report,
+          sources: result.sources,
+          socialMediaLinks,
+        });
+        console.log(`[SEARCH HISTORY] Saved search for ${personName} at ${company}`);
+      } catch (historyError) {
+        console.error("[SEARCH HISTORY] Failed to save search history:", historyError);
+      }
+      
+      res.json({ ...result, fromCache: false });
     } catch (error) {
       console.error("Error generating intelligence report:", error);
       res.status(500).json({ message: "Failed to generate intelligence report" });
@@ -70,6 +100,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error("Error extracting card text:", error);
       res.status(500).json({ message: "Failed to extract card text" });
+    }
+  });
+
+  // Search History API routes - NO AUTH REQUIRED (supports guest mode)
+  app.get('/api/search-history', attachSessionIfPresent, async (req: any, res) => {
+    try {
+      const userId = req.session?.user?.id || null;
+      const limit = parseInt(req.query.limit as string) || 50;
+      
+      const history = await storage.getSearchHistory(userId, limit);
+      res.json(history);
+    } catch (error) {
+      console.error("Error fetching search history:", error);
+      res.status(500).json({ message: "Failed to fetch search history" });
+    }
+  });
+
+  app.get('/api/search-history/recent', attachSessionIfPresent, async (req: any, res) => {
+    try {
+      const userId = req.session?.user?.id || null;
+      const limit = parseInt(req.query.limit as string) || 10;
+      
+      const recent = await storage.getRecentSearches(userId, limit);
+      res.json(recent);
+    } catch (error) {
+      console.error("Error fetching recent searches:", error);
+      res.status(500).json({ message: "Failed to fetch recent searches" });
+    }
+  });
+
+  app.post('/api/search-history/find-match', attachSessionIfPresent, async (req: any, res) => {
+    try {
+      const userId = req.session?.user?.id || null;
+      const { personName, personCompany } = req.body;
+      
+      if (!personName) {
+        return res.status(400).json({ message: "personName is required" });
+      }
+      
+      const match = await storage.findExactMatch(personName, personCompany, userId);
+      res.json(match || null);
+    } catch (error) {
+      console.error("Error finding exact match:", error);
+      res.status(500).json({ message: "Failed to find match" });
     }
   });
 
