@@ -71,30 +71,43 @@ function detectPersonVariants(results: GoogleSearchResult[], searchName: string)
     let title = '';
     let company = '';
     
-    const titlePatterns = [
-      /(?:ceo|cto|cfo|founder|director|manager|engineer|developer|designer|analyst|consultant|professor|dr\.|president|vp|vice president)\s+(?:of|at)\s+([^\n,.|]+)/i,
-      /([^\n,.|]+)\s+(?:ceo|cto|cfo|founder|director|manager|engineer|developer|designer)/i,
-    ];
-    
-    for (const pattern of titlePatterns) {
-      const match = result.snippet.match(pattern);
-      if (match) {
-        const parts = result.snippet.split(/\s+(?:at|,)\s+/);
-        if (parts.length >= 2) {
-          title = parts[0].trim();
-          company = parts[1].split(/[,.|]/)[0].trim();
-        }
-        break;
-      }
-    }
-
     const linkedInMatch = result.link.match(/linkedin\.com\/in\/([^\/]+)/);
     if (linkedInMatch) {
       personName = result.title.split(/[-–|]/)[0].trim() || searchName;
     }
+    
+    const companyPatterns = [
+      /\bat\s+([A-Z][A-Za-z0-9\s&.'-]+?)(?:\s*[-–|,.]|\s*$)/,
+      /\bworks?\s+(?:at|for)\s+([A-Z][A-Za-z0-9\s&.'-]+?)(?:\s*[-–|,.]|\s*$)/i,
+      /\bemployed\s+(?:at|by)\s+([A-Z][A-Za-z0-9\s&.'-]+?)(?:\s*[-–|,.]|\s*$)/i,
+      /(?:company|organization):\s*([A-Z][A-Za-z0-9\s&.'-]+?)(?:\s*[-–|,.]|\s*$)/i,
+    ];
+    
+    for (const pattern of companyPatterns) {
+      const match = result.snippet.match(pattern) || result.title.match(pattern);
+      if (match) {
+        company = match[1].trim();
+        break;
+      }
+    }
+    
+    const titlePatterns = [
+      /\b(CEO|CTO|CFO|COO|Founder|Co-Founder|Director|Manager|Engineer|Developer|Designer|Analyst|Consultant|Professor|President|VP|Vice President|Head of [A-Za-z\s]+|Chief [A-Za-z\s]+Officer)\b/i,
+      /\b([A-Z][a-z]+\s+(?:Engineer|Developer|Manager|Director|Designer|Analyst))\b/,
+    ];
+    
+    for (const pattern of titlePatterns) {
+      const match = result.snippet.match(pattern) || result.title.match(pattern);
+      if (match) {
+        title = match[0].trim();
+        break;
+      }
+    }
 
-    const urlHost = new URL(result.link).hostname;
-    const key = `${personName.toLowerCase()}_${company.toLowerCase()}_${urlHost}`;
+    const normalizedName = personName.toLowerCase().trim();
+    const normalizedCompany = company.toLowerCase().trim();
+    
+    const key = `${normalizedName}_${normalizedCompany}`;
     
     if (!personMap.has(key)) {
       personMap.set(key, {
@@ -108,12 +121,20 @@ function detectPersonVariants(results: GoogleSearchResult[], searchName: string)
     }
 
     const person = personMap.get(key)!;
+    
     person.links.push({
       url: result.link,
       title: result.title,
       snippet: result.snippet,
       source: new URL(result.link).hostname,
     });
+    
+    if (!person.title && title) {
+      person.title = title;
+    }
+    if (!person.company && company) {
+      person.company = company;
+    }
 
     if (result.pagemap?.cse_image?.[0]?.src && !person.photoUrl) {
       const imageUrl = result.pagemap.cse_image[0].src;
