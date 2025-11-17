@@ -22,16 +22,41 @@ export const generateIntelligenceReport = async (
       contextInfo = `\n\nAdditional context from search results:\n${additionalLinks.join('\n')}`;
     }
     
-    const prompt = `
-      Generate a detailed professional and personal intelligence report for "${personName}", associated with "${company}".
-      Use information available on the public web via Google Search.${contextInfo}
+    // STEP 1: Use Google Search to get grounded information
+    const searchPrompt = `
+      Search for comprehensive information about "${personName}" who is associated with "${company}".
+      ${contextInfo}
       
-      The output MUST be a single, valid JSON object. Do not include any text, code block markers, or formatting outside of the JSON object itself.
-      For each point in the arrays below, you MUST include:
-      - "source_indices" field: an array of zero-based integer indices corresponding to grounding sources
-      - "timestamp" field (for recentActivities only): Include actual dates/times when the activity occurred (e.g., "January 2025", "Dec 15, 2024")
+      Find and provide detailed information about:
+      1. Their professional background, career history, roles, and achievements
+      2. Recent activities, news, articles, or social media posts (with specific dates)
+      3. Personal interests, hobbies, or causes they support
+      4. Notable accomplishments or recognitions
       
-      The JSON object must have the following structure:
+      Include specific details, dates, and facts. Cite your sources.
+    `;
+    
+    const searchResponse: GenerateContentResponse = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [{ role: "user", parts: [{ text: searchPrompt }] }],
+        tools: [{ googleSearch: {} }]
+    });
+
+    const searchText = (searchResponse as any).response?.text() || '';
+    const sources = (searchResponse as any).response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    
+    console.log(`Step 1: Retrieved ${sources.length} sources for ${personName}`);
+    
+    // STEP 2: Structure the gathered information into proper JSON format
+    const structurePrompt = `
+      Based on the following information about ${personName}, create a detailed intelligence report.
+      
+      INFORMATION:
+      ${searchText}
+      
+      Generate a structured intelligence report with the following format. Each source_indices array should reference the position (0-based index) of sources from the search results.
+      
+      Return ONLY valid JSON in this exact structure (no markdown, no code blocks):
       {
         "summary": "A brief, one-paragraph summary of the person, synthesizing the most important findings.",
         "professionalBackground": {
@@ -40,7 +65,7 @@ export const generateIntelligenceReport = async (
             { 
               "text": "A bullet point about their career, roles, and key achievements with specific details.", 
               "confidence": <A number between 0 and 100>, 
-              "source_indices": [<integer index of source>] 
+              "source_indices": [<integer index of source, 0-based>] 
             }
           ]
         },
@@ -77,14 +102,13 @@ export const generateIntelligenceReport = async (
         }
       }
       
-      Focus on providing actionable, specific, and recent information. Include at least 3-5 points in each category if available.
+      Provide at least 3-5 points in each category if information is available.
     `;
     
-    const response: GenerateContentResponse = await ai.models.generateContent({
+    const structureResponse: GenerateContentResponse = await ai.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: prompt,
+        contents: [{ role: "user", parts: [{ text: structurePrompt }] }],
         config: {
-            tools: [{ googleSearch: {} }],
             responseMimeType: 'application/json',
             responseSchema: {
                 type: Type.OBJECT,
@@ -185,17 +209,16 @@ export const generateIntelligenceReport = async (
         },
     });
 
-    const text = (response as any).response?.text() || '';
-    const sources = (response as any).response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    const structuredText = (structureResponse as any).response?.text() || '';
 
     let report: IntelligenceReport;
     
     try {
         // Parse the JSON response - responseSchema guarantees proper JSON format
-        report = JSON.parse(text);
-        console.log(`Successfully generated intelligence report for ${personName} with ${sources.length} sources`);
+        report = JSON.parse(structuredText);
+        console.log(`Step 2: Successfully structured intelligence report for ${personName} with ${sources.length} sources`);
     } catch (parseError) {
-        console.error("Failed to parse JSON response from Gemini:", parseError, "Raw text:", text);
+        console.error("Failed to parse structured JSON response:", parseError, "Raw text:", structuredText);
         // Create a fallback report if parsing fails
         report = {
             summary: "The model's response could not be parsed as structured data. The raw, unformatted output is provided below for manual review. This may indicate a temporary issue with the intelligence generation service.",
@@ -206,8 +229,8 @@ export const generateIntelligenceReport = async (
         };
     }
     
-    // Always include the raw text for transparency and debugging.
-    report.rawText = text;
+    // Include both the search results and the structured output for transparency
+    report.rawText = `=== SEARCH RESULTS ===\n${searchText}\n\n=== STRUCTURED OUTPUT ===\n${structuredText}`;
     
     return { report, sources };
 
