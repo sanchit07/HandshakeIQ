@@ -2,15 +2,18 @@ import {
   users,
   dossiers,
   notes,
+  searchHistory,
   type User,
   type UpsertUser,
   type Dossier,
   type UpsertDossier,
   type Note,
   type UpsertNote,
+  type SearchHistory,
+  type UpsertSearchHistory,
 } from "../shared/schema.js";
 import { db } from "./db";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and, sql } from "drizzle-orm";
 
 // Interface for storage operations
 export interface IStorage {
@@ -31,6 +34,12 @@ export interface IStorage {
   getNotesByDossier(dossierId: string): Promise<Note[]>;
   updateNote(noteId: string, content: string): Promise<Note>;
   deleteNote(noteId: string): Promise<void>;
+  
+  // Search History operations
+  saveSearchHistory(searchData: UpsertSearchHistory): Promise<SearchHistory>;
+  getSearchHistory(userId?: string, limit?: number): Promise<SearchHistory[]>;
+  findExactMatch(personName: string, personCompany?: string, userId?: string): Promise<SearchHistory | undefined>;
+  getRecentSearches(userId?: string, limit?: number): Promise<SearchHistory[]>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -131,6 +140,63 @@ export class DatabaseStorage implements IStorage {
   
   async deleteNote(noteId: string): Promise<void> {
     await db.delete(notes).where(eq(notes.id, noteId));
+  }
+  
+  // Search History operations
+  
+  async saveSearchHistory(searchData: UpsertSearchHistory): Promise<SearchHistory> {
+    const [search] = await db
+      .insert(searchHistory)
+      .values(searchData)
+      .returning();
+    return search;
+  }
+  
+  async getSearchHistory(userId?: string, limit: number = 50): Promise<SearchHistory[]> {
+    if (userId) {
+      return await db
+        .select()
+        .from(searchHistory)
+        .where(eq(searchHistory.userId, userId))
+        .orderBy(desc(searchHistory.searchedAt))
+        .limit(limit);
+    } else {
+      return await db
+        .select()
+        .from(searchHistory)
+        .where(sql`${searchHistory.userId} IS NULL`)
+        .orderBy(desc(searchHistory.searchedAt))
+        .limit(limit);
+    }
+  }
+  
+  async findExactMatch(personName: string, personCompany?: string, userId?: string): Promise<SearchHistory | undefined> {
+    const conditions = [
+      sql`LOWER(${searchHistory.personName}) = LOWER(${personName})`
+    ];
+    
+    if (personCompany) {
+      conditions.push(sql`LOWER(${searchHistory.personCompany}) = LOWER(${personCompany})`);
+    }
+    
+    if (userId) {
+      conditions.push(eq(searchHistory.userId, userId));
+    } else {
+      conditions.push(sql`${searchHistory.userId} IS NULL`);
+    }
+    
+    const [match] = await db
+      .select()
+      .from(searchHistory)
+      .where(and(...conditions))
+      .orderBy(desc(searchHistory.searchedAt))
+      .limit(1);
+    
+    return match;
+  }
+  
+  async getRecentSearches(userId?: string, limit: number = 10): Promise<SearchHistory[]> {
+    return this.getSearchHistory(userId, limit);
   }
 }
 
