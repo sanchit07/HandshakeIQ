@@ -130,11 +130,14 @@ export async function setupGoogleAuth(app: Express) {
     
     // Get domain - REPLIT_DOMAINS works in both dev and production
     const replitDomains = process.env.REPLIT_DOMAINS || process.env.REPLIT_DEV_DOMAIN;
-    const domain = replitDomains ? replitDomains.split(',')[0] : 'localhost:5000';
+    const domain = replitDomains ? replitDomains.split(',')[0].trim() : 'localhost:5000';
     const protocol = domain.includes('localhost') ? 'http' : 'https';
     const ZOHO_REDIRECT_URI = `${protocol}://${domain}/auth/zoho/callback`;
     
-    console.log('[ZOHO AUTH] Redirect URI:', ZOHO_REDIRECT_URI);
+    console.log('[ZOHO AUTH] Environment - REPLIT_DOMAINS:', process.env.REPLIT_DOMAINS);
+    console.log('[ZOHO AUTH] Environment - REPLIT_DEV_DOMAIN:', process.env.REPLIT_DEV_DOMAIN);
+    console.log('[ZOHO AUTH] Computed domain:', domain);
+    console.log('[ZOHO AUTH] Final Redirect URI:', ZOHO_REDIRECT_URI);
     
     if (!ZOHO_CLIENT_ID) {
       return res.status(500).send('Zoho OAuth not configured');
@@ -148,6 +151,7 @@ export async function setupGoogleAuth(app: Express) {
       `access_type=offline&` +
       `prompt=consent`;
     
+    console.log('[ZOHO AUTH] Authorization URL:', authUrl);
     res.redirect(authUrl);
   });
 
@@ -167,11 +171,14 @@ export async function setupGoogleAuth(app: Express) {
     
     // Get domain - REPLIT_DOMAINS works in both dev and production
     const replitDomains = process.env.REPLIT_DOMAINS || process.env.REPLIT_DEV_DOMAIN;
-    const domain = replitDomains ? replitDomains.split(',')[0] : 'localhost:5000';
+    const domain = replitDomains ? replitDomains.split(',')[0].trim() : 'localhost:5000';
     const protocol = domain.includes('localhost') ? 'http' : 'https';
     const ZOHO_REDIRECT_URI = `${protocol}://${domain}/auth/zoho/callback`;
     
-    console.log('[ZOHO CALLBACK] Redirect URI:', ZOHO_REDIRECT_URI);
+    console.log('[ZOHO CALLBACK] Environment - REPLIT_DOMAINS:', process.env.REPLIT_DOMAINS);
+    console.log('[ZOHO CALLBACK] Environment - REPLIT_DEV_DOMAIN:', process.env.REPLIT_DEV_DOMAIN);
+    console.log('[ZOHO CALLBACK] Computed domain:', domain);
+    console.log('[ZOHO CALLBACK] Final Redirect URI:', ZOHO_REDIRECT_URI);
     
     if (!ZOHO_CLIENT_ID || !ZOHO_CLIENT_SECRET) {
       console.error('[ZOHO CALLBACK] Missing client credentials');
@@ -256,8 +263,14 @@ export async function setupGoogleAuth(app: Express) {
       });
       
     } catch (error: any) {
-      console.error('[ZOHO CALLBACK] Error during authentication:', error.response?.data || error.message);
-      res.status(500).send(`Authentication failed: ${error.message}`);
+      console.error('[ZOHO CALLBACK] Full error:', error);
+      console.error('[ZOHO CALLBACK] Error response data:', JSON.stringify(error.response?.data, null, 2));
+      console.error('[ZOHO CALLBACK] Error status:', error.response?.status);
+      
+      const errorDetails = error.response?.data?.error || error.message;
+      const errorDescription = error.response?.data?.error_description || '';
+      
+      res.status(500).send(`Authentication failed: ${errorDetails}. ${errorDescription}`);
     }
   });
 
