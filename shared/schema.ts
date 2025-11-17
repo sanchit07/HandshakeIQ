@@ -62,9 +62,29 @@ export const notes = pgTable("notes", {
   index("idx_notes_dossier_id").on(table.dossierId),
 ]);
 
+// Search History - tracks all person searches for quick lookups and exact matching
+export const searchHistory = pgTable("search_history", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id, { onDelete: 'cascade' }),
+  personName: varchar("person_name").notNull(),
+  personCompany: varchar("person_company"),
+  personTitle: varchar("person_title"),
+  personPhotoUrl: varchar("person_photo_url"),
+  intelligenceReport: jsonb("intelligence_report"),
+  sources: jsonb("sources"),
+  socialMediaLinks: jsonb("social_media_links"),
+  searchedAt: timestamp("searched_at").defaultNow(),
+}, (table) => [
+  index("idx_search_history_user_id").on(table.userId),
+  index("idx_search_history_person_name").on(table.personName),
+  index("idx_search_history_searched_at").on(table.searchedAt),
+]);
+
 export type UpsertUser = typeof users.$inferInsert;
 export type User = typeof users.$inferSelect;
 export type Dossier = typeof dossiers.$inferSelect;
 export type UpsertDossier = typeof dossiers.$inferInsert;
 export type Note = typeof notes.$inferSelect;
 export type UpsertNote = typeof notes.$inferInsert;
+export type SearchHistory = typeof searchHistory.$inferSelect;
+export type UpsertSearchHistory = typeof searchHistory.$inferInsert;
