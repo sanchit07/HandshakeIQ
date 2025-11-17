@@ -44,6 +44,18 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 
 ## Recent Changes
 
+### November 17, 2025 - Search History & Caching System
+- **Database schema**: Added `search_history` table to track all person searches with full intelligence reports and metadata.
+- **Smart caching**: Intelligence report endpoint now checks for exact matches (name + company) and returns cached results instantly instead of calling Gemini API again.
+- **API endpoints**: 
+  - `GET /api/search-history` - Retrieve all search history (supports guest and authenticated users)
+  - `GET /api/search-history/recent?limit=N` - Get recent searches
+  - `POST /api/search-history/find-match` - Find exact match for person
+- **Automatic saving**: Every intelligence report generation is automatically saved to search history for future reference.
+- **Guest support**: Search history works for both authenticated users and guests (using userId null for guests).
+- **Performance**: Exact match queries use indexed lookups for fast retrieval.
+- **Verified functionality**: Successfully tested caching - duplicate searches return instant results with `fromCache: true`.
+
 ### November 17, 2025 - Gemini API Integration Fix
 - **Fixed TypeScript errors**: Updated Gemini API calls to use correct syntax for `@google/genai` library (tools parameter moved to config object).
 - **Improved error handling**: Added specific error detection for rate limits (429), authentication (401/403), server errors (500), and network issues.
