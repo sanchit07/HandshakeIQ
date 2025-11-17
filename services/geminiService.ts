@@ -46,14 +46,10 @@ export const generateIntelligenceReport = async (
         }
     });
 
-    console.log(`[GEMINI API] Step 1 Response Status:`, {
-      hasResponse: !!(searchResponse as any).response,
-      hasCandidates: !!(searchResponse as any).response?.candidates,
-      candidatesLength: (searchResponse as any).response?.candidates?.length || 0
-    });
-
-    const searchText = (searchResponse as any).response?.text() || '';
-    const sources = (searchResponse as any).response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    console.log(`[GEMINI API] Step 1 Raw Response:`, JSON.stringify(searchResponse, null, 2).substring(0, 500));
+    
+    const searchText = searchResponse.text || '';
+    const sources = (searchResponse as any).candidates?.[0]?.groundingMetadata?.groundingChunks || [];
     
     console.log(`[GEMINI API] Step 1: Retrieved ${sources.length} sources for ${personName}`);
     console.log(`[GEMINI API] Step 1: Search text length: ${searchText.length} characters`);
@@ -222,13 +218,9 @@ export const generateIntelligenceReport = async (
         },
     });
 
-    console.log(`[GEMINI API] Step 2 Response Status:`, {
-      hasResponse: !!(structureResponse as any).response,
-      hasCandidates: !!(structureResponse as any).response?.candidates,
-      candidatesLength: (structureResponse as any).response?.candidates?.length || 0
-    });
+    console.log(`[GEMINI API] Step 2 Raw Response:`, JSON.stringify(structureResponse, null, 2).substring(0, 500));
 
-    const structuredText = (structureResponse as any).response?.text() || '';
+    const structuredText = structureResponse.text || '';
     console.log(`[GEMINI API] Step 2: Structured text length: ${structuredText.length} characters`);
 
     let report: IntelligenceReport;
@@ -341,7 +333,7 @@ export const extractTextFromImage = async (base64Image: string): Promise<{name: 
             }
         });
 
-        const text = (response as any).response?.text() || '{}';
+        const text = response.text || '{}';
         console.log('[GEMINI API] Business card extraction response length:', text.length);
         
         const data = JSON.parse(text);
