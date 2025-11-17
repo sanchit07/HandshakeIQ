@@ -149,7 +149,10 @@ export async function setupGoogleAuth(app: Express) {
   app.get('/auth/zoho/callback', async (req: any, res) => {
     const { code } = req.query;
     
+    console.log('[ZOHO CALLBACK] Received authorization code');
+    
     if (!code || typeof code !== 'string') {
+      console.error('[ZOHO CALLBACK] Missing authorization code');
       return res.status(400).send('Authorization code missing');
     }
     
@@ -159,13 +162,17 @@ export async function setupGoogleAuth(app: Express) {
       ? `https://${process.env.REPLIT_DEV_DOMAIN}/auth/zoho/callback`
       : 'http://localhost:5000/auth/zoho/callback';
     
+    console.log('[ZOHO CALLBACK] Redirect URI:', ZOHO_REDIRECT_URI);
+    
     if (!ZOHO_CLIENT_ID || !ZOHO_CLIENT_SECRET) {
+      console.error('[ZOHO CALLBACK] Missing client credentials');
       return res.status(500).send('Zoho OAuth not configured');
     }
     
     try {
       const axios = require('axios');
       
+      console.log('[ZOHO CALLBACK] Exchanging code for tokens...');
       const tokenResponse = await axios.post('https://accounts.zoho.com/oauth/v2/token', null, {
         params: {
           grant_type: 'authorization_code',
@@ -176,8 +183,10 @@ export async function setupGoogleAuth(app: Express) {
         }
       });
       
+      console.log('[ZOHO CALLBACK] Token exchange successful');
       const { access_token, refresh_token, api_domain, expires_in } = tokenResponse.data;
       
+      console.log('[ZOHO CALLBACK] Fetching user profile from:', api_domain);
       const userResponse = await axios.get(`${api_domain}/oauth/user/info`, {
         headers: {
           'Authorization': `Zoho-oauthtoken ${access_token}`
@@ -185,6 +194,7 @@ export async function setupGoogleAuth(app: Express) {
       });
       
       const zohoUser = userResponse.data;
+      console.log('[ZOHO CALLBACK] User profile retrieved:', zohoUser.Email);
       
       const user = await storage.upsertUser({
         id: `zoho_${zohoUser.ZUID}`,
@@ -193,6 +203,8 @@ export async function setupGoogleAuth(app: Express) {
         lastName: zohoUser.Last_Name || null,
         profileImageUrl: null,
       });
+
+      console.log('[ZOHO CALLBACK] User saved to database:', user.id);
 
       (req.session as any).user = {
         id: user.id,
@@ -207,41 +219,28 @@ export async function setupGoogleAuth(app: Express) {
         apiDomain: api_domain
       };
 
-      // Save session and close popup
-      (req.session as any).save((err: any) => {
-        if (err) {
-          console.error('Session save error:', err);
-          return res.status(500).send('Failed to save session');
-        }
+      console.log('[ZOHO CALLBACK] Session user set, saving session...');
 
-        // Close popup and notify parent window (same as Google OAuth)
-        // Add delay to ensure session cookie is fully written to browser
-        res.send(`
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <title>Authorization Successful</title>
-          </head>
-          <body>
-            <script>
-              // Wait a moment for session cookie to be set before closing
-              setTimeout(function() {
-                if (window.opener) {
-                  window.opener.postMessage({ type: 'auth_success' }, '*');
-                  window.close();
-                } else {
-                  window.location.href = '/';
-                }
-              }, 500);
-            </script>
-            <p>Authorization successful! This window will close automatically...</p>
-          </body>
-          </html>
-        `);
+      // Save session and redirect
+      await new Promise<void>((resolve, reject) => {
+        (req.session as any).save((err: any) => {
+          if (err) {
+            console.error('[ZOHO CALLBACK] Session save error:', err);
+            reject(err);
+          } else {
+            console.log('[ZOHO CALLBACK] Session saved successfully');
+            resolve();
+          }
+        });
       });
-    } catch (error) {
-      console.error('Error during Zoho OAuth:', error);
-      res.status(500).send('Authentication failed');
+
+      // Redirect to home page - session is now saved
+      console.log('[ZOHO CALLBACK] Redirecting to home page');
+      res.redirect('/');
+      
+    } catch (error: any) {
+      console.error('[ZOHO CALLBACK] Error during authentication:', error.response?.data || error.message);
+      res.status(500).send(`Authentication failed: ${error.message}`);
     }
   });
 
