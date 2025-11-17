@@ -85,17 +85,115 @@ export const generateIntelligenceReport = async (
         contents: prompt,
         config: {
             tools: [{ googleSearch: {} }],
+            responseMimeType: 'application/json',
+            responseSchema: {
+                type: Type.OBJECT,
+                properties: {
+                    summary: { type: Type.STRING },
+                    professionalBackground: {
+                        type: Type.OBJECT,
+                        properties: {
+                            category: { type: Type.STRING },
+                            points: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        text: { type: Type.STRING },
+                                        confidence: { type: Type.NUMBER },
+                                        source_indices: {
+                                            type: Type.ARRAY,
+                                            items: { type: Type.NUMBER }
+                                        }
+                                    },
+                                    required: ['text', 'confidence', 'source_indices']
+                                }
+                            }
+                        },
+                        required: ['category', 'points']
+                    },
+                    recentActivities: {
+                        type: Type.OBJECT,
+                        properties: {
+                            category: { type: Type.STRING },
+                            points: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        text: { type: Type.STRING },
+                                        confidence: { type: Type.NUMBER },
+                                        source_indices: {
+                                            type: Type.ARRAY,
+                                            items: { type: Type.NUMBER }
+                                        },
+                                        timestamp: { type: Type.STRING }
+                                    },
+                                    required: ['text', 'confidence', 'source_indices', 'timestamp']
+                                }
+                            }
+                        },
+                        required: ['category', 'points']
+                    },
+                    personalInterests: {
+                        type: Type.OBJECT,
+                        properties: {
+                            category: { type: Type.STRING },
+                            points: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        text: { type: Type.STRING },
+                                        confidence: { type: Type.NUMBER },
+                                        source_indices: {
+                                            type: Type.ARRAY,
+                                            items: { type: Type.NUMBER }
+                                        }
+                                    },
+                                    required: ['text', 'confidence', 'source_indices']
+                                }
+                            }
+                        },
+                        required: ['category', 'points']
+                    },
+                    discussionPoints: {
+                        type: Type.OBJECT,
+                        properties: {
+                            category: { type: Type.STRING },
+                            points: {
+                                type: Type.ARRAY,
+                                items: {
+                                    type: Type.OBJECT,
+                                    properties: {
+                                        text: { type: Type.STRING },
+                                        confidence: { type: Type.NUMBER },
+                                        source_indices: {
+                                            type: Type.ARRAY,
+                                            items: { type: Type.NUMBER }
+                                        }
+                                    },
+                                    required: ['text', 'confidence', 'source_indices']
+                                }
+                            }
+                        },
+                        required: ['category', 'points']
+                    }
+                },
+                required: ['summary', 'professionalBackground', 'recentActivities', 'personalInterests', 'discussionPoints']
+            }
         },
     });
 
-    const text = response.response?.text() || '';
-    const sources = response.response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    const text = (response as any).response?.text() || '';
+    const sources = (response as any).response?.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
 
     let report: IntelligenceReport;
     
     try {
-        // Attempt to parse the entire text as JSON, as requested in the prompt.
+        // Parse the JSON response - responseSchema guarantees proper JSON format
         report = JSON.parse(text);
+        console.log(`Successfully generated intelligence report for ${personName} with ${sources.length} sources`);
     } catch (parseError) {
         console.error("Failed to parse JSON response from Gemini:", parseError, "Raw text:", text);
         // Create a fallback report if parsing fails
@@ -156,7 +254,7 @@ export const extractTextFromImage = async (base64Image: string): Promise<{name: 
             }
         });
 
-        const text = response.response?.text() || '{}';
+        const text = (response as any).response?.text() || '{}';
         const data = JSON.parse(text);
         return { name: data.name || '', company: data.company || '' };
 
