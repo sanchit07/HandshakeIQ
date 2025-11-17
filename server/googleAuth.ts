@@ -124,6 +124,24 @@ export async function setupGoogleAuth(app: Express) {
     }
   });
 
+  // Debug endpoint to check Zoho redirect URI
+  app.get('/api/debug/zoho-config', (req, res) => {
+    const replitDomains = process.env.REPLIT_DOMAINS || process.env.REPLIT_DEV_DOMAIN;
+    const domain = replitDomains ? replitDomains.split(',')[0].trim() : 'localhost:5000';
+    const protocol = domain.includes('localhost') ? 'http' : 'https';
+    const ZOHO_REDIRECT_URI = `${protocol}://${domain}/auth/zoho/callback`;
+    
+    res.json({
+      environment: process.env.REPLIT_ENVIRONMENT || 'development',
+      REPLIT_DOMAINS: process.env.REPLIT_DOMAINS,
+      REPLIT_DEV_DOMAIN: process.env.REPLIT_DEV_DOMAIN,
+      computedDomain: domain,
+      redirectURI: ZOHO_REDIRECT_URI,
+      hasZohoClientId: !!process.env.ZOHO_CLIENT_ID,
+      hasZohoClientSecret: !!process.env.ZOHO_CLIENT_SECRET
+    });
+  });
+
   // Real Zoho OAuth - Redirect to Zoho authorization
   app.get('/api/login/zoho', (req, res) => {
     const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID;
