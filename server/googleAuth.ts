@@ -126,9 +126,14 @@ export async function setupGoogleAuth(app: Express) {
   // Real Zoho OAuth - Redirect to Zoho authorization
   app.get('/api/login/zoho', (req, res) => {
     const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID;
-    const ZOHO_REDIRECT_URI = process.env.REPLIT_DEV_DOMAIN 
-      ? `https://${process.env.REPLIT_DEV_DOMAIN}/auth/zoho/callback`
-      : 'http://localhost:5000/auth/zoho/callback';
+    
+    // Get domain - REPLIT_DOMAINS works in both dev and production
+    const replitDomains = process.env.REPLIT_DOMAINS || process.env.REPLIT_DEV_DOMAIN;
+    const domain = replitDomains ? replitDomains.split(',')[0] : 'localhost:5000';
+    const protocol = domain.includes('localhost') ? 'http' : 'https';
+    const ZOHO_REDIRECT_URI = `${protocol}://${domain}/auth/zoho/callback`;
+    
+    console.log('[ZOHO AUTH] Redirect URI:', ZOHO_REDIRECT_URI);
     
     if (!ZOHO_CLIENT_ID) {
       return res.status(500).send('Zoho OAuth not configured');
@@ -158,9 +163,12 @@ export async function setupGoogleAuth(app: Express) {
     
     const ZOHO_CLIENT_ID = process.env.ZOHO_CLIENT_ID;
     const ZOHO_CLIENT_SECRET = process.env.ZOHO_CLIENT_SECRET;
-    const ZOHO_REDIRECT_URI = process.env.REPLIT_DEV_DOMAIN 
-      ? `https://${process.env.REPLIT_DEV_DOMAIN}/auth/zoho/callback`
-      : 'http://localhost:5000/auth/zoho/callback';
+    
+    // Get domain - REPLIT_DOMAINS works in both dev and production
+    const replitDomains = process.env.REPLIT_DOMAINS || process.env.REPLIT_DEV_DOMAIN;
+    const domain = replitDomains ? replitDomains.split(',')[0] : 'localhost:5000';
+    const protocol = domain.includes('localhost') ? 'http' : 'https';
+    const ZOHO_REDIRECT_URI = `${protocol}://${domain}/auth/zoho/callback`;
     
     console.log('[ZOHO CALLBACK] Redirect URI:', ZOHO_REDIRECT_URI);
     
