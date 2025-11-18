@@ -34,6 +34,7 @@ export function getSession() {
     cookie: {
       httpOnly: true,
       secure: true,
+      sameSite: 'lax', // Allow cookies in popup redirects
       maxAge: sessionTtl,
     },
   });
@@ -262,19 +263,79 @@ export async function setupGoogleAuth(app: Express) {
 
         console.log('[ZOHO CALLBACK] Session saved successfully, closing popup');
 
-        // Close popup and notify parent window (same as Google OAuth)
+        // Close popup and notify parent window
         res.send(`
+          <!DOCTYPE html>
           <html>
-            <body>
-              <script>
-                if (window.opener) {
-                  window.opener.postMessage({ type: 'auth_success' }, '*');
-                  window.close();
-                } else {
-                  window.location.href = '/';
+            <head>
+              <title>Authentication Successful</title>
+              <style>
+                body {
+                  font-family: Arial, sans-serif;
+                  display: flex;
+                  justify-content: center;
+                  align-items: center;
+                  height: 100vh;
+                  margin: 0;
+                  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                  color: white;
                 }
+                .message {
+                  text-align: center;
+                  padding: 2rem;
+                  background: rgba(255, 255, 255, 0.1);
+                  border-radius: 10px;
+                  backdrop-filter: blur(10px);
+                }
+              </style>
+            </head>
+            <body>
+              <div class="message">
+                <h2>✓ Authentication Successful!</h2>
+                <p>This window will close automatically...</p>
+              </div>
+              <script>
+                console.log('[ZOHO CALLBACK] Popup script executing');
+                console.log('[ZOHO CALLBACK] window.opener exists:', !!window.opener);
+                
+                // Try multiple methods to close the popup
+                function closePopup() {
+                  try {
+                    // Method 1: Send message to opener (for popup windows)
+                    if (window.opener && !window.opener.closed) {
+                      console.log('[ZOHO CALLBACK] Sending postMessage to opener');
+                      window.opener.postMessage({ type: 'auth_success' }, '*');
+                      
+                      // Give parent time to receive message before closing
+                      setTimeout(() => {
+                        console.log('[ZOHO CALLBACK] Closing popup window');
+                        window.close();
+                        
+                        // If window.close() fails, redirect opener
+                        setTimeout(() => {
+                          if (!window.closed && window.opener) {
+                            console.log('[ZOHO CALLBACK] Redirecting opener to /');
+                            window.opener.location.href = '/';
+                            window.close();
+                          }
+                        }, 500);
+                      }, 100);
+                    } else {
+                      // Method 2: No opener, redirect this window
+                      console.log('[ZOHO CALLBACK] No opener found, redirecting');
+                      window.location.href = '/';
+                    }
+                  } catch (e) {
+                    console.error('[ZOHO CALLBACK] Error closing popup:', e);
+                    // Fallback: redirect
+                    window.location.href = '/';
+                  }
+                }
+                
+                // Execute immediately and with small delay as backup
+                closePopup();
+                setTimeout(closePopup, 500);
               </script>
-              <p>Authorization successful! This window will close automatically...</p>
             </body>
           </html>
         `);
