@@ -1,7 +1,5 @@
-
-
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { Person, GroundingChunk, Insight, IntelligenceReport, Note } from '../types';
+import { Person, GroundingChunk, Insight, IntelligenceReport, Note, VerificationFlag } from '../types';
 const generateIntelligenceReport = async (
     personName: string,
     company: string
@@ -67,12 +65,23 @@ const getSourceIcon = (uri: string): { key: string; icon: React.ReactNode } => {
     return { key: 'link', icon: <LinkIcon /> };
 };
 
+const FlagIcon: React.FC<{ severity: 'low' | 'medium' | 'high'; issue: string }> = ({ severity, issue }) => {
+    const color = severity === 'high' ? 'text-red-400' : severity === 'medium' ? 'text-yellow-400' : 'text-yellow-600';
+    return (
+        <span title={`Gemini flag (${severity}): ${issue}`} className={`flex-shrink-0 cursor-help ${color}`}>
+            <svg xmlns="http://www.w3.org/2000/svg" className="w-3.5 h-3.5 inline" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+            </svg>
+        </span>
+    );
+};
 const InsightPoint: React.FC<{
     point: Insight['points'][0];
     sources: GroundingChunk[];
     isHighlighted: boolean;
     setHighlightedIndices: (indices: Set<number> | null) => void;
-}> = ({ point, sources, isHighlighted, setHighlightedIndices }) => {
+    verificationFlag?: VerificationFlag;
+}> = ({ point, sources, isHighlighted, setHighlightedIndices, verificationFlag }) => {
     
     const sourceIcons = useMemo(() => {
         if (!point.source_indices || !sources) return [];
@@ -89,13 +98,24 @@ const InsightPoint: React.FC<{
         return Array.from(iconsMap.values());
     }, [point.source_indices, sources]);
 
+    const flagBorder = verificationFlag
+        ? verificationFlag.severity === 'high'
+            ? 'border-l-2 border-red-500/60'
+            : verificationFlag.severity === 'medium'
+            ? 'border-l-2 border-yellow-500/60'
+            : 'border-l-2 border-yellow-700/40'
+        : '';
+
     return (
         <li
-            className={`grid grid-cols-[1fr_auto] items-center gap-x-4 gap-y-1 p-2 rounded-md transition-all duration-300 ${isHighlighted ? 'bg-cyan-900/50 ring-1 ring-cyan-500' : ''}`}
+            className={`grid grid-cols-[1fr_auto] items-start gap-x-4 gap-y-1 p-2 rounded-md transition-all duration-300 ${isHighlighted ? 'bg-cyan-900/50 ring-1 ring-cyan-500' : ''} ${flagBorder}`}
             onMouseEnter={() => point.source_indices && setHighlightedIndices(new Set(point.source_indices))}
             onMouseLeave={() => setHighlightedIndices(null)}
         >
-            <p className="text-gray-300 text-sm md:text-base">{point.text}</p>
+            <div className="flex items-start gap-1.5">
+                {verificationFlag && <FlagIcon severity={verificationFlag.severity} issue={verificationFlag.issue} />}
+                <p className="text-gray-300 text-sm md:text-base">{point.text}</p>
+            </div>
             <div className="flex items-center space-x-3">
                 <div className="flex items-center justify-end space-x-1.5 h-4 w-20">
                     {sourceIcons.slice(0, 4).map((iconInfo, index) => (
@@ -117,13 +137,20 @@ const InsightSection: React.FC<{
     setHighlightedIndices: (indices: Set<number> | null) => void;
     onSaveInsight: (insight: Insight) => void;
     isSaved: boolean;
-}> = ({ insight, sources, highlightedIndices, setHighlightedIndices, onSaveInsight, isSaved }) => {
+    verificationFlags?: VerificationFlag[];
+}> = ({ insight, sources, highlightedIndices, setHighlightedIndices, onSaveInsight, isSaved, verificationFlags }) => {
     const [isExpanded, setIsExpanded] = useState(true);
 
     const isPointHighlighted = (point: Insight['points'][0]): boolean => {
         if (!highlightedIndices || !point.source_indices) return false;
         return point.source_indices.some(i => highlightedIndices.has(i));
     };
+
+    const flagsByIndex = useMemo(() => {
+        const map = new Map<number, VerificationFlag>();
+        verificationFlags?.forEach(f => map.set(f.pointIndex, f));
+        return map;
+    }, [verificationFlags]);
 
     const categoryId = `insight-content-${insight.category.replace(/\s+/g, '-')}`;
 
@@ -160,6 +187,7 @@ const InsightSection: React.FC<{
                            sources={sources}
                            isHighlighted={isPointHighlighted(point)}
                            setHighlightedIndices={setHighlightedIndices}
+                           verificationFlag={flagsByIndex.get(index)}
                        />
                     ))}
                 </ul>
@@ -168,8 +196,75 @@ const InsightSection: React.FC<{
     );
 };
 
+const VerificationPanel: React.FC<{ verification: import('../types').VerificationResult }> = ({ verification }) => {
+    const [isExpanded, setIsExpanded] = useState(false);
+    const scoreColor = verification.overallAccuracyScore >= 80
+        ? 'text-cyan-300'
+        : verification.overallAccuracyScore >= 60
+        ? 'text-yellow-400'
+        : 'text-red-400';
+    const barColor = verification.overallAccuracyScore >= 80
+        ? 'bg-cyan-500'
+        : verification.overallAccuracyScore >= 60
+        ? 'bg-yellow-500'
+        : 'bg-red-500';
 
+    return (
+        <div className="mb-4 p-3 bg-gray-900/60 border border-cyan-700/30 rounded-lg text-sm">
+            <button
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="w-full flex items-center justify-between group"
+            >
+                <div className="flex items-center gap-2">
+                    {/* Gemini G icon */}
+                    <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2C6.477 2 2 6.477 2 12s4.477 10 10 10 10-4.477 10-10S17.523 2 12 2zm0 18c-4.418 0-8-3.582-8-8s3.582-8 8-8 8 3.582 8 8-3.582 8-8 8z" fill="#4285F4"/>
+                        <path d="M17 12h-5V7h-2v7h7v-2z" fill="#4285F4"/>
+                    </svg>
+                    <span className="font-exo text-cyan-300 group-hover:text-white transition-colors">
+                        Gemini Cross-Check
+                    </span>
+                    {verification.flags.length > 0 && (
+                        <span className="px-1.5 py-0.5 text-xs rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">
+                            {verification.flags.length} flag{verification.flags.length !== 1 ? 's' : ''}
+                        </span>
+                    )}
+                </div>
+                <div className="flex items-center gap-3">
+                    <div className="flex items-center gap-2">
+                        <div className="w-16 h-1.5 bg-gray-700 rounded-full">
+                            <div className={`h-full rounded-full ${barColor}`} style={{ width: `${verification.overallAccuracyScore}%` }} />
+                        </div>
+                        <span className={`font-mono text-xs ${scoreColor}`}>{verification.overallAccuracyScore}%</span>
+                    </div>
+                    <ChevronDownIcon className={`transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''} text-cyan-400`} />
+                </div>
+            </button>
 
+            {isExpanded && (
+                <div className="mt-3 pt-3 border-t border-cyan-700/20 space-y-2">
+                    <p className="text-gray-400 italic">{verification.summary}</p>
+                    {verification.flags.length > 0 ? (
+                        <ul className="space-y-2 mt-2">
+                            {verification.flags.map((flag, i) => (
+                                <li key={i} className={`flex items-start gap-2 p-2 rounded ${flag.severity === 'high' ? 'bg-red-900/20 border border-red-700/30' : flag.severity === 'medium' ? 'bg-yellow-900/20 border border-yellow-700/30' : 'bg-gray-800/40 border border-gray-700/30'}`}>
+                                    <FlagIcon severity={flag.severity} issue={flag.issue} />
+                                    <div>
+                                        <span className="text-xs font-mono text-gray-500 capitalize">{flag.section.replace(/([A-Z])/g, ' $1').trim()} [{flag.pointIndex}]</span>
+                                        <p className="text-gray-300 text-xs mt-0.5">{flag.issue}</p>
+                                        <span className="text-xs text-gray-500">Confidence adjusted by {flag.confidenceAdjustment}%</span>
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : (
+                        <p className="text-cyan-400 text-xs mt-1">✓ No discrepancies found. All claims appear plausible.</p>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
 interface PersonProfileProps {
     person: Person;
     onBack: () => void;
@@ -544,11 +639,13 @@ const PersonProfile: React.FC<PersonProfileProps> = ({ person, onBack, onSave, d
                         <h3 className="font-exo text-xl text-white mb-4">Intelligence Dossier</h3>
                         <p className="text-gray-300 mb-4 italic text-sm md:text-base">{report.summary}</p>
 
+                        {report.verification && <VerificationPanel verification={report.verification} />}
+
                         <div className="border-t border-cyan-500/20 pt-4">
-                            {report.professionalBackground?.points.length > 0 && <InsightSection insight={report.professionalBackground} sources={sources} highlightedIndices={highlightedIndices} setHighlightedIndices={setHighlightedIndices} onSaveInsight={handleSaveInsight} isSaved={isInsightSaved(report.professionalBackground.category)} />}
-                            {report.recentActivities?.points.length > 0 && <InsightSection insight={report.recentActivities} sources={sources} highlightedIndices={highlightedIndices} setHighlightedIndices={setHighlightedIndices} onSaveInsight={handleSaveInsight} isSaved={isInsightSaved(report.recentActivities.category)} />}
-                            {report.personalInterests?.points.length > 0 && <InsightSection insight={report.personalInterests} sources={sources} highlightedIndices={highlightedIndices} setHighlightedIndices={setHighlightedIndices} onSaveInsight={handleSaveInsight} isSaved={isInsightSaved(report.personalInterests.category)} />}
-                            {report.discussionPoints?.points.length > 0 && <InsightSection insight={report.discussionPoints} sources={sources} highlightedIndices={highlightedIndices} setHighlightedIndices={setHighlightedIndices} onSaveInsight={handleSaveInsight} isSaved={isInsightSaved(report.discussionPoints.category)} />}
+                            {report.professionalBackground?.points.length > 0 && <InsightSection insight={report.professionalBackground} sources={sources} highlightedIndices={highlightedIndices} setHighlightedIndices={setHighlightedIndices} onSaveInsight={handleSaveInsight} isSaved={isInsightSaved(report.professionalBackground.category)} verificationFlags={report.verification?.flags.filter(f => f.section === 'professionalBackground')} />}
+                            {report.recentActivities?.points.length > 0 && <InsightSection insight={report.recentActivities} sources={sources} highlightedIndices={highlightedIndices} setHighlightedIndices={setHighlightedIndices} onSaveInsight={handleSaveInsight} isSaved={isInsightSaved(report.recentActivities.category)} verificationFlags={report.verification?.flags.filter(f => f.section === 'recentActivities')} />}
+                            {report.personalInterests?.points.length > 0 && <InsightSection insight={report.personalInterests} sources={sources} highlightedIndices={highlightedIndices} setHighlightedIndices={setHighlightedIndices} onSaveInsight={handleSaveInsight} isSaved={isInsightSaved(report.personalInterests.category)} verificationFlags={report.verification?.flags.filter(f => f.section === 'personalInterests')} />}
+                            {report.discussionPoints?.points.length > 0 && <InsightSection insight={report.discussionPoints} sources={sources} highlightedIndices={highlightedIndices} setHighlightedIndices={setHighlightedIndices} onSaveInsight={handleSaveInsight} isSaved={isInsightSaved(report.discussionPoints.category)} verificationFlags={report.verification?.flags.filter(f => f.section === 'discussionPoints')} />}
 
                             {sources.length > 0 && (
                                <div className="mt-6">

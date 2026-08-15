@@ -78,6 +78,21 @@ export interface SourceInfo {
     favicon?: string;
 }
 
+export interface VerificationFlag {
+  section: 'professionalBackground' | 'recentActivities' | 'personalInterests' | 'discussionPoints';
+  pointIndex: number;
+  issue: string;
+  confidenceAdjustment: number; // negative = reduce confidence
+  severity: 'low' | 'medium' | 'high';
+}
+
+export interface VerificationResult {
+  overallAccuracyScore: number; // 0-100
+  summary: string;
+  flags: VerificationFlag[];
+  geminiModel: string;
+}
+
 export interface IntelligenceReport {
     summary: string;
     professionalBackground: Insight;
@@ -85,6 +100,7 @@ export interface IntelligenceReport {
     personalInterests: Insight;
     discussionPoints: Insight;
     rawText?: string;
+    verification?: VerificationResult;
 }
 
 export interface SearchResult {

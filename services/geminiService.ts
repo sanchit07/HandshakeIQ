@@ -1,5 +1,5 @@
 import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
-import { IntelligenceReport } from '../types';
+import { IntelligenceReport, VerificationResult, VerificationFlag } from '../types';
 
 function getAI(): GoogleGenAI {
   const API_KEY = process.env.GEMINI_API_KEY;
@@ -299,6 +299,121 @@ export const generateIntelligenceReport = async (
     };
     return { report: errorReport, sources: [] };
   }
+};
+
+/**
+ * Ask Gemini to review Claude's intelligence report and flag low-confidence
+ * or potentially inaccurate claims.  Uses Gemini's parametric knowledge only
+ * (no live search) so it acts as an independent second opinion.
+ */
+export const crossCheckReport = async (
+  report: IntelligenceReport,
+  personName: string,
+  company: string
+): Promise<VerificationResult> => {
+  const ai = getAI(); // throws if GEMINI_API_KEY is not set
+
+  // Build a compact summary of the report for the review prompt
+  const sectionSummary = (section: any, key: string) => {
+    if (!section?.points?.length) return '';
+    const lines = section.points
+      .map((p: any, i: number) => `  [${key}][${i}] (conf ${p.confidence}%) ${p.text}`)
+      .join('\n');
+    return `${section.category}:\n${lines}`;
+  };
+
+  const reportText = [
+    `Summary: ${report.summary}`,
+    sectionSummary(report.professionalBackground, 'professionalBackground'),
+    sectionSummary(report.recentActivities, 'recentActivities'),
+    sectionSummary(report.personalInterests, 'personalInterests'),
+    sectionSummary(report.discussionPoints, 'discussionPoints'),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  const prompt = `You are a fact-checking assistant. An AI has produced an intelligence report about "${personName}" (associated with "${company}"). Your job is to:
+
+1. Assess the overall plausibility of the report based on your knowledge.
+2. Flag any specific claims that appear low-confidence, potentially inaccurate, or that you would contradict.
+3. For each flagged claim, specify a confidence adjustment (negative integer, e.g. -20 means reduce by 20 points).
+
+REPORT:
+${reportText}
+
+Return ONLY valid JSON with this structure (no markdown, no code fences):
+{
+  "overallAccuracyScore": <0-100 integer>,
+  "summary": "<one sentence summarising your verification assessment>",
+  "flags": [
+    {
+      "section": "<one of: professionalBackground | recentActivities | personalInterests | discussionPoints>",
+      "pointIndex": <0-based integer matching the [section][index] in the report>,
+      "issue": "<brief explanation of the concern>",
+      "confidenceAdjustment": <negative integer, e.g. -15>,
+      "severity": "<low | medium | high>"
+    }
+  ]
+}
+
+If everything looks accurate and plausible, return an empty flags array. Only flag claims you have specific reason to doubt.`;
+
+  console.log(`[GEMINI API] Cross-checking Claude report for "${personName}" at "${company}"`);
+
+  const response: GenerateContentResponse = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    config: {
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          overallAccuracyScore: { type: Type.NUMBER },
+          summary: { type: Type.STRING },
+          flags: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                section: { type: Type.STRING },
+                pointIndex: { type: Type.NUMBER },
+                issue: { type: Type.STRING },
+                confidenceAdjustment: { type: Type.NUMBER },
+                severity: { type: Type.STRING },
+              },
+              required: ['section', 'pointIndex', 'issue', 'confidenceAdjustment', 'severity'],
+            },
+          },
+        },
+        required: ['overallAccuracyScore', 'summary', 'flags'],
+      },
+    },
+  });
+
+  const raw = JSON.parse(response.text || '{}');
+
+  const flags: VerificationFlag[] = (raw.flags || [])
+    .filter((f: any) =>
+      ['professionalBackground', 'recentActivities', 'personalInterests', 'discussionPoints'].includes(f.section) &&
+      Number.isInteger(Math.round(f.pointIndex)) &&
+      typeof f.issue === 'string' &&
+      typeof f.confidenceAdjustment === 'number' &&
+      ['low', 'medium', 'high'].includes(f.severity)
+    )
+    .map((f: any) => ({
+      section: f.section as VerificationFlag['section'],
+      pointIndex: Math.round(f.pointIndex),
+      issue: f.issue,
+      confidenceAdjustment: Math.max(-50, Math.min(0, Math.round(f.confidenceAdjustment))),
+      severity: f.severity as VerificationFlag['severity'],
+    }));
+
+  return {
+    overallAccuracyScore: Math.max(0, Math.min(100, Math.round(raw.overallAccuracyScore ?? 70))),
+    summary: typeof raw.summary === 'string' ? raw.summary : 'Verification complete.',
+    flags,
+    geminiModel: 'gemini-2.5-flash',
+  };
 };
 
 export const extractTextFromImage = async (base64Image: string): Promise<{name: string, company: string}> => {

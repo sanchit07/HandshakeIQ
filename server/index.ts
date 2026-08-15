@@ -54,7 +54,7 @@ const isProduction = process.env.NODE_ENV === 'production';
   cron.schedule('0 7 * * *', async () => {
     console.log('[CRON] Starting scheduled daily job search');
     try {
-      const result = await runDailyJobSearch();
+        const result = await runDailyJobSearch();
       console.log(`[CRON] Daily job search done: ${result.count} jobs for ${result.runDate}${result.skipped ? ' (already existed, skipped)' : ''}`);
     } catch (err) {
       console.error('[CRON] Daily job search failed:', err);

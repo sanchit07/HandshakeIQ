@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ZohoIcon } from './icons/BrandIcons';
+import { GoogleIcon, ZohoIcon } from './icons/BrandIcons';
 import { UserIcon, LockIcon } from './icons/UIIcons';
 
 const LoginButton: React.FC<{ icon: React.ReactNode; label: string; href: string }> = ({ icon, label, href }) => {
@@ -65,6 +65,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [view, setView] = useState<'login' | 'forgotPassword'>('login');
+  const [mode, setMode] = useState<'signin' | 'register'>('signin');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -73,7 +74,8 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest }) => {
     setError(null);
     setSubmitting(true);
     try {
-      const res = await fetch('/api/login/email', {
+      const endpoint = mode === 'signin' ? '/api/login/email' : '/api/register/email';
+      const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
@@ -111,25 +113,8 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onContinueAsGuest }) => {
               <h2 className="font-exo text-2xl sm:text-3xl font-bold text-white">Access Terminal</h2>
               <p className="mt-2 text-sm sm:text-base text-cyan-300">Authenticate for full access</p>
             </div>
-            <form className="space-y-3" onSubmit={handleEmailSubmit}>
-              <InputField icon={<UserIcon />} type="email" placeholder="Email Address" value={email} onChange={(e) => setEmail(e.target.value)} />
-              <InputField icon={<LockIcon />} type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
-              {error && <p className="text-sm text-red-400 text-center">{error}</p>}
-              <button
-                type="submit"
-                disabled={submitting}
-                className="w-full font-exo text-lg py-3 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 rounded-lg text-slate-900 font-bold transition-all duration-300 shadow-lg shadow-cyan-500/20 btn-glow"
-              >
-                {submitting ? 'Authenticating...' : 'Sign In'}
-              </button>
-              <div className="flex justify-end text-sm">
-                <button type="button" onClick={() => setView('forgotPassword')} className="text-gray-400 hover:underline">
-                  Forgot password?
-                </button>
-              </div>
-            </form>
-
             <div className="space-y-2 sm:space-y-3">
+              <LoginButton icon={<GoogleIcon />} label="Sign in with Google" href="/api/login" />
               <LoginButton icon={<ZohoIcon />} label="Sign in with Zoho" href="/api/login/zoho" />
             </div>
             

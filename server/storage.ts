@@ -20,28 +20,45 @@ export interface IStorage {
   // User operations
   // (IMPORTANT) these user operations are mandatory for Replit Auth.
   getUser(id: string): Promise<User | undefined>;
+
   getUserByEmail(email: string): Promise<User | undefined>;
+
   getAllUsers(): Promise<User[]>;
+
   createUser(user: UpsertUser): Promise<User>;
+
   upsertUser(user: UpsertUser): Promise<User>;
   
   // Dossier operations
+
   saveDossier(dossier: UpsertDossier): Promise<Dossier>;
+
   getDossiersByUser(userId: string): Promise<Dossier[]>;
+
   getDossier(dossierId: string): Promise<Dossier | undefined>;
+
   updateDossier(dossierId: string, data: Partial<UpsertDossier>): Promise<Dossier>;
+
   deleteDossier(dossierId: string): Promise<void>;
   
   // Note operations
+
   addNote(note: UpsertNote): Promise<Note>;
+
   getNotesByDossier(dossierId: string): Promise<Note[]>;
+
   updateNote(noteId: string, content: string): Promise<Note>;
+
   deleteNote(noteId: string): Promise<void>;
   
   // Search History operations
+
   saveSearchHistory(searchData: UpsertSearchHistory): Promise<SearchHistory>;
+
   getSearchHistory(userId?: string, limit?: number): Promise<SearchHistory[]>;
+
   findExactMatch(personName: string, personCompany?: string, userId?: string): Promise<SearchHistory | undefined>;
+
   getRecentSearches(userId?: string, limit?: number): Promise<SearchHistory[]>;
 }
 
@@ -82,7 +99,7 @@ export class DatabaseStorage implements IStorage {
       .returning();
     return user;
   }
-  
+
   // Dossier operations
   
   async saveDossier(dossierData: UpsertDossier): Promise<Dossier> {
@@ -92,7 +109,7 @@ export class DatabaseStorage implements IStorage {
       .returning();
     return dossier;
   }
-  
+
   async getDossiersByUser(userId: string): Promise<Dossier[]> {
     return await db
       .select()
@@ -100,7 +117,7 @@ export class DatabaseStorage implements IStorage {
       .where(eq(dossiers.userId, userId))
       .orderBy(desc(dossiers.updatedAt));
   }
-  
+
   async getDossier(dossierId: string): Promise<Dossier | undefined> {
     const [dossier] = await db
       .select()
@@ -108,7 +125,7 @@ export class DatabaseStorage implements IStorage {
       .where(eq(dossiers.id, dossierId));
     return dossier;
   }
-  
+
   async updateDossier(dossierId: string, data: Partial<UpsertDossier>): Promise<Dossier> {
     const [dossier] = await db
       .update(dossiers)
@@ -120,11 +137,11 @@ export class DatabaseStorage implements IStorage {
       .returning();
     return dossier;
   }
-  
+
   async deleteDossier(dossierId: string): Promise<void> {
     await db.delete(dossiers).where(eq(dossiers.id, dossierId));
   }
-  
+
   // Note operations
   
   async addNote(noteData: UpsertNote): Promise<Note> {
@@ -134,7 +151,7 @@ export class DatabaseStorage implements IStorage {
       .returning();
     return note;
   }
-  
+
   async getNotesByDossier(dossierId: string): Promise<Note[]> {
     return await db
       .select()
@@ -142,7 +159,7 @@ export class DatabaseStorage implements IStorage {
       .where(eq(notes.dossierId, dossierId))
       .orderBy(desc(notes.createdAt));
   }
-  
+
   async updateNote(noteId: string, content: string): Promise<Note> {
     const [note] = await db
       .update(notes)
@@ -154,11 +171,11 @@ export class DatabaseStorage implements IStorage {
       .returning();
     return note;
   }
-  
+
   async deleteNote(noteId: string): Promise<void> {
     await db.delete(notes).where(eq(notes.id, noteId));
   }
-  
+
   // Search History operations
   
   async saveSearchHistory(searchData: UpsertSearchHistory): Promise<SearchHistory> {
@@ -168,7 +185,7 @@ export class DatabaseStorage implements IStorage {
       .returning();
     return search;
   }
-  
+
   async getSearchHistory(userId?: string, limit: number = 50): Promise<SearchHistory[]> {
     if (userId) {
       return await db
@@ -186,7 +203,7 @@ export class DatabaseStorage implements IStorage {
         .limit(limit);
     }
   }
-  
+
   async findExactMatch(personName: string, personCompany?: string, userId?: string): Promise<SearchHistory | undefined> {
     const conditions = [
       sql`LOWER(${searchHistory.personName}) = LOWER(${personName})`
@@ -211,7 +228,7 @@ export class DatabaseStorage implements IStorage {
     
     return match;
   }
-  
+
   async getRecentSearches(userId?: string, limit: number = 10): Promise<SearchHistory[]> {
     return this.getSearchHistory(userId, limit);
   }
