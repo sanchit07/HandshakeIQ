@@ -29,6 +29,7 @@ import {
   ALLOWED_JOB_BOARD_DOMAINS,
   hostnameMatchesBoardDomain,
   deriveSourceFromUrl,
+  isDirectPostingUrl,
   type BoardConfig,
 } from './jobMatchService.js';
 
@@ -641,4 +642,208 @@ test('filterLiveJobs: dead candidate from regional Randstad domain is excluded',
   const result = await filterLiveJobs(jobs);
   assert.equal(result.length, 1, 'Dead randstad.com.au posting must be removed');
   assert.equal(result[0].company, 'Beta');
+});
+
+// ── isDirectPostingUrl — per-board URL path-pattern detection ─────────────────
+//
+// These tests guard against silent regressions when a board changes its URL
+// structure: if a board starts serving individual ads on a different path the
+// pattern tests will fail, making the breakage visible before it silently
+// degrades search quality.
+
+/** Minimal board fixtures that mirror the real getBoardConfigs() output. */
+const INDEED_BOARD: BoardConfig = {
+  name: 'Indeed',
+  domain: 'indeed.com',
+  urlHint: 'URLs containing /viewjob?jk= or /rc/clk?jk=',
+  validDomains: ['indeed.com'],
+  directUrlPatterns: [/\/viewjob\?.*jk=/, /\/rc\/clk\?.*jk=/],
+};
+
+const HAYS_MY_BOARD: BoardConfig = {
+  name: 'Hays',
+  domain: 'hays.com.my',
+  urlHint: 'a URL on hays.com.my that contains /job/ followed by a job reference or title slug',
+  validDomains: ['hays.com.my'],
+  directUrlPatterns: [/\/job\//],
+};
+
+const HAYS_AU_BOARD: BoardConfig = {
+  name: 'Hays',
+  domain: 'hays.com.au',
+  urlHint: 'a URL on hays.com.au that contains /job/ followed by a job reference or title slug',
+  validDomains: ['hays.com.au'],
+  directUrlPatterns: [/\/job\//],
+};
+
+const LINKEDIN_BOARD: BoardConfig = {
+  name: 'LinkedIn',
+  domain: 'linkedin.com/jobs/view',
+  urlHint: 'https://www.linkedin.com/jobs/view/<numeric-id>',
+  validDomains: ['linkedin.com'],
+  directUrlPatterns: [/\/jobs\/view\//],
+};
+
+const RANDSTAD_BOARD: BoardConfig = {
+  name: 'Randstad',
+  domain: 'randstad.com.my',
+  urlHint: 'a URL on randstad.com.my that includes a job reference number or job slug',
+  validDomains: ['randstad.com.my'],
+  // No directUrlPatterns — Randstad slugs vary; any path on the valid domain is accepted
+};
+
+// ── Indeed: /viewjob?jk= ──────────────────────────────────────────────────────
+
+test('isDirectPostingUrl: Indeed /viewjob?jk= is accepted (direct job ad)', () => {
+  assert.equal(
+    isDirectPostingUrl('https://indeed.com/viewjob?jk=abc123', INDEED_BOARD),
+    true,
+    '/viewjob?jk= must be accepted as a direct posting',
+  );
+});
+
+test('isDirectPostingUrl: Indeed country-subdomain /viewjob?jk= is accepted', () => {
+  // au.indeed.com, ie.indeed.com, etc. use the same path pattern
+  assert.equal(
+    isDirectPostingUrl('https://au.indeed.com/viewjob?jk=xyz789', INDEED_BOARD),
+    true,
+  );
+  assert.equal(
+    isDirectPostingUrl('https://ie.indeed.com/viewjob?jk=def456', INDEED_BOARD),
+    true,
+  );
+});
+
+test('isDirectPostingUrl: Indeed /rc/clk?jk= redirect link is accepted', () => {
+  assert.equal(
+    isDirectPostingUrl('https://indeed.com/rc/clk?jk=abc123&fccid=xyz&vjs=3', INDEED_BOARD),
+    true,
+    '/rc/clk?jk= is a valid direct-posting redirect used by Indeed',
+  );
+});
+
+test('isDirectPostingUrl: Indeed /jobs?q= search-results page is rejected', () => {
+  // The classic generic search page — must NOT be treated as a direct posting
+  assert.equal(
+    isDirectPostingUrl('https://indeed.com/jobs?q=product+manager&l=sydney', INDEED_BOARD),
+    false,
+    'Search-results page /jobs?q= must be rejected',
+  );
+});
+
+test('isDirectPostingUrl: Indeed homepage is rejected', () => {
+  assert.equal(
+    isDirectPostingUrl('https://indeed.com/', INDEED_BOARD),
+    false,
+  );
+});
+
+test('isDirectPostingUrl: Indeed /companies/ page is rejected', () => {
+  assert.equal(
+    isDirectPostingUrl('https://indeed.com/companies/google', INDEED_BOARD),
+    false,
+  );
+});
+
+// ── Hays: /job/ ───────────────────────────────────────────────────────────────
+
+test('isDirectPostingUrl: Hays /job/<slug> is accepted (Malaysia domain)', () => {
+  assert.equal(
+    isDirectPostingUrl('https://hays.com.my/job/senior-product-manager-kuala-lumpur-12345', HAYS_MY_BOARD),
+    true,
+    '/job/<slug> must be accepted as a direct Hays posting',
+  );
+});
+
+test('isDirectPostingUrl: Hays /job/<slug> is accepted (Australia domain)', () => {
+  assert.equal(
+    isDirectPostingUrl('https://hays.com.au/job/product-manager-sydney-67890', HAYS_AU_BOARD),
+    true,
+  );
+});
+
+test('isDirectPostingUrl: Hays /job/<ref-number> is accepted', () => {
+  // Hays sometimes uses numeric job reference codes
+  assert.equal(
+    isDirectPostingUrl('https://hays.com.my/job/4567890', HAYS_MY_BOARD),
+    true,
+  );
+});
+
+test('isDirectPostingUrl: Hays homepage is rejected', () => {
+  assert.equal(
+    isDirectPostingUrl('https://hays.com.my/', HAYS_MY_BOARD),
+    false,
+    'Homepage must not be treated as a direct posting',
+  );
+});
+
+test('isDirectPostingUrl: Hays /jobs category page is rejected', () => {
+  // /jobs (plural) is the listing page; /job/ (singular) is a direct posting
+  assert.equal(
+    isDirectPostingUrl('https://hays.com.my/jobs/product-management', HAYS_MY_BOARD),
+    false,
+    '/jobs category page must be rejected; only /job/ (singular) is a direct posting',
+  );
+});
+
+test('isDirectPostingUrl: Hays /search?q= page is rejected', () => {
+  assert.equal(
+    isDirectPostingUrl('https://hays.com.au/search?q=product+manager', HAYS_AU_BOARD),
+    false,
+  );
+});
+
+// ── LinkedIn: /jobs/view/ ─────────────────────────────────────────────────────
+
+test('isDirectPostingUrl: LinkedIn /jobs/view/<id> is accepted', () => {
+  assert.equal(
+    isDirectPostingUrl('https://www.linkedin.com/jobs/view/3987654321', LINKEDIN_BOARD),
+    true,
+  );
+});
+
+test('isDirectPostingUrl: LinkedIn /jobs/search is rejected', () => {
+  assert.equal(
+    isDirectPostingUrl('https://www.linkedin.com/jobs/search/?keywords=product+manager', LINKEDIN_BOARD),
+    false,
+    '/jobs/search must be rejected as a listing page',
+  );
+});
+
+test('isDirectPostingUrl: LinkedIn homepage is rejected', () => {
+  assert.equal(
+    isDirectPostingUrl('https://www.linkedin.com/', LINKEDIN_BOARD),
+    false,
+  );
+});
+
+// ── Randstad: no path restriction ─────────────────────────────────────────────
+
+test('isDirectPostingUrl: Randstad any path is accepted (no directUrlPatterns defined)', () => {
+  // Randstad slug patterns vary by country — we don't enforce a path constraint
+  assert.equal(
+    isDirectPostingUrl('https://randstad.com.my/jobs/product-manager-kuala-lumpur-ref123', RANDSTAD_BOARD),
+    true,
+  );
+  assert.equal(
+    isDirectPostingUrl('https://randstad.com.my/', RANDSTAD_BOARD),
+    true,
+    'Even homepage is accepted when no directUrlPatterns are set (hostname check is the guard)',
+  );
+});
+
+// ── Edge cases ────────────────────────────────────────────────────────────────
+
+test('isDirectPostingUrl: malformed URL returns false', () => {
+  assert.equal(isDirectPostingUrl('not-a-url', INDEED_BOARD), false);
+  assert.equal(isDirectPostingUrl('', INDEED_BOARD), false);
+});
+
+test('isDirectPostingUrl: Indeed /viewjob with extra query params is accepted', () => {
+  // Boards sometimes add tracking params after jk=; the pattern must still match
+  assert.equal(
+    isDirectPostingUrl('https://indeed.com/viewjob?jk=abc123&from=serp&vjs=3', INDEED_BOARD),
+    true,
+  );
 });

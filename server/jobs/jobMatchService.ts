@@ -704,6 +704,32 @@ export interface BoardConfig {
   extraNote?: string;
   /** Acceptable base domains for URL hostname validation; subdomains also accepted */
   validDomains: string[];
+  /**
+   * Optional path-level patterns. When provided, the URL's pathname+search must
+   * match at least one pattern or the posting is rejected as a listing/search page.
+   * Omit to accept any path on a valid domain.
+   */
+  directUrlPatterns?: RegExp[];
+}
+
+/**
+ * Returns true when the URL's path looks like a direct job-posting link for the
+ * given board (i.e. it matches one of the board's directUrlPatterns).
+ *
+ * When a board defines no directUrlPatterns the function always returns true so
+ * that boards without a known URL structure are not accidentally filtered out.
+ *
+ * Exported for unit tests.
+ */
+export function isDirectPostingUrl(url: string, board: BoardConfig): boolean {
+  if (!board.directUrlPatterns || board.directUrlPatterns.length === 0) return true;
+  try {
+    const u = new URL(url);
+    const pathAndSearch = u.pathname + u.search;
+    return board.directUrlPatterns.some((pattern) => pattern.test(pathAndSearch));
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -785,6 +811,15 @@ Return ONLY a valid JSON array (empty array [] if nothing valid was found — do
           return true;
         } catch { return false; }
       })
+      // Reject URLs that look like search/listing pages rather than direct job ads.
+      // e.g. indeed.com/jobs?q=... or linkedin.com/jobs/search are listing pages.
+      .filter((j: any) => {
+        if (!isDirectPostingUrl(String(j.url), board)) {
+          console.log(`[JOB SEARCH] ${board.name}: rejected listing/search-page URL: ${j.url}`);
+          return false;
+        }
+        return true;
+      })
       .map((j: any) => ({
         title: String(j.title).slice(0, 250),
         company: String(j.company).slice(0, 250),
@@ -808,6 +843,8 @@ function getBoardConfigs(country: string): BoardConfig[] {
       domain: 'linkedin.com/jobs/view',
       urlHint: 'https://www.linkedin.com/jobs/view/<numeric-id>',
       validDomains: ['linkedin.com'],
+      // LinkedIn direct job ads always live under /jobs/view/
+      directUrlPatterns: [/\/jobs\/view\//],
     },
     {
       name: 'Indeed',
@@ -816,18 +853,23 @@ function getBoardConfigs(country: string): BoardConfig[] {
       // indeed.com covers country subdomains (au.indeed.com, ie.indeed.com, etc.)
       extraNote: 'Also try the country-specific Indeed domain (e.g. au.indeed.com, ie.indeed.com, pl.indeed.com, se.indeed.com). If the first search yields only listing pages, try a city name or a single specific role title.',
       validDomains: ['indeed.com'],
+      // Indeed direct job ads use /viewjob?jk= or /rc/clk?jk=; /jobs?q= pages are search results
+      directUrlPatterns: [/\/viewjob\?.*jk=/, /\/rc\/clk\?.*jk=/],
     },
     {
       name: 'Randstad',
       domain: randstad,
       urlHint: `a URL on ${randstad} that includes a job reference number or job slug — NOT the homepage or a /jobs category page`,
       validDomains: [randstad],
+      // Randstad slugs vary widely; no reliable single path pattern — accept any valid-domain URL
     },
     {
       name: 'Hays',
       domain: hays,
       urlHint: `a URL on ${hays} that contains /job/ followed by a job reference or title slug`,
       validDomains: [hays],
+      // Hays direct job ads always include /job/ in the path
+      directUrlPatterns: [/\/job\//],
     },
   ];
   // JobStreet is only active in Malaysia (jobstreet.com.my).
