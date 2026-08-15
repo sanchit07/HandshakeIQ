@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "start": "NODE_ENV=production tsx server/index.ts",
     "db:push": "drizzle-kit push",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "test:liveness": "node --import tsx/esm --test server/jobs/jobMatchService.liveness.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

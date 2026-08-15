@@ -1,4 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
+import dnsPromises from 'node:dns/promises';
+import type { LookupOptions } from 'node:dns';
+import net from 'node:net';
+import https from 'node:https';
+import http from 'node:http';
 import fs from 'fs';
 import path from 'path';
 import { db } from '../db';
@@ -89,6 +94,81 @@ export function todayKL(): string {
 // dev workflow + published deployment both running the 7 AM cron)
 const RUN_LOCK_KEY = 771230117;
 
+/**
+ * Known job-board and ATS domains. Only URLs whose hostname matches one of
+ * these (exact match or subdomain) are probed. Everything else is kept without
+ * a network request — prevents arbitrary outbound requests to LLM-generated URLs.
+ */
+export const ALLOWED_JOB_BOARD_DOMAINS: readonly string[] = [
+  'linkedin.com', 'indeed.com', 'jobstreet.com', 'jobstreet.com.my',
+  'randstad.com', 'hays.com', 'glassdoor.com',
+  'seek.com', 'seek.com.au', 'seek.co.nz',
+  'monster.com', 'careerbuilder.com',
+  'greenhouse.io', 'lever.co', 'ashbyhq.com', 'workable.com',
+  'myworkdayjobs.com', 'taleo.net', 'icims.com', 'smartrecruiters.com',
+  'bamboohr.com', 'jobvite.com', 'successfactors.com',
+  'jobsdb.com', 'reed.co.uk', 'totaljobs.com', 'stepstone.de', 'xing.com',
+  'careers24.com', 'pnet.co.za',
+];
+/**
+ * Checks whether a job posting URL is still live.
+ *
+ * Security design:
+ *  1. Domain allowlist — only known job-board/ATS hostnames are probed.
+ *  2. SSRF-safe DNS — the ssrfSafeLookup callback validates ALL resolved IPs
+ *     at connection time (no TOCTOU gap between check and use).
+ *  3. No redirect following — 3xx is treated as "live"; we never connect to
+ *     a redirect destination.
+ *  4. Shared 10-second deadline across HEAD and fallback GET.
+ *
+ * Conservative failure policy: only 404/410 → dead. 403/429/5xx and network
+ * errors → live (bot-blocking boards and transient outages are not discarded).
+ * SSRF-blocked URLs → dead (actively rejected).
+ */
+export async function checkUrlLive(url: string | null | undefined): Promise<boolean> {
+  if (!url || !/^https?:\/\//.test(url)) return true; // no URL — keep
+
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return true; // unparseable — keep
+  }
+
+  // Domain allowlist: skip probe entirely for non-allowlisted hostnames
+  if (!isAllowedJobBoardDomain(parsedUrl.hostname)) {
+    console.log(`[LIVENESS] Skipping probe (non-allowlisted domain): ${parsedUrl.hostname}`);
+    return true;
+  }
+
+  // Single AbortController — shared across HEAD + fallback GET (10 s combined budget)
+  const TIMEOUT_MS = 10_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    let status = await httpRequest(parsedUrl, 'HEAD', controller.signal);
+
+    // Some servers reject HEAD — retry with GET using the same signal (shared budget)
+    if (status === 405 || status === 501) {
+      status = await httpRequest(parsedUrl, 'GET', controller.signal);
+    }
+
+    const dead = status === 404 || status === 410;
+    if (dead) console.log(`[LIVENESS] DEAD (${status}): ${url}`);
+    return !dead;
+  } catch (err: any) {
+    if (err?.message?.startsWith('SSRF blocked')) {
+      console.log(`[LIVENESS] ${err.message}`);
+      return false; // actively blocked private IP — treat as dead
+    }
+    // Timeout, DNS failure, TLS, connection refused → keep (don't discard real jobs)
+    console.log(`[LIVENESS] Network error (keeping): ${url} — ${err?.message}`);
+    return true;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 export async function runDailyJobSearch(force = false): Promise<{ runDate: string; count: number; skipped?: boolean }> {
   const runDate = todayKL();
 
@@ -198,16 +278,25 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first:
     const ranked = parseJsonLoose(extractText(rankResponse));
     if (!Array.isArray(ranked) || ranked.length === 0) throw new Error('Ranking step returned no results');
 
-    const rows = ranked
+    // Apply dedup filters (hard enforcement in case the model ignores exclusion rules)
+    const dedupedCandidates = ranked
       .filter((j: any) => j && typeof j.title === 'string' && typeof j.company === 'string')
-      // Hard dedup enforcement (in case the model ignores exclusion rules)
       .filter((j: any) => {
         const url = typeof j.url === 'string' ? j.url.toLowerCase() : '';
         if (url && pastUrls.has(url)) return false;
         if (pastTitleCompany.has(`${j.title}::${j.company}`.toLowerCase())) return false;
         if (cooldownCompanies.has(String(j.company).toLowerCase())) return false;
         return true;
-      })
+      });
+
+    // Phase 4: liveness check — drop postings whose URL returns a confirmed-dead status
+    console.log(`[JOB SEARCH] Liveness-checking ${dedupedCandidates.length} candidate URLs…`);
+    const liveJobs = await filterLiveJobs(dedupedCandidates);
+    console.log(`[JOB SEARCH] ${liveJobs.length} of ${dedupedCandidates.length} jobs passed liveness check`);
+
+    if (liveJobs.length === 0) throw new Error('All shortlisted jobs failed liveness check');
+
+    const rows = liveJobs
       .slice(0, 10)
       .map((j: any, i: number) => ({
         runDate,
@@ -320,4 +409,151 @@ The VERY FIRST line of your response must be exactly: "BASE CV: <name of the sou
 
   await db.update(jobMatches).set({ tailoredCv, cvVariant }).where(eq(jobMatches.id, matchId));
   return { ...job, tailoredCv, cvVariant };
+}
+
+export async function filterLiveJobs(jobs: any[]): Promise<any[]> {
+  const results = await Promise.all(
+    jobs.map(async (job) => ({ job, live: await checkUrlLive(job?.url) })),
+  );
+  return results.filter((r) => r.live).map((r) => r.job);
+}
+
+/** Returns true when hostname matches an allowed domain exactly or as subdomain. */
+export function isAllowedJobBoardDomain(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^www\./, '');
+  for (const allowed of ALLOWED_JOB_BOARD_DOMAINS) {
+    if (h === allowed || h.endsWith(`.${allowed}`)) return true;
+  }
+  return false;
+}
+
+/**
+ * Synchronously checks whether an IP address string is private, loopback,
+ * link-local, or otherwise reserved (RFC 1918, RFC 4193, RFC 3513, etc.).
+ * Handles both IPv4 and IPv6, including IPv4-mapped IPv6 addresses.
+ */
+export function isPrivateIp(address: string): boolean {
+  // Unwrap IPv4-mapped IPv6 (::ffff:1.2.3.4)
+  const v4mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  const check = v4mapped ? v4mapped[1] : address;
+
+  if (net.isIPv4(check)) {
+    const [a, b] = check.split('.').map(Number);
+    if (a === 127) return true;                          // loopback
+    if (a === 10) return true;                           // RFC1918
+    if (a === 172 && b >= 16 && b <= 31) return true;   // RFC1918
+    if (a === 192 && b === 168) return true;             // RFC1918
+    if (a === 169 && b === 254) return true;             // link-local / metadata (AWS, GCP, etc.)
+    if (a === 0) return true;                            // this-network
+    if (a >= 224) return true;                           // multicast + reserved
+    return false;
+  }
+
+  if (net.isIPv6(check)) {
+    const lower = check.toLowerCase();
+    if (lower === '::1') return true;                              // loopback
+    if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // ULA (RFC 4193)
+    if (lower.startsWith('fe80')) return true;                    // link-local (RFC 3513)
+    if (lower.startsWith('ff')) return true;                      // multicast
+    return false;
+  }
+
+  return false; // unrecognised format — allow (fetch will fail naturally)
+}
+
+/**
+ * Custom DNS lookup passed to Node's http/https.request `lookup` option.
+ *
+ * SSRF guarantee: this callback is called BY the networking layer at the
+ * moment of connection, so the IP address it validates IS the address used for
+ * the TCP socket. There is no TOCTOU gap between a pre-check and the actual
+ * connection.
+ *
+ * Security properties:
+ *  - Resolves ALL A and AAAA records (not just one) via resolve4/resolve6.
+ *  - Rejects the connection if ANY resolved address is private/reserved,
+ *    preventing mixed-record DNS rebinding attacks.
+ *  - Returns the first fully-public address for the connection.
+ */
+export async function ssrfSafeLookup(
+  hostname: string,
+  _opts: LookupOptions,
+  callback: (err: NodeJS.ErrnoException | null, address: string, family: number) => void,
+): Promise<void> {
+  try {
+    const [v4Result, v6Result] = await Promise.allSettled([
+      dnsPromises.resolve4(hostname),
+      dnsPromises.resolve6(hostname),
+    ]);
+
+    const candidates: Array<{ address: string; family: 4 | 6 }> = [
+      ...(v4Result.status === 'fulfilled'
+        ? v4Result.value.map((a) => ({ address: a, family: 4 as const }))
+        : []),
+      ...(v6Result.status === 'fulfilled'
+        ? v6Result.value.map((a) => ({ address: a, family: 6 as const }))
+        : []),
+    ];
+
+    if (candidates.length === 0) {
+      callback(Object.assign(new Error(`DNS lookup failed for ${hostname}`), { code: 'ENOTFOUND' }), '', 0);
+      return;
+    }
+
+    // Reject if ANY candidate is private — blocks mixed-record DNS rebinding
+    for (const { address } of candidates) {
+      if (isPrivateIp(address)) {
+        callback(Object.assign(new Error(`SSRF blocked: ${hostname} resolves to private/reserved IP ${address}`), { code: 'ECONNREFUSED' }), '', 0);
+        return;
+      }
+    }
+
+    // All candidates are public — use the first for the connection
+    const { address, family } = candidates[0];
+    callback(null, address, family);
+  } catch (err: any) {
+    callback(err, '', 0);
+  }
+}
+
+/**
+ * Makes an HTTP/HTTPS request using Node's native stack with the SSRF-safe
+ * lookup function. Returns the HTTP status code (0 on connection failure).
+ * Redirects are NOT followed — a 3xx status counts as "live".
+ */
+function httpRequest(parsedUrl: URL, method: string, signal: AbortSignal): Promise<number> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(new Error('AbortError')); return; }
+
+    const isHttps = parsedUrl.protocol === 'https:';
+    const mod = isHttps ? https : http;
+
+    const req = mod.request(
+      {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (isHttps ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method,
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; JobLivenessBot/1.0)' },
+        lookup: (h: string, o: LookupOptions, cb: any) => { ssrfSafeLookup(h, o, cb); },
+      },
+      (res) => {
+        res.destroy(); // discard body
+        signal.removeEventListener('abort', onAbort);
+        resolve(res.statusCode ?? 0);
+      },
+    );
+
+    function onAbort() {
+      req.destroy(new Error('AbortError'));
+      reject(new Error('AbortError'));
+    }
+
+    signal.addEventListener('abort', onAbort, { once: true });
+    req.on('error', (err) => {
+      signal.removeEventListener('abort', onAbort);
+      reject(err);
+    });
+    req.end();
+  });
 }
