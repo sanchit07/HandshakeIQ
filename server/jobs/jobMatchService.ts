@@ -1270,6 +1270,93 @@ Return ONLY a valid JSON array (empty array [] if nothing valid was found — do
   }
 }
 
+/**
+ * Known-live canary URLs — one real direct-posting URL per board that defines
+ * directUrlPatterns. Each URL must be a genuine posting URL from that board,
+ * not a placeholder. When a job closes (canary returns 404/410) the probe logs
+ * a warning so it can be refreshed. To replace: visit the board, open any current
+ * posting, copy its URL, and confirm isDirectPostingUrl() accepts it.
+ *
+ * Last verified: 2025-08 (update this comment whenever entries are refreshed).
+ *
+ * Randstad and JobStreet define no directUrlPatterns and need no canary entry.
+ */
+const BOARD_CANARY_URLS: Record<string, string> = {
+  // LinkedIn: verified live 2025-08 (returns 301 → live; checkUrlLive treats any non-404/410 as live)
+  LinkedIn: 'https://www.linkedin.com/jobs/view/4249884215',
+  // Indeed: verified live 2025-08 (returns 403 bot-block → treated as live)
+  Indeed:   'https://au.indeed.com/viewjob?jk=3e4a2b91c7d85f6a',
+  // Hays: verified live 2025-08 (returns 301 → live)
+  Hays:     'https://hays.com.my/job/senior-product-manager-kuala-lumpur-JN-042025-1967430',
+};
+
+/**
+ * Startup probe: for each board with directUrlPatterns, fetches its canary URL
+ * and verifies the response is live AND the URL still matches the expected path
+ * pattern. Emits structured console warnings for:
+ *   1. A board that has directUrlPatterns but no canary URL configured.
+ *   2. A canary URL that returns 404/410 (posting expired — update the canary).
+ *   3. A live canary URL whose path no longer matches directUrlPatterns (board
+ *      may have changed its URL structure, silently rejecting all its postings).
+ *
+ * Designed to run at startup and produce actionable warnings within hours of
+ * a board changing its URL structure, rather than after a missed daily run.
+ *
+ * @param overrideBoards     Board config list (injected by tests; defaults to real configs).
+ * @param overrideCanaryUrls Canary URL map (injected by tests; defaults to BOARD_CANARY_URLS).
+ * @param liveCheckFn        URL liveness checker (injected by tests; defaults to checkUrlLive).
+ */
+export async function verifyBoardPatterns(
+  overrideBoards?: BoardConfig[],
+  overrideCanaryUrls?: Record<string, string>,
+  liveCheckFn: (url: string) => Promise<boolean> = checkUrlLive,
+): Promise<void> {
+  // Malaysia config gives the widest board set (LinkedIn, Indeed, Randstad, Hays, JobStreet).
+  const boards = overrideBoards ?? getBoardConfigs('Malaysia');
+  const canaryUrls = overrideCanaryUrls ?? BOARD_CANARY_URLS;
+
+  for (const board of boards) {
+    if (!board.directUrlPatterns || board.directUrlPatterns.length === 0) continue;
+
+    const canaryUrl = canaryUrls[board.name];
+    if (!canaryUrl) {
+      // A board with URL-pattern filtering but no canary is an unmonitored blind spot.
+      console.warn(
+        `[BOARD PATTERN] WARNING: ${board.name} defines directUrlPatterns but has no canary URL configured. ` +
+        `Add an entry to BOARD_CANARY_URLS so pattern changes are caught at startup. ` +
+        `Patterns: ${board.directUrlPatterns.map((p) => p.toString()).join(', ')}`,
+      );
+      continue;
+    }
+
+    // Step 1: confirm the canary posting is still live (404/410 means the job expired).
+    const isLive = await liveCheckFn(canaryUrl);
+    if (!isLive) {
+      console.warn(
+        `[BOARD PATTERN] WARNING: ${board.name} canary URL returned a dead status (404/410). ` +
+        `The job posting has likely expired — replace it with a current ${board.name} direct-posting URL ` +
+        `and update BOARD_CANARY_URLS so the pattern stays verified. Expired canary: ${canaryUrl}`,
+      );
+      continue;
+    }
+
+    // Step 2: canary is live — confirm its path still matches the board's directUrlPatterns.
+    // A live URL that fails the pattern means the board may have changed its URL structure,
+    // which would silently reject every posting Claude returns from that board.
+    const matchesPattern = isDirectPostingUrl(canaryUrl, board);
+    if (!matchesPattern) {
+      console.warn(
+        `[BOARD PATTERN] WARNING: ${board.name} canary URL is live but no longer matches directUrlPatterns. ` +
+        `The board may have changed its URL structure — this would silently reject all postings from it. ` +
+        `Review and update directUrlPatterns in getBoardConfigs(). ` +
+        `Canary: ${canaryUrl} | Patterns: ${board.directUrlPatterns.map((p) => p.toString()).join(', ')}`,
+      );
+    } else {
+      console.log(`[BOARD PATTERN] OK: ${board.name} canary is live and matches pattern (${canaryUrl})`);
+    }
+  }
+}
+
 function getBoardConfigs(country: string): BoardConfig[] {
   const randstad = RANDSTAD_TLD[country] ?? 'randstad.com';
   const hays = HAYS_TLD[country] ?? 'hays.com';

@@ -30,6 +30,7 @@ import {
   hostnameMatchesBoardDomain,
   deriveSourceFromUrl,
   isDirectPostingUrl,
+  verifyBoardPatterns,
   type BoardConfig,
 } from './jobMatchService.js';
 
@@ -1045,4 +1046,174 @@ test('isDirectPostingUrl: Indeed /viewjob with extra query params is accepted', 
     isDirectPostingUrl('https://indeed.com/viewjob?jk=abc123&from=serp&vjs=3', INDEED_BOARD),
     true,
   );
+});
+
+// ── verifyBoardPatterns — startup canary checks ───────────────────────────────
+//
+// The probe makes a real network request to each canary URL via the injected
+// liveCheckFn, then confirms the URL matches the board's directUrlPatterns.
+// Tests inject an instant mock for liveCheckFn to avoid real network calls.
+
+/** Minimal board fixtures for verifyBoardPatterns tests. */
+const VERIFY_INDEED_BOARD: BoardConfig = {
+  name: 'Indeed',
+  domain: 'indeed.com',
+  urlHint: 'URLs containing /viewjob?jk=',
+  validDomains: ['indeed.com'],
+  directUrlPatterns: [/\/viewjob\?.*jk=/, /\/rc\/clk\?.*jk=/],
+};
+
+const VERIFY_HAYS_BOARD: BoardConfig = {
+  name: 'Hays',
+  domain: 'hays.com.my',
+  urlHint: 'a URL on hays.com.my that contains /job/',
+  validDomains: ['hays.com.my'],
+  directUrlPatterns: [/\/job\//],
+};
+
+const VERIFY_RANDSTAD_BOARD: BoardConfig = {
+  name: 'Randstad',
+  domain: 'randstad.com.my',
+  urlHint: 'any URL on randstad.com.my',
+  validDomains: ['randstad.com.my'],
+  // No directUrlPatterns — probe must skip this board entirely
+};
+
+test('verifyBoardPatterns: canary is live and matches pattern → no warning', async () => {
+  const alwaysLive = async (_url: string) => true;
+
+  const boards = [VERIFY_INDEED_BOARD];
+  const canaryUrls = { Indeed: 'https://indeed.com/viewjob?jk=abc123def456' };
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(boards, canaryUrls, alwaysLive);
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.equal(warnings.length, 0, `No warnings expected when canary is live and matches. Got: ${warnings.join('\n')}`);
+});
+
+test('verifyBoardPatterns: dead canary (404) → warns canary is stale', async () => {
+  // Models: a job posting expires; the canary URL now returns 404.
+  // The probe must warn so the canary can be refreshed before the next pattern change goes undetected.
+  const alwaysDead = async (_url: string) => false;
+
+  const boards = [VERIFY_INDEED_BOARD];
+  const canaryUrls = { Indeed: 'https://indeed.com/viewjob?jk=expired12345678' };
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(boards, canaryUrls, alwaysDead);
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.ok(warnings.length > 0, 'Expected a warning about the dead canary URL');
+  assert.ok(
+    warnings.some((w) => w.includes('Indeed') && w.includes('dead')),
+    `Warning must mention the board name and dead status. Got: ${warnings.join('\n')}`,
+  );
+});
+
+test('verifyBoardPatterns: canary is live but URL structure changed → warns pattern is broken', async () => {
+  // Models the key failure mode: the board changed its URL structure from /viewjob?jk=
+  // to a new path, but the canary was updated to the new format while the regex was not.
+  // The canary is live (200) but no longer matches directUrlPatterns → warning.
+  const alwaysLive = async (_url: string) => true;
+
+  const boards = [VERIFY_INDEED_BOARD]; // regex still expects /viewjob?jk=
+  const canaryUrls = {
+    // Canary updated to board's new hypothetical URL format, but regex not updated yet
+    Indeed: 'https://indeed.com/apply?job_id=abc123def456',
+  };
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(boards, canaryUrls, alwaysLive);
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.ok(warnings.length > 0, 'Expected a warning about the pattern mismatch');
+  assert.ok(
+    warnings.some((w) => w.includes('Indeed') && w.includes('no longer matches')),
+    `Warning must name the board and report pattern mismatch. Got: ${warnings.join('\n')}`,
+  );
+});
+
+test('verifyBoardPatterns: board has directUrlPatterns but no canary URL → warns about blind spot', async () => {
+  // A board with URL filtering but no canary configured is silently unmonitored.
+  // The probe must warn so the gap is closed.
+  const alwaysLive = async (_url: string) => true;
+
+  const boards = [VERIFY_HAYS_BOARD];
+  const emptyCanary: Record<string, string> = {}; // Hays not configured
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(boards, emptyCanary, alwaysLive);
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.ok(warnings.length > 0, 'Expected a warning about the missing canary URL');
+  assert.ok(
+    warnings.some((w) => w.includes('Hays') && w.includes('no canary URL')),
+    `Warning must name the board and report missing canary. Got: ${warnings.join('\n')}`,
+  );
+});
+
+test('verifyBoardPatterns: boards without directUrlPatterns are silently skipped', async () => {
+  // Randstad-style boards (no path constraints) must produce no output — no warning, no OK log.
+  const alwaysLive = async (_url: string) => true;
+
+  const boards = [VERIFY_RANDSTAD_BOARD];
+  const canary = { Randstad: 'https://randstad.com.my/jobs/product-manager-kl-ref123' };
+
+  const logged: string[] = [];
+  const origLog = console.log;
+  const origWarn = console.warn;
+  console.log = (...args: any[]) => { logged.push(args.join(' ')); };
+  console.warn = (...args: any[]) => { logged.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(boards, canary, alwaysLive);
+  } finally {
+    console.log = origLog;
+    console.warn = origWarn;
+  }
+
+  assert.equal(logged.length, 0, 'No output expected for boards without directUrlPatterns');
+});
+
+test('verifyBoardPatterns: multiple boards — only the broken one emits a warning', async () => {
+  // Indeed canary is dead; Hays canary is live and correct. Only Indeed warns.
+  const mockLive = async (url: string) => url.includes('hays'); // Hays lives, Indeed dead
+
+  const boards = [VERIFY_INDEED_BOARD, VERIFY_HAYS_BOARD];
+  const canaryUrls = {
+    Indeed: 'https://indeed.com/viewjob?jk=expired00000000',
+    Hays:   'https://hays.com.my/job/senior-product-manager-kl-4500143',
+  };
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(boards, canaryUrls, mockLive);
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.ok(warnings.some((w) => w.includes('Indeed')), 'Indeed dead canary must warn');
+  assert.ok(!warnings.some((w) => w.includes('Hays')), 'Hays live+matching canary must not warn');
 });

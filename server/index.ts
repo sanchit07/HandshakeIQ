@@ -1,7 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import cron from "node-cron";
 import { registerRoutes } from "./routes";
-import { runDailyJobSearch } from "./jobs/jobMatchService";
+import { runDailyJobSearch, verifyBoardPatterns } from "./jobs/jobMatchService";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -48,6 +48,12 @@ const isProduction = process.env.NODE_ENV === 'production';
   const PORT = parseInt(process.env.PORT || defaultPort, 10);
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT} (${isProduction ? 'production' : 'development'} mode)`);
+    // Startup probe: fetch each board's canary URL and confirm it is live and still
+    // matches directUrlPatterns. Warns if a board changed its URL structure or the
+    // canary job posting has expired.
+    verifyBoardPatterns().catch((err) =>
+      console.error('[BOARD PATTERN] Startup probe failed unexpectedly:', err),
+    );
   });
 
   // Daily job search — every day at 7:00 AM Malaysia time
