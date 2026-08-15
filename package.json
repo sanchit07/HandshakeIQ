@@ -11,7 +11,8 @@
     "start": "NODE_ENV=production tsx server/index.ts",
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
-    "test:liveness": "node --import tsx/esm --test server/jobs/jobMatchService.liveness.test.ts"
+    "test:liveness": "node --import tsx/esm --test server/jobs/jobMatchService.liveness.test.ts",
+    "test:fallback": "node --import tsx/esm --experimental-test-module-mocks --test services/intelligenceService.fallback.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.117.1",

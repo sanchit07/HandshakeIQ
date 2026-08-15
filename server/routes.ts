@@ -227,6 +227,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post('/api/register/email', authRateLimit, async (req: any, res) => {
+    try {
+      const { email, password, firstName, lastName } = req.body;
+      if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ message: "A valid email is required" });
+      }
+      if (!password || typeof password !== 'string' || password.length < 8) {
+        return res.status(400).json({ message: "Password must be at least 8 characters" });
+      }
+
+      const existing = await storage.getUserByEmail(email);
+      if (existing?.passwordHash) {
+        return res.status(409).json({ message: "An account with this email already exists. Please sign in." });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      const ADMIN_EMAIL_ENV = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
+      const isAdmin = ADMIN_EMAIL_ENV ? email.trim().toLowerCase() === ADMIN_EMAIL_ENV : false;
+
+      let user;
+      if (existing) {
+        // Existing OAuth user setting a password
+        user = await storage.upsertUser({ ...existing, passwordHash, isAdmin: existing.isAdmin || isAdmin });
+      } else {
+        user = await storage.createUser({
+          email: email.trim(),
+          firstName: firstName || null,
+          lastName: lastName || null,
+          passwordHash,
+          isAdmin,
+        });
+      }
+
+      req.session.user = { id: user.id, email: user.email, provider: 'email', isAdmin: !!user.isAdmin };
+      req.session.save((err: any) => {
+        if (err) {
+          console.error('[EMAIL AUTH] Session save error:', err);
+          return res.status(500).json({ message: "Failed to create session" });
+        }
+        res.json({ id: user.id, email: user.email, isAdmin: !!user.isAdmin });
+      });
+    } catch (error) {
+      console.error("[EMAIL AUTH] Registration error:", error);
+      res.status(500).json({ message: "Registration failed" });
+    }
+  });
+
   app.post('/api/login/email', authRateLimit, async (req: any, res) => {
     try {
       const { email, password } = req.body;
