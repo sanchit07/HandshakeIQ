@@ -39,6 +39,7 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
     const [error, setError] = useState<string | null>(null);
     const [tailoringId, setTailoringId] = useState<string | null>(null);
     const [viewingCv, setViewingCv] = useState<JobMatch | null>(null);
+    const [boardAlerts, setBoardAlerts] = useState<string[]>([]);
     const [questions, setQuestions] = useState<Record<string, JobQuestion[]>>({});
     const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
 
@@ -87,9 +88,18 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
         setLoading(true);
         setError(null);
         try {
-            const res = await fetch(`/api/jobs?date=${encodeURIComponent(date)}`);
-            if (!res.ok) throw new Error('Failed to load shortlist');
-            setJobs(await res.json());
+            const [jobsRes, alertsRes] = await Promise.all([
+                fetch(`/api/jobs?date=${encodeURIComponent(date)}`),
+                fetch(`/api/jobs/board-alerts?date=${encodeURIComponent(date)}`),
+            ]);
+            if (!jobsRes.ok) throw new Error('Failed to load shortlist');
+            setJobs(await jobsRes.json());
+            if (alertsRes.ok) {
+                const alertData = await alertsRes.json();
+                setBoardAlerts(Array.isArray(alertData.alerts) ? alertData.alerts : []);
+            } else {
+                setBoardAlerts([]);
+            }
         } catch (e: any) {
             setError(e.message || 'Failed to load jobs');
         } finally {
@@ -111,6 +121,10 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                 body: JSON.stringify({ force: false }),
             });
             const data = await res.json().catch(() => ({}));
+            // Extract board alerts from both success and error responses (e.g. all boards returned zero)
+            if (Array.isArray(data.boardAlerts) && data.boardAlerts.length > 0) {
+                setBoardAlerts(data.boardAlerts);
+            }
             if (!res.ok) throw new Error(data.message || 'Job search failed');
             await loadDates();
             setSelectedDate(data.runDate);
@@ -226,6 +240,16 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                 <p className="text-xs text-gray-500">
                     Automatic search runs every day at 7:00 AM (MYT) across LinkedIn, Indeed, JobStreet, Randstad and Hays in Malaysia, New Zealand, Australia, Sweden, Switzerland, Ireland, Poland and Portugal.
                 </p>
+
+                {boardAlerts.length > 0 && (
+                    <div className="bg-yellow-900/20 border border-yellow-500/40 rounded-lg p-3 space-y-1">
+                        <p className="text-xs font-bold text-yellow-400 uppercase tracking-wide">⚠ Board Coverage Warning</p>
+                        {boardAlerts.map((alert, i) => (
+                            <p key={i} className="text-xs text-yellow-300">{alert}</p>
+                        ))}
+                        <p className="text-xs text-yellow-500 mt-1">These boards may be blocking searches or returning only listing pages. Results from these sources are missing from today's shortlist.</p>
+                    </div>
+                )}
 
                 {error && <p className="text-sm text-red-400 bg-red-900/20 border border-red-500/30 rounded-lg p-3">{error}</p>}
 

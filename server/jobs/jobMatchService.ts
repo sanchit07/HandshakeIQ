@@ -187,7 +187,17 @@ export async function checkUrlLive(url: string | null | undefined): Promise<bool
     clearTimeout(timer);
   }
 }
-export async function runDailyJobSearch(force = false): Promise<{ runDate: string; count: number; skipped?: boolean }> {
+
+// In-memory store of zero-result board alerts per run-date (cleared on process restart; sufficient
+// for day-of feedback — the structured log is the durable record).
+const boardAlertsCache = new Map<string, string[]>();
+
+/** Returns any zero-result board alerts stored for a given run-date. */
+export function getBoardAlerts(runDate: string): string[] {
+  return boardAlertsCache.get(runDate) ?? [];
+}
+
+export async function runDailyJobSearch(force = false): Promise<{ runDate: string; count: number; skipped?: boolean; boardAlerts?: string[] }> {
   const runDate = todayKL();
 
   // Cross-process lock: only one process may run the pipeline at a time
@@ -259,12 +269,23 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
     }
     const allFindings: BoardFinding[] = [];
     const findingsByBoard: Map<string, BoardFinding[]> = new Map();
+    const zeroBoardAlerts: string[] = [];
     boardConfigs.forEach((board, i) => {
       const results = boardResultSets[i];
       findingsByBoard.set(board.name, results);
-      console.log(`[JOB SEARCH] ${board.name}: ${results.length} direct posting(s) found`);
+      if (results.length === 0) {
+        const msg = `${board.name} returned 0 direct posting URLs for ${country}`;
+        console.warn(`[JOB SEARCH] WARN: ${msg}`);
+        zeroBoardAlerts.push(msg);
+      } else {
+        console.log(`[JOB SEARCH] ${board.name}: ${results.length} direct posting(s) found`);
+      }
       allFindings.push(...results);
     });
+
+    // Always update the cache for this run-date (including empty array) so a successful
+    // rerun with no zero-result boards clears any stale alerts from a prior failed run.
+    boardAlertsCache.set(runDate, zeroBoardAlerts);
 
     let rows: any[] = [];
     if (allFindings.length === 0) {
@@ -452,7 +473,7 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Se
     // one by one, with retry + status tracking. A failure never stops the run.
     await autoGenerateCvsForDate(runDate);
 
-    return { runDate, count: finalRows.length };
+    return { runDate, count: finalRows.length, boardAlerts: zeroBoardAlerts.length > 0 ? zeroBoardAlerts : undefined };
   } finally {
     await db.execute(sql`SELECT pg_advisory_unlock(${RUN_LOCK_KEY})`).catch(() => {});
   }

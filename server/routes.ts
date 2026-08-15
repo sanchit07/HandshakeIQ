@@ -117,7 +117,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ===== Job Hunt (admin only) =====
-  const { runDailyJobSearch, getShortlist, getShortlistDates, tailorCvForJob, clearTailoredCv, getQuestionsForJob, answerQuestion } = await import('./jobs/jobMatchService');
+  const { runDailyJobSearch, getShortlist, getShortlistDates, tailorCvForJob, clearTailoredCv, getQuestionsForJob, answerQuestion, getBoardAlerts } = await import('./jobs/jobMatchService');
 
   app.get('/api/jobs/:id/questions', requireAdmin, async (req: any, res) => {
     try {
@@ -158,6 +158,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get('/api/jobs/board-alerts', requireAdmin, async (req: any, res) => {
+    try {
+      const date = typeof req.query.date === 'string' ? req.query.date : undefined;
+      if (!date) return res.status(400).json({ message: 'date query parameter is required' });
+      res.json({ alerts: getBoardAlerts(date) });
+    } catch (error) {
+      console.error('[JOBS] Error fetching board alerts:', error);
+      res.status(500).json({ message: 'Failed to fetch board alerts' });
+    }
+  });
+
   const jobsRunRateLimit = rateLimit(3, 10 * 60 * 1000); // 3 runs / 10 min
   const tailorRateLimit = rateLimit(10, 60 * 1000);
 
@@ -165,9 +176,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const result = await runDailyJobSearch(!!req.body?.force);
       res.json(result);
-    } catch (error) {
+    } catch (error: any) {
       console.error('[JOBS] Manual run failed:', error);
-      res.status(500).json({ message: 'Job search run failed. Check server logs.' });
+      // Include any board alerts collected before the failure (e.g. all boards returned zero)
+      const runDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+      const alerts = getBoardAlerts(runDate);
+      res.status(500).json({
+        message: error?.message || 'Job search run failed. Check server logs.',
+        boardAlerts: alerts.length > 0 ? alerts : undefined,
+      });
     }
   });
 
@@ -260,7 +277,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const existing = await storage.getUserByEmail(email);
-      if (existing?.passwordHash) {
+      if (existing) {
+        // Never allow an unauthenticated caller to attach credentials to an existing account
+        // (OAuth or otherwise) — this would be a broken-access-control / account-takeover vector.
         return res.status(409).json({ message: "An account with this email already exists. Please sign in." });
       }
 
@@ -268,19 +287,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const ADMIN_EMAIL_ENV = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
       const isAdmin = ADMIN_EMAIL_ENV ? email.trim().toLowerCase() === ADMIN_EMAIL_ENV : false;
 
-      let user;
-      if (existing) {
-        // Existing OAuth user setting a password
-        user = await storage.upsertUser({ ...existing, passwordHash, isAdmin: existing.isAdmin || isAdmin });
-      } else {
-        user = await storage.createUser({
-          email: email.trim(),
-          firstName: firstName || null,
-          lastName: lastName || null,
-          passwordHash,
-          isAdmin,
-        });
-      }
+      const user = await storage.createUser({
+        email: email.trim(),
+        firstName: firstName || null,
+        lastName: lastName || null,
+        passwordHash,
+        isAdmin,
+      });
 
       req.session.user = { id: user.id, email: user.email, provider: 'email', isAdmin: !!user.isAdmin };
       req.session.save((err: any) => {
