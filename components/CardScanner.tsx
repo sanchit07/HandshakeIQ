@@ -1,5 +1,15 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { extractTextFromImage } from '../services/geminiService';
+const extractTextFromImage = async (base64Image: string): Promise<{ name: string; company: string }> => {
+    const res = await fetch('/api/extract-card', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base64Image }),
+    });
+    if (!res.ok) {
+        throw new Error(`Card extraction failed with status ${res.status}`);
+    }
+    return res.json();
+};
 import { CloseIcon } from './icons/UIIcons';
 import { DataStreamLoader } from './loaders/NeonLoader';
 

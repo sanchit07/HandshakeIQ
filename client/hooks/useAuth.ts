@@ -26,6 +26,7 @@ export function useAuth() {
   // 3. User data is explicitly null (server returned null, not 500/network error)
   const isGuest = !isLoading && isSuccess && user === null;
   const isAuthenticated = !isLoading && isSuccess && !!user;
+  const isAdmin = isAuthenticated && !!(user as any)?.isAdmin;
   
   // Only show error if not loading, not successful, AND it has an HTTP status
   // (meaning it's a real HTTP error, not a network failure we're retrying)
@@ -35,6 +36,7 @@ export function useAuth() {
     user,
     isLoading,
     isAuthenticated,
+    isAdmin,
     isGuest,
     hasError,
   };

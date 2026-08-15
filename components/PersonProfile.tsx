@@ -2,7 +2,20 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Person, GroundingChunk, Insight, IntelligenceReport, Note } from '../types';
-import { generateIntelligenceReport } from '../services/geminiService';
+const generateIntelligenceReport = async (
+    personName: string,
+    company: string
+): Promise<{ report: IntelligenceReport; sources: GroundingChunk[] }> => {
+    const res = await fetch('/api/intelligence-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ personName, company }),
+    });
+    if (!res.ok) {
+        throw new Error(`Intelligence report request failed with status ${res.status}`);
+    }
+    return res.json();
+};
 import { BackIcon, CommentIcon, CrmIcon, SaveIcon, LinkIcon, ReminderIcon, LinkedInSourceIcon, NewsArticleIcon, BlogPostIcon, BookmarkIcon, ChevronDownIcon, RefreshIcon, TrashIcon, EditIcon } from './icons/UIIcons';
 import axios from 'axios';
 import { ScanningLoader, ProfileBuildingLoader } from './loaders/NeonLoader';

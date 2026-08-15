@@ -2,9 +2,29 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupGoogleAuth, requireAuth, attachSessionIfPresent } from "./googleAuth";
-import { generateIntelligenceReport, extractTextFromImage } from "../services/geminiService";
+import { generateIntelligenceReport, extractTextFromImage } from "../services/intelligenceService";
 import { CalendarService } from "../services/calendarService";
 import { searchPerson, enhancedPersonSearch } from "./googleSearchService";
+import bcrypt from "bcryptjs";
+
+// Lightweight in-memory per-IP rate limiter to protect paid AI endpoints
+function rateLimit(maxRequests: number, windowMs: number) {
+  const hits = new Map<string, number[]>();
+  return (req: any, res: any, next: any) => {
+    const key = req.ip || req.socket?.remoteAddress || 'unknown';
+    const now = Date.now();
+    const timestamps = (hits.get(key) || []).filter((t) => now - t < windowMs);
+    if (timestamps.length >= maxRequests) {
+      return res.status(429).json({ message: 'Too many requests. Please wait a moment and try again.' });
+    }
+    timestamps.push(now);
+    hits.set(key, timestamps);
+    if (hits.size > 10000) hits.clear(); // prevent unbounded growth
+    next();
+  };
+}
+
+const aiRateLimit = rateLimit(10, 60 * 1000); // 10 requests per minute per IP
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Setup Google OAuth authentication (includes mock Zoho auth)
@@ -20,12 +40,162 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       const userId = req.session.user.id;
       const user = await storage.getUser(userId);
-      res.json(user);
+      if (!user) return res.json(null);
+      const { passwordHash, ...safeUser } = user as any;
+      res.json(safeUser);
     } catch (error) {
       console.error("Error fetching user:", error);
       // Return null instead of 500 so user can fall back to guest mode
       // This handles DB connectivity issues gracefully
       return res.json(null);
+    }
+  });
+
+  // Email/password authentication
+  const authRateLimit = rateLimit(15, 60 * 1000);
+
+  // Middleware: require an authenticated admin (verified against the database,
+  // not just the session, so a revoked admin loses access immediately)
+  const requireAdmin = async (req: any, res: any, next: any) => {
+    const sessionUser = req.session?.user;
+    if (!sessionUser?.id) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
+    try {
+      const dbUser = await storage.getUser(sessionUser.id);
+      if (!dbUser?.isAdmin) {
+        return res.status(403).json({ message: "Admin access required" });
+      }
+      next();
+    } catch (error) {
+      console.error("[ADMIN] Error verifying admin:", error);
+      res.status(500).json({ message: "Failed to verify permissions" });
+    }
+  };
+
+  // Admin-only user management (public self-registration is disabled)
+  app.get('/api/admin/users', requireAdmin, async (_req, res) => {
+    try {
+      const allUsers = await storage.getAllUsers();
+      res.json(allUsers.map(({ passwordHash, ...u }: any) => u));
+    } catch (error) {
+      console.error("[ADMIN] Error listing users:", error);
+      res.status(500).json({ message: "Failed to list users" });
+    }
+  });
+
+  app.post('/api/admin/users', requireAdmin, async (req: any, res) => {
+    try {
+      const { email, password, firstName, lastName, isAdmin } = req.body;
+      if (!email || typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ message: "A valid email is required" });
+      }
+      if (!password || typeof password !== 'string' || password.length < 8) {
+        return res.status(400).json({ message: "Password must be at least 8 characters" });
+      }
+
+      const existing = await storage.getUserByEmail(email);
+      if (existing) {
+        return res.status(409).json({ message: "An account with this email already exists." });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+      const user = await storage.createUser({
+        email: email.trim(),
+        firstName: firstName || null,
+        lastName: lastName || null,
+        passwordHash,
+        isAdmin: !!isAdmin,
+      });
+
+      const { passwordHash: _, ...safeUser } = user as any;
+      res.json(safeUser);
+    } catch (error) {
+      console.error("[ADMIN] Error creating user:", error);
+      res.status(500).json({ message: "Failed to create user" });
+    }
+  });
+
+  // Change own password (requires login; verifies current password)
+  app.post('/api/auth/change-password', authRateLimit, attachSessionIfPresent, async (req: any, res) => {
+    try {
+      const sessionUser = req.session?.user;
+      if (!sessionUser?.id) {
+        return res.status(401).json({ message: "Authentication required" });
+      }
+      const { currentPassword, newPassword } = req.body;
+      if (!currentPassword || !newPassword || typeof newPassword !== 'string') {
+        return res.status(400).json({ message: "Current and new password are required" });
+      }
+      if (newPassword.length < 8) {
+        return res.status(400).json({ message: "New password must be at least 8 characters" });
+      }
+
+      const user = await storage.getUser(sessionUser.id);
+      if (!user?.passwordHash) {
+        return res.status(400).json({ message: "This account does not use password login" });
+      }
+
+      const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+      if (!valid) {
+        return res.status(401).json({ message: "Current password is incorrect" });
+      }
+
+      const passwordHash = await bcrypt.hash(newPassword, 10);
+      await storage.upsertUser({ ...user, passwordHash });
+
+      // Invalidate all OTHER sessions for this user so a stolen session
+      // can't survive a password change (current session stays valid)
+      try {
+        const { db } = await import("./db");
+        const { sql } = await import("drizzle-orm");
+        await db.execute(sql`DELETE FROM sessions WHERE sess->'user'->>'id' = ${user.id} AND sid != ${req.session.id}`);
+      } catch (invalidateErr) {
+        console.error("[AUTH] Failed to invalidate other sessions:", invalidateErr);
+      }
+
+      res.json({ message: "Password changed successfully" });
+    } catch (error) {
+      console.error("[AUTH] Error changing password:", error);
+      res.status(500).json({ message: "Failed to change password" });
+    }
+  });
+
+  app.post('/api/login/email', authRateLimit, async (req: any, res) => {
+    try {
+      const { email, password } = req.body;
+      if (!email || !password || typeof email !== 'string' || typeof password !== 'string') {
+        return res.status(400).json({ message: "Email and password are required" });
+      }
+
+      const user = await storage.getUserByEmail(email);
+      if (!user || !user.passwordHash) {
+        return res.status(401).json({ message: "Invalid email or password" });
+      }
+
+      const valid = await bcrypt.compare(password, user.passwordHash);
+      if (!valid) {
+        return res.status(401).json({ message: "Invalid email or password" });
+      }
+
+      // Regenerate session ID to prevent session fixation
+      req.session.regenerate((regenErr: any) => {
+        if (regenErr) {
+          console.error('[EMAIL AUTH] Session regenerate error:', regenErr);
+          return res.status(500).json({ message: "Failed to create session" });
+        }
+        req.session.user = { id: user.id, email: user.email, provider: 'email', isAdmin: !!user.isAdmin };
+        req.session.save((err: any) => {
+          if (err) {
+            console.error('[EMAIL AUTH] Session save error:', err);
+            return res.status(500).json({ message: "Failed to create session" });
+          }
+          res.json({ id: user.id, email: user.email, isAdmin: !!user.isAdmin });
+        });
+      });
+    } catch (error) {
+      console.error("[EMAIL AUTH] Login error:", error);
+      res.status(500).json({ message: "Login failed" });
     }
   });
 
@@ -45,7 +215,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Gemini API routes - NO AUTH REQUIRED for guest access
-  app.post('/api/intelligence-report', attachSessionIfPresent, async (req: any, res) => {
+  app.post('/api/intelligence-report', aiRateLimit, attachSessionIfPresent, async (req: any, res) => {
     try {
       const { personName, company, links, personTitle, personPhotoUrl, socialMediaLinks } = req.body;
       if (!personName || !company) {
@@ -89,11 +259,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  app.post('/api/extract-card', async (req, res) => {
+  app.post('/api/extract-card', aiRateLimit, async (req, res) => {
     try {
       const { base64Image } = req.body;
-      if (!base64Image) {
+      if (!base64Image || typeof base64Image !== 'string') {
         return res.status(400).json({ message: "base64Image is required" });
+      }
+      if (base64Image.length > 8 * 1024 * 1024 || !/^[A-Za-z0-9+/=]+$/.test(base64Image)) {
+        return res.status(400).json({ message: "Invalid or oversized image payload" });
       }
       const result = await extractTextFromImage(base64Image);
       res.json(result);

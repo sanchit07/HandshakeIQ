@@ -6,6 +6,7 @@ import {
   timestamp,
   varchar,
   text,
+  boolean,
 } from "drizzle-orm/pg-core";
 
 // Session storage table.
@@ -28,6 +29,8 @@ export const users = pgTable("users", {
   firstName: varchar("first_name"),
   lastName: varchar("last_name"),
   profileImageUrl: varchar("profile_image_url"),
+  passwordHash: varchar("password_hash"),
+  isAdmin: boolean("is_admin").default(false),
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

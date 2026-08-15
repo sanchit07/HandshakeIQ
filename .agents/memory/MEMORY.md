@@ -1,0 +1,2 @@
+- [AI provider architecture](ai-provider-architecture.md) — Claude (Anthropic) is primary for reports/OCR, Gemini is fallback; all AI calls must stay server-side, never in the browser.
+- [Auto-apply research reference](auto-apply-research.md) — user-mandated reference doc at `attached_assets/autoapplytechnicalfindings_1786789123150.md` for all future auto-apply feature work; consult it before designing such features.
