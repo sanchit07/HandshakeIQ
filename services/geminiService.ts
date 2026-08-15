@@ -1,15 +1,14 @@
 import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
 import { IntelligenceReport } from '../types';
 
-const API_KEY = process.env.GEMINI_API_KEY;
-
-if (!API_KEY) {
-  // This is a placeholder for environments where the key is not set.
-  // In a real deployed environment, the key would be present.
-  console.warn("GEMINI_API_KEY environment variable not set. Gemini API calls will fail.");
+function getAI(): GoogleGenAI {
+  const API_KEY = process.env.GEMINI_API_KEY;
+  if (!API_KEY) {
+    console.warn("GEMINI_API_KEY environment variable not set. Gemini API calls will fail.");
+    throw new Error("GEMINI_API_KEY is not configured.");
+  }
+  return new GoogleGenAI({ apiKey: API_KEY });
 }
-
-const ai = new GoogleGenAI({ apiKey: API_KEY! });
 
 export const generateIntelligenceReport = async (
   personName: string, 
@@ -38,7 +37,7 @@ export const generateIntelligenceReport = async (
     
     console.log(`[GEMINI API] Step 1: Searching for information about "${personName}" at "${company}"`);
     
-    const searchResponse: GenerateContentResponse = await ai.models.generateContent({
+    const searchResponse: GenerateContentResponse = await getAI().models.generateContent({
         model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: searchPrompt }] }],
         config: {
@@ -114,7 +113,7 @@ export const generateIntelligenceReport = async (
     
     console.log(`[GEMINI API] Step 2: Structuring intelligence report for ${personName}`);
     
-    const structureResponse: GenerateContentResponse = await ai.models.generateContent({
+    const structureResponse: GenerateContentResponse = await getAI().models.generateContent({
         model: "gemini-2.5-flash",
         contents: [{ role: "user", parts: [{ text: structurePrompt }] }],
         config: {
@@ -317,7 +316,7 @@ export const extractTextFromImage = async (base64Image: string): Promise<{name: 
             text: "Analyze this image of a business card. Extract the person's full name and their company name. Return ONLY a valid JSON object with 'name' and 'company' keys."
         };
 
-        const response: GenerateContentResponse = await ai.models.generateContent({
+        const response: GenerateContentResponse = await getAI().models.generateContent({
             model: 'gemini-2.5-flash',
             contents: { parts: [imagePart, textPart] },
             config: {
