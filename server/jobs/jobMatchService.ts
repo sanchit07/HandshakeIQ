@@ -34,6 +34,9 @@ const VACANCY_DEDUP_DAYS = 90;    // never re-shortlist the same vacancy
 
 const BOARDS = ['LinkedIn', 'Indeed', 'JobStreet', 'Randstad', 'Hays'];
 
+// JobStreet.com.au was shut down and redirects to the Malaysian site; SEEK covers AU/NZ.
+// JobStreet is therefore only used on the Malaysia day.
+const JOBSTREET_COUNTRIES = new Set(['Malaysia']);
 const EXAMPLE_ROLES = [
   'Innovation Manager', 'Delivery Manager', 'Product Manager', 'Head of Product',
   'Lead Product Manager', 'Product Owner', 'Senior Business Analyst',
@@ -100,8 +103,16 @@ const RUN_LOCK_KEY = 771230117;
  * a network request — prevents arbitrary outbound requests to LLM-generated URLs.
  */
 export const ALLOWED_JOB_BOARD_DOMAINS: readonly string[] = [
-  'linkedin.com', 'indeed.com', 'jobstreet.com', 'jobstreet.com.my',
-  'randstad.com', 'hays.com', 'glassdoor.com',
+  'linkedin.com', 'indeed.com',
+  // JobStreet — Malaysia only (jobstreet.com.au was shut down; AU/NZ use SEEK)
+  'jobstreet.com', 'jobstreet.com.my',
+  // Randstad — country-specific domains
+  'randstad.com', 'randstad.com.my', 'randstad.com.au', 'randstad.co.nz',
+  'randstad.ie', 'randstad.ch', 'randstad.se', 'randstad.pl',
+  // Hays — country-specific domains
+  'hays.com', 'hays.com.my', 'hays.com.au', 'hays.net.nz',
+  'hays.ie', 'hays.ch', 'hays.se', 'hays.pl',
+  'glassdoor.com',
   'seek.com', 'seek.com.au', 'seek.co.nz',
   'monster.com', 'careerbuilder.com',
   'greenhouse.io', 'lever.co', 'ashbyhq.com', 'workable.com',
@@ -224,22 +235,37 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
     }
     console.log(`[JOB SEARCH] Target roles: ${roles.join(', ')}`);
 
-    // Phase 2: deep search of today's single country
-    const searchResponse = await client.messages.create({
-      model: MODEL,
-      max_tokens: 6144,
-      messages: [{
-        role: 'user',
-        content: `Search for CURRENTLY OPEN job vacancies posted recently (within the last 2 weeks) in ${country} for these roles: ${roles.join(', ')}.
-Prioritize listings on these job boards: ${BOARDS.join(', ')} (e.g. use searches like "site:linkedin.com/jobs", "site:indeed.com", "site:jobstreet.com", "site:randstad.com", "site:hays.com" combined with role and "${country}").
-Prefer English-language postings, and note whenever a posting mentions visa sponsorship, relocation support, or welcoming international candidates.
-Do NOT include vacancies at these companies (already shortlisted recently): ${recentCompanies.slice(0, 60).join(', ') || 'none'}.
-For each vacancy found, report: exact job title, company, city/location, source job board, the direct URL to the posting, and a 1-2 sentence description of requirements (including any visa/relocation notes).
-Only include postings that appear to be genuinely live (skip expired or generic search-page links). Find as many distinct real vacancies as you can.`,
-      }],
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 15 } as any],
+    // Phase 2: one dedicated Claude API call per board so results are attributable per-source.
+    const boardConfigs = getBoardConfigs(country);
+    console.log(`[JOB SEARCH] Searching ${boardConfigs.length} boards in parallel: ${boardConfigs.map((b) => b.name).join(', ')}`);
+
+    const boardResultSets = await Promise.all(
+      boardConfigs.map((board) => searchSingleBoard(client, board, country, roles, recentCompanies)),
+    );
+
+    // Log per-board yield and build structured finding pool
+    interface BoardFinding {
+      title: string; company: string; location: string; url: string; description: string; source: string;
+    }
+    const allFindings: BoardFinding[] = [];
+    const findingsByBoard: Map<string, BoardFinding[]> = new Map();
+    boardConfigs.forEach((board, i) => {
+      const results = boardResultSets[i];
+      findingsByBoard.set(board.name, results);
+      console.log(`[JOB SEARCH] ${board.name}: ${results.length} direct posting(s) found`);
+      allFindings.push(...results);
     });
-    const allFindings = [`=== Findings for ${country} ===\n${extractText(searchResponse)}`];
+
+    if (allFindings.length === 0) throw new Error('No job postings found across any board');
+
+    // Format findings for Phase 3 ranking
+    const findingsText = boardConfigs.map((board, i) => {
+      const results = boardResultSets[i];
+      if (results.length === 0) return `=== ${board.name}: No direct postings found ===`;
+      return `=== ${board.name} (${results.length} postings) ===\n${results.map((j) =>
+        `- ${j.title} at ${j.company} (${j.location})\n  URL: ${j.url}\n  ${j.description}`,
+      ).join('\n')}`;
+    }).join('\n\n');
 
     // Phase 3: rank and shortlist top 10 against the profile
     const rankResponse = await client.messages.create({
@@ -252,8 +278,8 @@ Only include postings that appear to be genuinely live (skip expired or generic 
 CANDIDATE PROFILE:
 ${profile}
 
-VACANCIES FOUND TODAY:
-${allFindings.join('\n\n')}
+VACANCIES FOUND TODAY (grouped by job board):
+${findingsText}
 
 Select the 10 opportunities with the HIGHEST CHANCE OF THE CANDIDATE GETTING SHORTLISTED. That is the primary criterion — not seniority or domain purity:
 - Seniority is NOT a bar: roles asking for 5-6+ years of experience are fine if the candidate would be a strong applicant.
@@ -268,9 +294,9 @@ EXCLUSION RULES (hard):
 - NEVER include a vacancy already shortlisted before. Previously shortlisted vacancies (title :: company): ${Array.from(pastTitleCompany).slice(0, 80).join(' | ') || 'none'}.
 - NEVER include companies shortlisted within the last 4 weeks: ${recentCompanies.slice(0, 60).join(', ') || 'none'}.
 
-Discard anything without a real company name and plausible direct URL. Prefer diversity across boards, but never at the expense of the rules above.
+Discard anything without a real company name and a plausible direct URL to an individual job ad.
 
-Return ONLY a JSON array (no markdown) of up to 10 objects, best match first:
+Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Set "source" to the board name exactly as shown in the section header above:
 [{"title": "...", "company": "...", "location": "city", "country": "...", "source": "LinkedIn|Indeed|JobStreet|Randstad|Hays|Other", "url": "https://...", "description": "1-3 sentence summary of the role and key requirements", "matchScore": <0-100>, "matchReason": "1-2 sentences on why this fits the candidate"}]`,
       }],
     });
@@ -278,8 +304,15 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first:
     const ranked = parseJsonLoose(extractText(rankResponse));
     if (!Array.isArray(ranked) || ranked.length === 0) throw new Error('Ranking step returned no results');
 
-    // Apply dedup filters (hard enforcement in case the model ignores exclusion rules)
-    const dedupedCandidates = ranked
+    // Re-derive 'source' from the URL hostname — do not trust the ranker's self-reported label,
+    // which can be wrong (e.g. a ranker labelling an ATS URL as "Hays").
+    const rankedWithSource = ranked.map((j: any) => ({
+      ...j,
+      source: deriveSourceFromUrl(typeof j.url === 'string' ? j.url : null, boardConfigs),
+    }));
+
+    // Hard dedup enforcement (in case the model ignores exclusion rules)
+    const dedupedCandidates = rankedWithSource
       .filter((j: any) => j && typeof j.title === 'string' && typeof j.company === 'string')
       .filter((j: any) => {
         const url = typeof j.url === 'string' ? j.url.toLowerCase() : '';
@@ -293,24 +326,32 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first:
     console.log(`[JOB SEARCH] Liveness-checking ${dedupedCandidates.length} candidate URLs…`);
     const liveJobs = await filterLiveJobs(dedupedCandidates);
     console.log(`[JOB SEARCH] ${liveJobs.length} of ${dedupedCandidates.length} jobs passed liveness check`);
-
     if (liveJobs.length === 0) throw new Error('All shortlisted jobs failed liveness check');
 
-    const rows = liveJobs
-      .slice(0, 10)
-      .map((j: any, i: number) => ({
-        runDate,
-        rank: i + 1,
-        title: String(j.title).slice(0, 250),
-        company: String(j.company).slice(0, 250),
-        location: j.location ? String(j.location).slice(0, 250) : null,
-        country: j.country ? String(j.country).slice(0, 100) : country,
-        source: j.source ? String(j.source).slice(0, 100) : null,
-        url: typeof j.url === 'string' && /^https?:\/\//.test(j.url) ? j.url : null,
-        description: j.description ? String(j.description) : null,
-        matchScore: Number.isFinite(Number(j.matchScore)) ? Math.max(0, Math.min(100, Math.round(Number(j.matchScore)))) : null,
-        matchReason: j.matchReason ? String(j.matchReason) : null,
-      }));
+    // Board-slot enforcement: every board that yielded ≥1 finding must appear in the final list.
+    const boardsWithFindings = boardConfigs.filter((_, i) => boardResultSets[i].length > 0).map((b) => b.name);
+    const dedupedRows = await enforceSlotCoverage(
+      liveJobs,
+      boardsWithFindings,
+      findingsByBoard,
+      pastUrls,
+      pastTitleCompany,
+      cooldownCompanies,
+    );
+
+    const rows = dedupedRows.map((j: any, i: number) => ({
+      runDate,
+      rank: i + 1,
+      title: String(j.title).slice(0, 250),
+      company: String(j.company).slice(0, 250),
+      location: j.location ? String(j.location).slice(0, 250) : null,
+      country: j.country ? String(j.country).slice(0, 100) : country,
+      source: j.source ? String(j.source).slice(0, 100) : null,
+      url: typeof j.url === 'string' && /^https?:\/\//.test(j.url) ? j.url : null,
+      description: j.description ? String(j.description) : null,
+      matchScore: Number.isFinite(Number(j.matchScore)) ? Math.max(0, Math.min(100, Math.round(Number(j.matchScore)))) : null,
+      matchReason: j.matchReason ? String(j.matchReason) : null,
+    }));
 
     // Atomic replace: never leave the day empty if the insert fails
     await db.transaction(async (tx) => {
@@ -411,11 +452,88 @@ The VERY FIRST line of your response must be exactly: "BASE CV: <name of the sou
   return { ...job, tailoredCv, cvVariant };
 }
 
+// ---------------------------------------------------------------------------
+// Per-board search infrastructure
+// ---------------------------------------------------------------------------
+
+const HAYS_TLD: Record<string, string> = {
+  Malaysia:      'hays.com.my',
+  Australia:     'hays.com.au',
+  'New Zealand': 'hays.net.nz',
+  Ireland:       'hays.ie',
+  Switzerland:   'hays.ch',
+  Sweden:        'hays.se',
+  Poland:        'hays.pl',
+};
+
 export async function filterLiveJobs(jobs: any[]): Promise<any[]> {
   const results = await Promise.all(
     jobs.map(async (job) => ({ job, live: await checkUrlLive(job?.url) })),
   );
   return results.filter((r) => r.live).map((r) => r.job);
+}
+
+/**
+ * Ensures every board that produced ≥1 finding is represented in the final shortlist.
+ *
+ * Two-phase algorithm (avoids the sequential-eviction bug):
+ *  Phase 1 — collect all fills: for each missing board, pick the first live, dedup-clean
+ *             candidate from that board's raw findings.
+ *  Phase 2 — make room then append: trim the ranked list by exactly `fills.length` rows
+ *             from the tail, then push all fills at once.
+ *
+ * Exported for unit tests; injectable `liveCheckFn` defaults to `checkUrlLive`.
+ */
+export async function enforceSlotCoverage(
+  rankedLiveJobs: any[],
+  boardsWithFindings: string[],
+  findingsByBoard: Map<string, any[]>,
+  pastUrls: Set<string>,
+  pastTitleCompany: Set<string>,
+  cooldownCompanies: Set<string>,
+  maxSize = 10,
+  liveCheckFn: (url: string) => Promise<boolean> = checkUrlLive,
+): Promise<any[]> {
+  const top = rankedLiveJobs.slice(0, maxSize);
+  const present = new Set(top.map((j: any) => String(j.source)));
+  const usedUrls = new Set(top.map((j: any) => (typeof j.url === 'string' ? j.url.toLowerCase() : '')));
+  const usedTC = new Set(top.map((j: any) => `${j.title}::${j.company}`.toLowerCase()));
+
+  // Phase 1: find one live candidate per missing board
+  const fills: any[] = [];
+  for (const board of boardsWithFindings) {
+    if (present.has(board)) continue;
+    const eligible = (findingsByBoard.get(board) ?? []).filter((f) => {
+      const u = f.url.toLowerCase();
+      return !pastUrls.has(u) && !usedUrls.has(u)
+        && !pastTitleCompany.has(`${f.title}::${f.company}`.toLowerCase())
+        && !usedTC.has(`${f.title}::${f.company}`.toLowerCase())
+        && !cooldownCompanies.has(f.company.toLowerCase());
+    });
+    let pick: any | null = null;
+    for (const c of eligible) {
+      if (await liveCheckFn(c.url)) { pick = c; break; }
+      console.log(`[JOB SEARCH] Board slot candidate dead for ${board}: ${c.url}`);
+    }
+    if (!pick) {
+      console.warn(`[JOB SEARCH] WARN: ${board} had findings but no live/dedup-clean slot candidate`);
+      continue;
+    }
+    // Reserve this candidate so no later board picks the same posting
+    usedUrls.add(pick.url.toLowerCase());
+    usedTC.add(`${pick.title}::${pick.company}`.toLowerCase());
+    present.add(board);
+    fills.push({
+      title: pick.title, company: pick.company, location: pick.location ?? '',
+      source: pick.source, url: pick.url, description: pick.description ?? '',
+      matchScore: null, matchReason: `Included to ensure ${board} board coverage`,
+    });
+    console.log(`[JOB SEARCH] Board slot filled for ${board}: ${pick.title} at ${pick.company}`);
+  }
+
+  // Phase 2: trim ranked list once to make room, then append all fills atomically
+  const base = top.slice(0, Math.max(maxSize - fills.length, 0));
+  return [...base, ...fills];
 }
 
 /** Returns true when hostname matches an allowed domain exactly or as subdomain. */
@@ -556,4 +674,171 @@ function httpRequest(parsedUrl: URL, method: string, signal: AbortSignal): Promi
     });
     req.end();
   });
+}
+
+// jobstreet.com.au was shut down (redirects to my.jobstreet.com); only MY is active.
+const JOBSTREET_DOMAIN: Record<string, string> = {
+  Malaysia: 'jobstreet.com.my',
+};
+
+/**
+ * Returns true when `hostname` belongs to one of `boardDomains`.
+ * Handles www. prefix and subdomains (e.g. au.indeed.com matches indeed.com).
+ * Exported for unit tests.
+ */
+export function hostnameMatchesBoardDomain(hostname: string, boardDomains: string[]): boolean {
+  const h = hostname.toLowerCase().replace(/^www\./, '');
+  return boardDomains.some((d) => {
+    const bd = d.toLowerCase().replace(/^www\./, '');
+    return h === bd || h.endsWith('.' + bd);
+  });
+}
+
+export interface BoardConfig {
+  name: string;
+  /** Primary site: domain to use in web searches */
+  domain: string;
+  /** Human-readable hint of what a direct posting URL looks like */
+  urlHint: string;
+  /** Extra instruction appended to the search prompt (e.g. local-domain note) */
+  extraNote?: string;
+  /** Acceptable base domains for URL hostname validation; subdomains also accepted */
+  validDomains: string[];
+}
+
+/**
+ * Maps a posting URL to a board name using the URL's hostname.
+ * Override for the ranker's self-reported "source" field, which cannot be trusted.
+ * Returns 'Other' when no board config's validDomains match.
+ * Exported for unit tests.
+ */
+export function deriveSourceFromUrl(url: string | null | undefined, boardConfigs: BoardConfig[]): string {
+  if (!url) return 'Other';
+  try {
+    const hostname = new URL(url).hostname;
+    for (const board of boardConfigs) {
+      if (hostnameMatchesBoardDomain(hostname, board.validDomains)) return board.name;
+    }
+  } catch {}
+  return 'Other';
+}
+
+const RANDSTAD_TLD: Record<string, string> = {
+  Malaysia:      'randstad.com.my',
+  Australia:     'randstad.com.au',
+  'New Zealand': 'randstad.co.nz',
+  Ireland:       'randstad.ie',
+  Switzerland:   'randstad.ch',
+  Sweden:        'randstad.se',
+  Poland:        'randstad.pl',
+};
+
+
+/** Run one Claude API call targeting a single job board. Returns structured findings. */
+async function searchSingleBoard(
+  client: Anthropic,
+  board: BoardConfig,
+  country: string,
+  roles: string[],
+  recentCompanies: string[],
+): Promise<Array<{ title: string; company: string; location: string; url: string; description: string; source: string }>> {
+  const roleList = roles.slice(0, 8).join(', ');
+  const roleQuery = roles.slice(0, 3).join(' OR ');
+  const prompt = `You are a job-search agent. Search the job board "${board.name}" for CURRENTLY OPEN vacancies posted in the last 2 weeks in ${country} for these roles: ${roleList}.
+
+SEARCH STRATEGY:
+1. Run a web search: site:${board.domain} (${roleQuery}) ${country}
+2. If results are category/listing pages rather than individual job ads, refine by adding a specific city or using a single role title.
+${board.extraNote ? '3. ' + board.extraNote : ''}
+
+DIRECT URL REQUIREMENT: Only include postings with a URL that resolves to a single specific job ad.
+Accepted URL pattern: ${board.urlHint}
+Reject: search-results pages, category pages, homepages, or URLs without a unique job identifier.
+
+SKIP postings from these recently-shortlisted companies: ${recentCompanies.slice(0, 40).join(', ') || 'none'}
+PREFER English-language postings. Note any mention of visa sponsorship or relocation support.
+
+Return ONLY a valid JSON array (empty array [] if nothing valid was found — do NOT apologise or explain):
+[{"title":"...","company":"...","location":"city, country","url":"https://...","description":"1-2 sentence summary; include visa/relocation notes if present"}]`;
+
+  try {
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: 3072,
+      messages: [{ role: 'user', content: prompt }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 } as any],
+    });
+    const text = extractText(response);
+    const parsed = parseJsonLoose(text);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((j: any) => j && typeof j.title === 'string' && typeof j.company === 'string' && typeof j.url === 'string' && /^https?:\/\//.test(j.url))
+      // Reject any URL whose hostname doesn't belong to this board's known domains.
+      // Prevents Claude from returning LinkedIn/ATS URLs when asked to search Hays, etc.
+      .filter((j: any) => {
+        try {
+          const hostname = new URL(String(j.url)).hostname;
+          if (!hostnameMatchesBoardDomain(hostname, board.validDomains)) {
+            console.log(`[JOB SEARCH] ${board.name}: rejected off-board URL (${hostname}): ${j.url}`);
+            return false;
+          }
+          return true;
+        } catch { return false; }
+      })
+      .map((j: any) => ({
+        title: String(j.title).slice(0, 250),
+        company: String(j.company).slice(0, 250),
+        location: j.location ? String(j.location).slice(0, 250) : '',
+        url: String(j.url),
+        description: j.description ? String(j.description) : '',
+        source: board.name,
+      }));
+  } catch (e) {
+    console.error(`[JOB SEARCH] Board search failed for ${board.name}:`, e);
+    return [];
+  }
+}
+
+function getBoardConfigs(country: string): BoardConfig[] {
+  const randstad = RANDSTAD_TLD[country] ?? 'randstad.com';
+  const hays = HAYS_TLD[country] ?? 'hays.com';
+  const configs: BoardConfig[] = [
+    {
+      name: 'LinkedIn',
+      domain: 'linkedin.com/jobs/view',
+      urlHint: 'https://www.linkedin.com/jobs/view/<numeric-id>',
+      validDomains: ['linkedin.com'],
+    },
+    {
+      name: 'Indeed',
+      domain: 'indeed.com',
+      urlHint: 'URLs containing /viewjob?jk= or /rc/clk?jk=',
+      // indeed.com covers country subdomains (au.indeed.com, ie.indeed.com, etc.)
+      extraNote: 'Also try the country-specific Indeed domain (e.g. au.indeed.com, ie.indeed.com, pl.indeed.com, se.indeed.com). If the first search yields only listing pages, try a city name or a single specific role title.',
+      validDomains: ['indeed.com'],
+    },
+    {
+      name: 'Randstad',
+      domain: randstad,
+      urlHint: `a URL on ${randstad} that includes a job reference number or job slug — NOT the homepage or a /jobs category page`,
+      validDomains: [randstad],
+    },
+    {
+      name: 'Hays',
+      domain: hays,
+      urlHint: `a URL on ${hays} that contains /job/ followed by a job reference or title slug`,
+      validDomains: [hays],
+    },
+  ];
+  // JobStreet is only active in Malaysia (jobstreet.com.my).
+  // jobstreet.com.au was shut down and redirects to the Malaysian site — AU/NZ use SEEK instead.
+  if (JOBSTREET_COUNTRIES.has(country)) {
+    configs.push({
+      name: 'JobStreet',
+      domain: 'jobstreet.com.my',
+      urlHint: 'https://www.jobstreet.com.my/job/<numeric-id>',
+      validDomains: ['jobstreet.com.my'],
+    });
+  }
+  return configs;
 }

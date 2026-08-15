@@ -25,6 +25,11 @@ import {
   ssrfSafeLookup,
   checkUrlLive,
   filterLiveJobs,
+  enforceSlotCoverage,
+  ALLOWED_JOB_BOARD_DOMAINS,
+  hostnameMatchesBoardDomain,
+  deriveSourceFromUrl,
+  type BoardConfig,
 } from './jobMatchService.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -370,4 +375,270 @@ test('filterLiveJobs: job with no URL is kept', async () => {
 test('filterLiveJobs: empty input returns empty', async () => {
   const result = await filterLiveJobs([]);
   assert.equal(result.length, 0);
+});
+
+// ── hostnameMatchesBoardDomain ────────────────────────────────────────────────
+
+test('hostnameMatchesBoardDomain: exact match', () => {
+  assert.equal(hostnameMatchesBoardDomain('hays.com.au', ['hays.com.au']), true);
+  assert.equal(hostnameMatchesBoardDomain('randstad.pl', ['randstad.pl']), true);
+});
+
+test('hostnameMatchesBoardDomain: www. prefix stripped', () => {
+  assert.equal(hostnameMatchesBoardDomain('www.hays.com.au', ['hays.com.au']), true);
+  assert.equal(hostnameMatchesBoardDomain('www.jobstreet.com.my', ['jobstreet.com.my']), true);
+});
+
+test('hostnameMatchesBoardDomain: subdomain matches base domain', () => {
+  // au.indeed.com should match indeed.com (indeed covers country subdomains)
+  assert.equal(hostnameMatchesBoardDomain('au.indeed.com', ['indeed.com']), true);
+  assert.equal(hostnameMatchesBoardDomain('ie.indeed.com', ['indeed.com']), true);
+  assert.equal(hostnameMatchesBoardDomain('pl.indeed.com', ['indeed.com']), true);
+});
+
+test('hostnameMatchesBoardDomain: no cross-board match', () => {
+  // A Hays URL must not match the LinkedIn board's validDomains
+  assert.equal(hostnameMatchesBoardDomain('hays.com.au', ['linkedin.com']), false);
+  assert.equal(hostnameMatchesBoardDomain('randstad.ie', ['hays.ie']), false);
+  // A greenhouse.io URL must not match any board's validDomains when only board domains are listed
+  assert.equal(hostnameMatchesBoardDomain('lever.co', ['linkedin.com', 'indeed.com']), false);
+});
+
+test('hostnameMatchesBoardDomain: multiple validDomains — any match suffices', () => {
+  const jobstreetDomains = ['jobstreet.com.my', 'jobstreet.com.au'];
+  assert.equal(hostnameMatchesBoardDomain('jobstreet.com.my', jobstreetDomains), true);
+  assert.equal(hostnameMatchesBoardDomain('jobstreet.com.au', jobstreetDomains), true);
+  assert.equal(hostnameMatchesBoardDomain('linkedin.com', jobstreetDomains), false);
+});
+
+// ── deriveSourceFromUrl ───────────────────────────────────────────────────────
+
+const MOCK_BOARD_CONFIGS: BoardConfig[] = [
+  { name: 'LinkedIn',  domain: 'linkedin.com/jobs/view', urlHint: '', validDomains: ['linkedin.com'] },
+  { name: 'Indeed',    domain: 'indeed.com',              urlHint: '', validDomains: ['indeed.com'] },
+  { name: 'Randstad',  domain: 'randstad.pl',             urlHint: '', validDomains: ['randstad.pl'] },
+  { name: 'Hays',      domain: 'hays.pl',                 urlHint: '', validDomains: ['hays.pl'] },
+];
+
+test('deriveSourceFromUrl: LinkedIn URL → LinkedIn', () => {
+  assert.equal(deriveSourceFromUrl('https://www.linkedin.com/jobs/view/12345', MOCK_BOARD_CONFIGS), 'LinkedIn');
+});
+
+test('deriveSourceFromUrl: indeed.com URL → Indeed', () => {
+  assert.equal(deriveSourceFromUrl('https://indeed.com/viewjob?jk=abc', MOCK_BOARD_CONFIGS), 'Indeed');
+});
+
+test('deriveSourceFromUrl: au.indeed.com (country subdomain) → Indeed', () => {
+  assert.equal(deriveSourceFromUrl('https://au.indeed.com/viewjob?jk=xyz', MOCK_BOARD_CONFIGS), 'Indeed');
+});
+
+test('deriveSourceFromUrl: Randstad regional URL → Randstad', () => {
+  assert.equal(deriveSourceFromUrl('https://www.randstad.pl/jobs/pm-warsaw-123', MOCK_BOARD_CONFIGS), 'Randstad');
+});
+
+test('deriveSourceFromUrl: Hays regional URL → Hays', () => {
+  assert.equal(deriveSourceFromUrl('https://hays.pl/job/product-manager-456', MOCK_BOARD_CONFIGS), 'Hays');
+});
+
+test('deriveSourceFromUrl: greenhouse.io URL → Other (not a tracked board)', () => {
+  assert.equal(deriveSourceFromUrl('https://boards.greenhouse.io/acme/jobs/789', MOCK_BOARD_CONFIGS), 'Other');
+});
+
+test('deriveSourceFromUrl: ranker-mislabelled Hays URL is correctly identified as LinkedIn', () => {
+  // Simulates the case where the ranker returns source: "Hays" but the URL is linkedin.com
+  assert.equal(deriveSourceFromUrl('https://www.linkedin.com/jobs/view/999', MOCK_BOARD_CONFIGS), 'LinkedIn');
+});
+
+test('deriveSourceFromUrl: null / undefined URL → Other', () => {
+  assert.equal(deriveSourceFromUrl(null, MOCK_BOARD_CONFIGS), 'Other');
+  assert.equal(deriveSourceFromUrl(undefined, MOCK_BOARD_CONFIGS), 'Other');
+});
+
+// ── Regional board domain allowlist coverage ──────────────────────────────────
+
+test('isAllowedJobBoardDomain: regional Hays domains are all allowlisted', () => {
+  const hays = ['hays.com.my', 'hays.com.au', 'hays.net.nz', 'hays.ie', 'hays.ch', 'hays.se', 'hays.pl'];
+  for (const d of hays) {
+    assert.equal(isAllowedJobBoardDomain(d), true, `Expected ${d} to be allowlisted`);
+    assert.equal(isAllowedJobBoardDomain(`www.${d}`), true, `Expected www.${d} to be allowlisted`);
+  }
+});
+
+test('isAllowedJobBoardDomain: regional Randstad domains are all allowlisted', () => {
+  const randstad = ['randstad.com.my', 'randstad.com.au', 'randstad.co.nz', 'randstad.ie', 'randstad.ch', 'randstad.se', 'randstad.pl'];
+  for (const d of randstad) {
+    assert.equal(isAllowedJobBoardDomain(d), true, `Expected ${d} to be allowlisted`);
+    assert.equal(isAllowedJobBoardDomain(`www.${d}`), true, `Expected www.${d} to be allowlisted`);
+  }
+});
+
+test('isAllowedJobBoardDomain: jobstreet.com.my is allowlisted (Malaysia only)', () => {
+  // jobstreet.com.au was shut down — AU/NZ use SEEK; only .com.my is active
+  assert.equal(isAllowedJobBoardDomain('jobstreet.com.my'), true);
+  assert.equal(isAllowedJobBoardDomain('www.jobstreet.com.my'), true);
+  // jobstreet.com.au is removed from the allowlist since the domain is shut down
+  assert.equal(isAllowedJobBoardDomain('jobstreet.com.au'), false);
+});
+
+test('ALLOWED_JOB_BOARD_DOMAINS: every generated board domain is present', () => {
+  // Verify the constant covers every domain the per-board search configs can generate.
+  // jobstreet.com.au is intentionally absent — that domain was shut down; only .com.my is active.
+  const required = [
+    'hays.com.my', 'hays.com.au', 'hays.net.nz', 'hays.ie', 'hays.ch', 'hays.se', 'hays.pl',
+    'randstad.com.my', 'randstad.com.au', 'randstad.co.nz', 'randstad.ie', 'randstad.ch', 'randstad.se', 'randstad.pl',
+    'jobstreet.com.my',
+  ];
+  for (const d of required) {
+    assert.ok(ALLOWED_JOB_BOARD_DOMAINS.includes(d), `Missing from allowlist: ${d}`);
+  }
+  assert.ok(!ALLOWED_JOB_BOARD_DOMAINS.includes('jobstreet.com.au'), 'jobstreet.com.au must not be allowlisted — domain is shut down');
+});
+
+// Proves liveness probing actually fires for a regional domain (not skipped as non-allowlisted)
+test('checkUrlLive: hays.com.au 404 → dead (regional domain is probed)', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequest(https, 404);
+  assert.equal(await checkUrlLive('https://hays.com.au/job/expired-123'), false);
+});
+
+test('checkUrlLive: randstad.co.nz 410 → dead (regional domain is probed)', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequest(https, 410);
+  assert.equal(await checkUrlLive('https://randstad.co.nz/jobs/gone-456'), false);
+});
+
+test('checkUrlLive: jobstreet.com.my 200 → live (Malaysia JobStreet is probed)', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequest(https, 200);
+  assert.equal(await checkUrlLive('https://jobstreet.com.my/job/12345'), true);
+});
+
+test('checkUrlLive: jobstreet.com.au → not probed (domain shut down, not allowlisted)', async () => {
+  let requested = false;
+  mock.method(https, 'request', () => { requested = true; return { end() {}, on() {} }; });
+  // jobstreet.com.au is no longer in the allowlist; checkUrlLive must skip and return true (keep)
+  const live = await checkUrlLive('https://jobstreet.com.au/job/12345');
+  assert.equal(live, true, 'Unallowlisted domain must be kept without probing');
+  assert.equal(requested, false, 'https.request must NOT fire for unallowlisted domain');
+});
+
+// ── Slot-fill liveness guarantee ──────────────────────────────────────────────
+
+// ── enforceSlotCoverage — multi-board slot enforcement ───────────────────────
+
+test('enforceSlotCoverage: three missing boards all appear when all candidates are live', async () => {
+  // Simulates the worst case: 10 LinkedIn-only rows in the ranked list, but Indeed,
+  // Randstad, and Hays each have one live candidate in the raw findings pool.
+  // All three must appear in the final list.
+  const linkedInRows = Array.from({ length: 10 }, (_, i) => ({
+    title: `Product Manager ${i}`, company: `LinkedIn Co ${i}`,
+    url: `https://www.linkedin.com/jobs/view/${i}`, source: 'LinkedIn',
+    location: 'Warsaw', description: 'PM role', matchScore: 90 - i, matchReason: '',
+  }));
+
+  const findingsByBoard = new Map([
+    ['LinkedIn', []],
+    ['Indeed',   [{ title: 'PM Indeed',   company: 'IndeedCo',   location: 'Warsaw', url: 'https://indeed.com/viewjob?jk=abc', description: '', source: 'Indeed' }]],
+    ['Randstad', [{ title: 'PM Randstad', company: 'RandstadCo', location: 'Warsaw', url: 'https://randstad.pl/jobs/pm-123',   description: '', source: 'Randstad' }]],
+    ['Hays',     [{ title: 'PM Hays',     company: 'HaysCo',     location: 'Warsaw', url: 'https://hays.pl/job/pm-456',        description: '', source: 'Hays' }]],
+  ]);
+
+  const alwaysLive = async (_url: string) => true;
+  const result = await enforceSlotCoverage(
+    linkedInRows,
+    ['LinkedIn', 'Indeed', 'Randstad', 'Hays'],
+    findingsByBoard,
+    new Set(), new Set(), new Set(),
+    10,
+    alwaysLive,
+  );
+
+  assert.equal(result.length, 10, 'Must have exactly 10 rows');
+  const sources = new Set(result.map((r: any) => r.source));
+  assert.ok(sources.has('Indeed'),   'Indeed must appear in final shortlist');
+  assert.ok(sources.has('Randstad'), 'Randstad must appear in final shortlist');
+  assert.ok(sources.has('Hays'),     'Hays must appear in final shortlist');
+  assert.ok(sources.has('LinkedIn'), 'LinkedIn must still appear in final shortlist');
+});
+
+test('enforceSlotCoverage: dead first candidate is skipped; second live candidate fills slot', async () => {
+  const linkedInRows = Array.from({ length: 10 }, (_, i) => ({
+    title: `PM ${i}`, company: `Co ${i}`,
+    url: `https://www.linkedin.com/jobs/view/${i}`, source: 'LinkedIn',
+    location: 'Dublin', description: '', matchScore: 80, matchReason: '',
+  }));
+
+  const findingsByBoard = new Map([
+    ['LinkedIn', []],
+    ['Indeed', [
+      { title: 'Dead Indeed',  company: 'DeadCo',  location: 'Dublin', url: 'https://indeed.com/viewjob?jk=dead', description: '', source: 'Indeed' },
+      { title: 'Live Indeed',  company: 'LiveCo',  location: 'Dublin', url: 'https://indeed.com/viewjob?jk=live', description: '', source: 'Indeed' },
+    ]],
+  ]);
+
+  const mockLive = async (url: string) => !url.includes('dead');
+  const result = await enforceSlotCoverage(
+    linkedInRows, ['LinkedIn', 'Indeed'], findingsByBoard,
+    new Set(), new Set(), new Set(), 10, mockLive,
+  );
+
+  const indeed = result.find((r: any) => r.source === 'Indeed');
+  assert.ok(indeed, 'Indeed must appear');
+  assert.ok(indeed.url.includes('live'), 'Dead candidate must be skipped; live one used');
+});
+
+test('enforceSlotCoverage: no cross-board candidate pollution across multiple fills', async () => {
+  // Both Indeed and Randstad have the same single posting in their pool.
+  // Only the first missing board (Indeed) should claim it; Randstad must log a warning and get no slot.
+  const linkedInRows = Array.from({ length: 10 }, (_, i) => ({
+    title: `PM ${i}`, company: `Co ${i}`,
+    url: `https://www.linkedin.com/jobs/view/${i}`, source: 'LinkedIn',
+    location: 'Dublin', description: '', matchScore: 80, matchReason: '',
+  }));
+
+  const sharedPosting = { title: 'Shared PM', company: 'SharedCo', location: 'Dublin', url: 'https://indeed.com/viewjob?jk=shared', description: '', source: 'Indeed' };
+
+  const findingsByBoard = new Map([
+    ['LinkedIn', []],
+    ['Indeed',   [sharedPosting]],
+    ['Randstad', [{ ...sharedPosting, source: 'Randstad' }]], // same URL, different label
+  ]);
+
+  const alwaysLive = async (_url: string) => true;
+  const result = await enforceSlotCoverage(
+    linkedInRows, ['LinkedIn', 'Indeed', 'Randstad'], findingsByBoard,
+    new Set(), new Set(), new Set(), 10, alwaysLive,
+  );
+
+  // The URL should appear at most once (Indeed claimed it; Randstad's clone is deduped)
+  const urlCounts = result.reduce((acc: Record<string, number>, r: any) => {
+    acc[r.url] = (acc[r.url] ?? 0) + 1;
+    return acc;
+  }, {});
+  assert.ok((urlCounts['https://indeed.com/viewjob?jk=shared'] ?? 0) <= 1, 'Same URL must not appear twice');
+});
+
+test('filterLiveJobs: dead candidate from regional Randstad domain is excluded', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mock.method(https, 'request', (opts: any, callback: (res: any) => void) => {
+    // randstad.com.au URL returns 404; hays.ie URL returns 200
+    const status = (opts.hostname as string).includes('randstad') ? 404 : 200;
+    const fakeReq = {
+      end() { Promise.resolve().then(() => callback({ statusCode: status, destroy() {} })); return this; },
+      on() { return this; },
+      destroy() {},
+    };
+    return fakeReq;
+  });
+  const jobs = [
+    { title: 'PM', company: 'Acme', url: 'https://randstad.com.au/jobs/dead-randstad' },
+    { title: 'BA', company: 'Beta', url: 'https://hays.ie/job/live-hays' },
+  ];
+  const result = await filterLiveJobs(jobs);
+  assert.equal(result.length, 1, 'Dead randstad.com.au posting must be removed');
+  assert.equal(result[0].company, 'Beta');
 });
