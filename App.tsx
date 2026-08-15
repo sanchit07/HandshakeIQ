@@ -6,6 +6,7 @@ import SettingsScreen from './components/SettingsScreen';
 import CardScanner from './components/CardScanner';
 import SideMenu from './components/SideMenu';
 import UpcomingMeetings from './components/UpcomingMeetings';
+import JobOpportunities from './components/JobOpportunities';
 import SaveConfirmation from './components/modals/SaveConfirmation';
 import { Person, CalendarAttendee, Dossier, IntelligenceReport, GroundingChunk, SocialMediaLink } from './types';
 import { MOCK_PEOPLE, MOCK_MEETINGS } from './constants';
@@ -15,12 +16,12 @@ import { useAuth } from './client/hooks/useAuth';
 import axios from 'axios';
 
 const App: React.FC = () => {
-  const { user, isLoading, isAuthenticated, isGuest, hasError } = useAuth();
+  const { user, isLoading, isAuthenticated, isGuest, hasError, isAdmin } = useAuth();
   const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
   const [currentDossierId, setCurrentDossierId] = useState<string | undefined>(undefined);
   const [currentReport, setCurrentReport] = useState<IntelligenceReport | undefined>(undefined);
   const [currentSources, setCurrentSources] = useState<GroundingChunk[]>([]);
-  const [view, setView] = useState<'dashboard' | 'profile' | 'settings' | 'scanner' | 'login' | 'upcoming-meetings'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'profile' | 'settings' | 'scanner' | 'login' | 'upcoming-meetings' | 'job-opportunities'>('dashboard');
   const [scannedSearchTerm, setScannedSearchTerm] = useState<string>('');
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [searchHistory, setSearchHistory] = useState<Person[]>([]);
@@ -105,6 +106,11 @@ const App: React.FC = () => {
     setView('upcoming-meetings');
     setIsMenuOpen(false);
   }, []);
+
+  const handleGoToJobOpportunities = useCallback(() => {
+    setView('job-opportunities');
+    setIsMenuOpen(false);
+  }, []);
   
   const handleSelectAttendee = useCallback((attendee: CalendarAttendee) => {
     // Convert CalendarAttendee to Person for profile view
@@ -130,6 +136,7 @@ const App: React.FC = () => {
   const isProfileVisible = view === 'profile';
   const isSettingsVisible = view === 'settings';
   const isUpcomingMeetingsVisible = view === 'upcoming-meetings';
+  const isJobOpportunitiesVisible = view === 'job-opportunities';
   const isLoginVisible = view === 'login';
   
   // Show app content if authenticated OR in guest mode
@@ -204,7 +211,7 @@ const App: React.FC = () => {
             <LoginScreen onContinueAsGuest={handleContinueAsGuest} />
           ) : showAppContent ? (
             <div className="relative w-full h-full">
-               <div className={`transition-all duration-500 ease-in-out ${isProfileVisible || isSettingsVisible || isUpcomingMeetingsVisible ? 'transform -translate-x-full opacity-0 scale-95' : 'transform translate-x-0 opacity-100 scale-100'}`}>
+               <div className={`transition-all duration-500 ease-in-out ${isProfileVisible || isSettingsVisible || isUpcomingMeetingsVisible || isJobOpportunitiesVisible ? 'transform -translate-x-full opacity-0 scale-95' : 'transform translate-x-0 opacity-100 scale-100'}`}>
                 <Dashboard
                   meetings={MOCK_MEETINGS}
                   people={MOCK_PEOPLE}
@@ -237,6 +244,15 @@ const App: React.FC = () => {
               >
                 <UpcomingMeetings onBack={handleBackToDashboard} onSelectAttendee={handleSelectAttendee} />
               </div>
+              {isAdmin && (
+                <div
+                  className={`absolute top-0 left-0 w-full h-full transition-all duration-500 ease-in-out ${
+                    isJobOpportunitiesVisible ? 'transform translate-x-0 opacity-100 scale-100' : 'transform translate-x-full opacity-0 scale-95'
+                  }`}
+                >
+                  <JobOpportunities onBack={handleBackToDashboard} />
+                </div>
+              )}
             </div>
           ) : null}
         </main>
@@ -251,6 +267,7 @@ const App: React.FC = () => {
                 onRefreshPerson={handleSelectPerson} // For now, refresh just re-selects
                 onGoToSettings={handleGoToSettings}
                 onGoToUpcomingMeetings={handleGoToUpcomingMeetings}
+                onGoToJobOpportunities={isAdmin ? handleGoToJobOpportunities : undefined}
                 onLogout={handleLogout}
             />
         )}

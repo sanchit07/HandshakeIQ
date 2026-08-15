@@ -116,6 +116,51 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ===== Job Hunt (admin only) =====
+  const { runDailyJobSearch, getShortlist, getShortlistDates, tailorCvForJob } = await import('./jobs/jobMatchService');
+
+  app.get('/api/jobs/dates', requireAdmin, async (_req, res) => {
+    try {
+      res.json(await getShortlistDates());
+    } catch (error) {
+      console.error('[JOBS] Error listing dates:', error);
+      res.status(500).json({ message: 'Failed to list shortlist dates' });
+    }
+  });
+
+  app.get('/api/jobs', requireAdmin, async (req: any, res) => {
+    try {
+      const date = typeof req.query.date === 'string' ? req.query.date : undefined;
+      res.json(await getShortlist(date));
+    } catch (error) {
+      console.error('[JOBS] Error fetching shortlist:', error);
+      res.status(500).json({ message: 'Failed to fetch shortlist' });
+    }
+  });
+
+  const jobsRunRateLimit = rateLimit(3, 10 * 60 * 1000); // 3 runs / 10 min
+  const tailorRateLimit = rateLimit(10, 60 * 1000);
+
+  app.post('/api/jobs/run', requireAdmin, jobsRunRateLimit, async (req: any, res) => {
+    try {
+      const result = await runDailyJobSearch(!!req.body?.force);
+      res.json(result);
+    } catch (error) {
+      console.error('[JOBS] Manual run failed:', error);
+      res.status(500).json({ message: 'Job search run failed. Check server logs.' });
+    }
+  });
+
+  app.post('/api/jobs/:id/tailor-cv', requireAdmin, tailorRateLimit, async (req: any, res) => {
+    try {
+      const job = await tailorCvForJob(req.params.id);
+      res.json(job);
+    } catch (error: any) {
+      console.error('[JOBS] CV tailoring failed:', error);
+      res.status(500).json({ message: error?.message || 'CV tailoring failed' });
+    }
+  });
+
   // Change own password (requires login; verifies current password)
   app.post('/api/auth/change-password', authRateLimit, attachSessionIfPresent, async (req: any, res) => {
     try {

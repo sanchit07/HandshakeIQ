@@ -1,0 +1,145 @@
+                                           SANCHIT NEEMA
+                     Senior Business Analyst & AI Solutions | Product Leadership | 11 Years B2B SaaS
+          sanchit.neema@gmail.com • +60 13 680 3565 • linkedin.com/in/sanchit-neema-35033 • Petaling Jaya, Malaysia
+
+
+
+PROFESSIONAL SUMMARY
+Analytical and delivery-focused professional with 11 years of experience designing and implementing digital solutions for B2B
+SaaS platforms. Deep expertise in business requirements analysis, solution design, and agile delivery — including AI
+automation pipelines, CRM integrations (Salesforce), ERP connectivity (Oracle NetSuite, SAP), and microservices architecture.
+Experienced in translating complex business problems into working digital solutions across global teams spanning 20+
+countries. Currently pursuing a Doctorate in Business Administration focused on AI governance and human-AI collaboration in
+enterprise organisations — directly applicable to AI-powered sales enablement tools. Passionate about using AI to improve
+how field sales teams engage with customers and generate measurable business impact.
+
+
+KEY SKILLS & EXPERTISE
+Business Analysis & Solution Design: Requirements Gathering, Solution Design, User Story Development, UAT, Gap Analysis, Process
+Optimisation, Technical Documentation, Agile/Scrum
+AI & Data: MS Azure AI, Machine Learning, AI Automation Pipelines, Predictive Analytics, Data Visualisation (Tableau/Power BI),
+AI-Assisted Insights, Anomaly Detection
+Systems & Integration: Salesforce (CRM), Oracle NetSuite (ERP), AWS Microservices, RESTful APIs, Microservices Architecture, SSO /
+RBAC / IAM, Event-Driven Architecture
+Product & Delivery: Product Roadmap, Backlog Management, Sprint Planning, SDLC Optimisation, System Design, E-Commerce
+Platform Architecture
+Tools: JIRA, Figma, MySQL, MongoDB, Power BI, Salesforce, Claude, Replit, GA4, Zoho Suite
+
+
+KEY IMPACT AT A GLANCE
+  •​ Built AI automation pipelines replacing manual reporting across 5 regional teams — reducing process cycle time from 3 hours to
+     20 minutes.
+  •​ Led Salesforce and Oracle NetSuite integrations — enabling real-time CRM data sync, automated billing reconciliation, and
+     enterprise reporting.
+  •​ Designed e-commerce-style campaign ordering flow enabling SME users to configure, execute, and track end-to-end without
+     technical assistance — 75% customer adoption.
+  •​ Rearchitected a decade-old monolithic platform into microservices API-first architecture — unlocking 6 independently
+     monetisable products.
+  •​ Oversaw deployment of USD 10M product investment across AI/ML capabilities, platform rearchitecture, and data
+     infrastructure.
+  •​ Received 'Fountain of Knowledge' award for pioneering Programmatic Advertising in Asia — first programmatic DOOH campaign
+     in APAC.
+  •​ Managed 1,000+ monthly multi-channel campaign executions globally across CTV, DOOH, Web, and Mobile inventory.
+
+
+PROFESSIONAL EXPERIENCE
+Lead Staff Product Manager • Apr 2025 – Present
+Moving Walls Sdn Bhd • Kuala Lumpur, Malaysia
+  •​ Orchestrated product vision and roadmap across global AdTech ecosystem — achieving 90% delivery accuracy and 85%
+     customer satisfaction.
+  •​ Deployed USD 10M strategic investment across four initiatives: AI/ML capability integration, full-platform rearchitecture,
+     company acquisitions, and third-party data infrastructure.
+  •​ Led complete platform rearchitecture from decade-old monolith to clean microservices architecture with unified SSO —
+     unlocking 5 new independently monetisable product lines.
+ •​ Designed and implemented enterprise-grade IAM platform integrating Auth0, SSO, and RBAC across all SaaS products with
+    automated account provisioning triggered by CRM lead conversion.
+ •​ Directed cross-functional team of 15 including engineers and data scientists — running Agile delivery, OKR reviews, and
+    quarterly roadmap presentations to the Board.
+ •​ Used AI development tools daily (Replit, Claude Code, Antigravity) to accelerate innovation cycles, build prototypes, and
+    auto-generate PRDs linked to Confluence.
+
+
+Manager — Discovery & Solutions • Apr 2024 – Mar 2025
+Moving Walls Sdn Bhd • Kuala Lumpur, Malaysia
+ •​ Gathered and analysed business requirements across 5 regional business units — translating operational pain points into
+    structured solution specifications for engineering delivery.
+ •​ Designed and implemented AI automation pipelines replacing manual discovery, reporting, and cross-team workflows —
+    reducing process cycle time by 40% and freeing teams for higher-value work.
+ •​ Built AI tools using low-code and API-based automation (Zapier, REST integrations) to streamline data flows between regional
+    teams — eliminating repetitive manual data handling.
+ •​ Created the company's first internal knowledge base SLA delivery standards, and cross-functional process documentation —
+    adopted across all business units and reducing onboarding time significantly.
+ •​ Identified and proposed tablet advertising as a new business line — conducted market research, flew to South Korea, closed a
+    partnership with t'Order, and launched Hilti's first restaurant tablet ad campaign with LG Electronics.
+ •​ Implemented SSO and RBAC identity solutions ensuring secure, role-based access control across all platform products.
+
+
+Lead Product Manager • Jun 2023 – Mar 2024
+Moving Walls Sdn Bhd • Kuala Lumpur, Malaysia
+ •​ Led Salesforce and Oracle NetSuite API integrations — defining technical specifications, mapping data flows, managing
+    engineering delivery, and enabling enterprise clients to sync CRM data, billing records, and performance analytics in real time.
+ •​ Developed end-to-end Order Management System integrated with CMS, Stripe (payments), and Zoho Books (finance
+    reconciliation) — replacing manual billing with automated, error-free processing.
+ •​ Drove product expansion to South Africa, USA, and Australia by integrating local audience datasets — providing
+    geo-behavioural targeting intelligence required to win enterprise clients in new markets.
+ •​ Managed full product lifecycle end-to-end: ideation, customer discovery, technical specification, sprint delivery, UAT, and
+    go-to-market — consistently shipping on time and within budget.
+
+
+Product Manager • Jul 2018 – May 2023
+Moving Walls Sdn Bhd • Kuala Lumpur, Malaysia
+ •​ Designed self-serve campaign management platform modelled on e-commerce ordering lifecycle — enabling SME advertisers
+    to configure, execute, and track campaigns end-to-end without technical assistance. Achieved 75% enterprise adoption and 50%
+    reduction in campaign setup time.
+ •​ Integrated Supply-Side Platforms (SSPs) including Google Ad Manager, BroadSign, and Viooh — expanding addressable
+    inventory to 2M+ assets across markets through structured API integrations and partnership negotiations.
+ •​ Pioneered programmatic DOOH advertising in Asia — first programmatic campaign in the region (Domino's), integrated with
+    Google Ads, achieving +40% revenue boost. Received Fountain of Knowledge Award.
+ •​ Translated product requirements and user stories into detailed technical specifications for engineering — covering API
+    contracts, data storage design, user journey flows, and validation logic.
+
+
+Business Analyst • Sep 2017 – Jun 2018
+Moving Walls Sdn Bhd • Kuala Lumpur, Malaysia
+ •​ Designed advanced audience targeting algorithms enabling personalised ad recommendations — the foundation of the
+    AI-driven analytics capabilities developed throughout subsequent roles.
+ •​ Collaborated with data teams to improve DMP (Data Management Platform) functionalities and predictive analytics
+    capabilities.
+  •​ Led operational gap analysis and process optimisation across product and data workflows — improving operational efficiency
+     by 25%.
+  •​ Conducted UAT and gathered user feedback to drive iterative product improvements across the platform.
+
+
+Forensic Scientist & Workflow Automation Lead • Mar 2015 – Aug 2017
+iGene Sdn Bhd • Kuala Lumpur, Malaysia
+  •​ Served as domain expert, defining and automating workflows for forensic digital autopsy platforms deployed across multiple
+     countries.
+  •​ Built 3D crime scene reconstruction tool for Royal Malaysia Police (PDRM) and developed NLP system for automated forensic
+     report generation.
+  •​ Supported CMMi Level 3 and ISO 27001 compliance — establishing early foundation in governance and process standards.
+  •​ Conducted A/B testing, user research, and data analysis to improve platform features — the start of a data-driven product
+     discipline.
+
+
+EDUCATION
+Doctorate of Business Administration (DBA) — AI Strategic Innovation • Jan 2025 – Present (In Progress)
+European Institute of Management and Technology (EIMT), Zurich, Switzerland
+  •​ Thesis: "Orchestrating Intelligence: Measuring and Resolving AI Tool Sprawl in SaaS Product Organisations" — Developing the AI
+     Orchestration Maturity Index (AOMI): a validated diagnostic instrument measuring AI governance maturity across tool
+     governance, data sovereignty, cross-functional friction, human-AI accountability, and workforce readiness. Directly applicable to
+     enterprise AI adoption and sales enablement programmes.
+
+Master's in Forensic Science2010 – 2012
+Dr. Hari Singh Gour University, Sagar, India
+
+Bachelor's in Forensic Science2007 – 2010
+Amity University, Noida, India
+
+
+
+CERTIFICATIONS & RECOGNITION
+  •​ "Fountain of Knowledge" Award — Moving Walls (Innovation in Programmatic Advertising, APAC)
+  •​ Entrepreneur Master — World Masterclass (Aug 2024)
+  •​ Agile Fundamentals — Scrum Study (Jun 2018)
+  •​ ISTQB Foundation — Malaysia Software Testing Board (Oct 2016)
+

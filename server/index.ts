@@ -1,5 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
+import cron from "node-cron";
 import { registerRoutes } from "./routes";
+import { runDailyJobSearch } from "./jobs/jobMatchService";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -47,4 +49,31 @@ const isProduction = process.env.NODE_ENV === 'production';
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT} (${isProduction ? 'production' : 'development'} mode)`);
   });
+
+  // Daily job search — every day at 7:00 AM Malaysia time
+  cron.schedule('0 7 * * *', async () => {
+    console.log('[CRON] Starting scheduled daily job search');
+    try {
+      const result = await runDailyJobSearch();
+      console.log(`[CRON] Daily job search done: ${result.count} jobs for ${result.runDate}${result.skipped ? ' (already existed, skipped)' : ''}`);
+    } catch (err) {
+      console.error('[CRON] Daily job search failed:', err);
+    }
+  }, { timezone: 'Asia/Kuala_Lumpur' });
+
+  // Catch-up: if the server was down at 7:00 AM, run the (idempotent) daily
+  // search shortly after startup when it's already past 7 AM Malaysia time
+  setTimeout(async () => {
+    try {
+      const klHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour: 'numeric', hour12: false }).format(new Date()));
+      if (klHour >= 7) {
+        const result = await runDailyJobSearch();
+        if (!result.skipped) {
+          console.log(`[CRON] Startup catch-up job search done: ${result.count} jobs for ${result.runDate}`);
+        }
+      }
+    } catch (err) {
+      console.error('[CRON] Startup catch-up job search failed:', err);
+    }
+  }, 30_000);
 })();

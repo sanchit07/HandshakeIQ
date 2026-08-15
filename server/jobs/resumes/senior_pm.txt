@@ -1,0 +1,146 @@
+                                        SANCHIT NEEMA
+                Senior Product Manager | AI-Powered SaaS | Global Markets | Platform Strategy
+       sanchit.neema@gmail.com · +60 13 680 3565 · linkedin.com/in/sanchit-neema-35033 · github.com/sanchit07
+
+PROFESSIONAL SUMMARY
+Accomplished Senior Product Manager with 11+ years of end-to-end product leadership across AI-powered B2B SaaS
+platforms serving global enterprise clients. Unique combination of strategic vision and technical depth: building and
+scaling platform ecosystems across order management, transaction systems, and data-driven products. Led the
+platform rearchitecture (legacy monolith → microservices API-first), built SSO/Auth0 identity infrastructure, shipped
+Stripe payment systems, integrated ERP/CRM stacks (Salesforce, Oracle NetSuite, HubSpot), and deployed ML
+recommendation engines. Enabled seamless orchestration across distributed systems while managing P&L, directing
+cross-functional teams of 15+, and growing annual product revenue to USD 1M+. Secured and deployed a USD 10M
+institutional investment, led an international company acquisition (Adarth, India), and expanded a platform from 5 Asian
+markets to 20+ countries across APAC, MENA, EMEA, and the Americas.
+
+CORE COMPETENCIES
+Product Strategy & Leadership: Product Roadmap & Vision, Go-to-Market Strategy, P&L Ownership, Budget
+Management, Value Proposition Design, OKRs & KPI Frameworks, Stakeholder Management (C-Suite / Board)
+AI & Intelligent Systems: Product Strategy, Recommendation Engine, Predictive Analytics, LLM Application Design
+(Research: DBA Thesis), ML Model Productisation, Programmatic Algorithms, AI Automation Pipelines
+AI Development Tools: Replit (AI-assisted prototyping & rapid development), Claude Code (agentic coding & product
+spec automation), Antigravity (AI workflow tooling)
+Platform & Technical Architecture: Microservices Architecture, API-first Design, RESTful APIs, Legacy System
+Modernisation, SSO / Auth0 / RBAC, MongoDB, Cloud-Native SaaS, High-concurrency Platform Design, System Design
+Payments & Commerce: Stripe Integration, Credit & Prepaid Billing, Marketplace Payment Flows, Subscription
+Management, ERP Integration (Oracle NetSuite, Zoho Books), Financial Reconciliation, Procurement
+CRM & Integrations: Salesforce (API, Data Sync, Workflow Automation), HubSpot, Zoho CRM, Oracle NetSuite,
+Third-party Data Integration
+Analytics & Data: Big Data Pipelines, Data Visualisation (Power BI, Tableau), A/B Testing, Campaign Analytics, Cohort
+Analysis, Financial Reporting, GA4, SQL / MySQL
+Product Delivery & Agile: Agile / Scrum (Product Owner), Sprint Planning, Backlog Prioritisation, SDLC Optimisation,
+UAT, User-Centric Design (UCD), Lean Startup, 0 to 1 and 1 to N strategy
+Global Market Expansion: International Market Entry, Market Localisation, Multi-region Product Architecture (APAC,
+MENA, EMEA, Americas), Partner & Publisher Ecosystem Management
+Tools: JIRA, Figma, Salesforce, HubSpot, MySQL, MongoDB, Power BI, GA4, Zoho Suite, Firebase
+
+PROFESSIONAL EXPERIENCE
+
+Lead Staff Product Manager - Apr 2025 – Present
+Moving Walls Sdn Bhd • Kuala Lumpur, Malaysia
+ •​ Deployed the USD 10M investment across four strategic initiatives: (1) AI/ML capability integration, (2) a 12-month
+    full-platform rearchitecture, (3) acquisition of two leading companies and (4) third-party data acquisition.
+ •​ Led complete platform rearchitecture: decomposed a decade-old monolithic system into a clean microservices
+    architecture with unified SSO and 5 independently monetisable product lines - adding new revenue streams without
+    increasing engineering complexity.
+ •​ Built and shipped an enterprise-grade Identity & Access Management platform integrating Auth0, SSO, and RBAC
+    across SaaS products with automated account provisioning - triggered by CRM lead conversion.
+ •​ Designed and launched a full-stack Order Management System integrating Stripe, Zoho Books (finance
+    reconciliation), and Oracle NetSuite (US enterprise ERP).
+ •​ Replacing a manual business process with an automated, error-free platform that improved cash flow transparency,
+    eliminated payment settlement delays, supply management, automated reporting and order booking.
+ •​ Directed a cross-functional team of 15 including engineers and data scientists plus 7 direct reports running Agile
+    delivery, OKR reviews, and quarterly roadmap presentations to the Board.
+ •​ Drive roadmap execution with ~90% delivery accuracy while aligning with business KPIs and customer outcomes.
+ •​ Used AI development tools including Replit (rapid product prototyping), Claude Code (agentic specification and code
+    automation), and Antigravity to accelerate product development cycles and reduce time-to-MVP for new feature sets.
+
+Manager — Discovery & Solutions - Apr 2024 – Mar 2025
+Moving Walls Sdn Bhd • Kuala Lumpur, Malaysia
+  •​ Founded and scaled the Discovery team from zero — establishing a structured customer-driven innovation framework
+     covering hypothesis generation, user research, prototype testing, and outcome-led prioritisation across 5 regional
+     business units.
+  •​ Designed scalable multi-market product architecture enabling localised adaptations for APAC, MENA, EMEA, and
+     North American markets without separate codebases or engineering duplication — reducing per-market deployment
+     time by 40%.
+  •​ Built AI-based automation pipelines that replaced manual discovery, reporting, and workflow processes — freeing the
+     team to focus on higher-value strategic product work and improving delivery velocity.
+  •​ Created the company's first comprehensive internal knowledge base and SLA delivery framework — improving
+     cross-team alignment, reducing onboarding time for new staff, and establishing clear product-to-engineering handoff
+     standards.
+
+Lead Product Manager - Jun 2023 – Mar 2024
+Moving Walls Sdn Bhd • Kuala Lumpur, Malaysia
+ •​ Developed and scaled B2B SaaS product suite enabling USD 700K in incremental yearly revenue growth through
+    AI-powered campaign optimisation, supply management automation, and advertiser ROI improvements of 25%.
+ •​ Led API integrations with Salesforce and Oracle NetSuite — defining technical specifications, managing engineering
+    delivery, and enabling enterprise clients to sync first-party data, billing records, and performance analytics.
+ •​ Drove product expansion to South Africa, USA, and Australia by integrating audience datasets — providing the
+    geo-behavioral targeting intelligence required to win and retain enterprise clients in these new markets.
+ •​ Managed full product lifecycle end-to-end: ideation and customer discovery, technical specification, prototyping, sprint
+    delivery, UAT, and go-to-market — consistently shipping features on time and within budget.
+
+Product Manager - Jul 2018 – May 2023
+Moving Walls Sdn Bhd • Kuala Lumpur, Malaysia
+ •​ Built self-serve Demand-Side Platform (DSP) enabling real-time programmatic campaign execution for 1,000+
+    monthly enterprise campaigns with audience targeting, real-time bidding and inventory management.
+ •​ Integrated Supply-Side Platforms (SSPs) to expand addressable inventory to 2M+ assets across markets -
+    negotiating technical integration terms and managing cross-system API dependencies.
+ •​ Designed pricing models, subscription tiers, self-serve onboarding flows, and campaign analytics dashboards that
+    achieved 75% enterprise customer adoption and reduced campaign setup time by 50%.
+ •​ Translated product requirements and user stories into detailed technical specifications for engineering, working
+    closely across advertiser verticals including healthcare, QSR, e-commerce, and technology sectors.
+
+Business AnalystSep 2017 – Jun 2018
+Moving Walls Sdn Bhd • Kuala Lumpur, Malaysia
+ •​ Designed advanced programmatic audience targeting algorithms enabling personalised ad recommendations.
+    Collaborated with data teams to improve DMP and predictive analytics capabilities.
+ •​ Led operational gap analysis and process optimisation across product and data workflows, improving operational
+    efficiency by 25%. Conducted UAT and gathered user feedback to drive iterative product improvements.
+
+Forensic Scientist & Workflow Automation LeadMar 2015 – Aug 2017
+iGene Sdn Bhd • Kuala Lumpur, Malaysia
+  •​ Defined workflow automation for forensic platforms across multi-country deployments. Supported CMMi Level 3 and
+     ISO 27001 compliance. Conducted data analysis, A/B testing, and user research to improve platform features.
+
+DOCTORAL RESEARCH (DBA) — AI & PRODUCT LEADERSHIP
+Thesis: “Orchestrating Intelligence: A New Playbook for Product Leadership in the AI-Driven SaaS Era”Active research
+investigating three frontier challenges in AI product management:
+(1) How to embed LLMs and generative AI as a structured, governed team member in Agile product organisations, with
+defined roles, data access policies, and accountability frameworks.
+(2) What level of data should be exposed to AI at each stage of product development, and how to design safe data
+exposure models that balance AI productivity with IP and compliance risk.
+(3) What skills product managers must learn and unlearn as AI changes the PM role and what new university curricula
+are needed to prepare the next generation of PMs. This research is directly informed by 11 years of operationalising AI in
+real enterprise product environments and using AI tools in daily product development workflows.
+
+EDUCATION
+Doctorate of Business Administration (DBA) — AI Strategic Innovation
+European Institute of Management and Technology, Zurich, Switzerland | 2025 – Present (In Progress)
+Master's in Forensic Science
+Dr. Hari Singh Gour University, Sagar, India | 2010 – 2012
+Bachelor's in Forensic Science
+Amity University, Noida, India | 2007 – 2010
+
+CERTIFICATIONS & RECOGNITION
+ •​ “Fountain of Knowledge” Award — Moving Walls (Innovation in Programmatic Advertising, APAC)
+ •​ Entrepreneur Master — World Masterclass (Aug 2024)
+ •​ Agile Fundamentals — Scrum Study (Jun 2018)
+ •​ ISTQB Foundation — Malaysia Software Testing Board (Oct 2016)
+
+NOTABLE ACHIEVEMENTS AT A GLANCE
+ •​ Secured USD 10M institutional investment from a renowned company in Japan — largest single investment in
+     company history.
+  •​ Led acquisition of Adarth (India) — including synergy identification, product integration planning, and engineering
+     team onboarding.
+  •​ Expanded platform from 5 Asian markets to 20+ global markets (APAC, MENA, EMEA, South Africa, USA, Australia).
+  •​ Rearchitected a decade-old monolithic platform to microservices in 12 months — unlocking 5 new independently
+     monetisable product lines.
+  •​ Shipped enterprise SSO + Auth0 + RBAC identity platform unifying 5 SaaS products under a single credential
+     system.
+  •​ Replaced manual billing with a full Stripe + Zoho Books + Oracle NetSuite integrated payment platform — eliminating
+     human error in financial reconciliation.
+  •​ Grew enterprise customer adoption to 75% and platform monthly campaigns to 1,000+ globally with 2M+ inventory
+     assets.
+  •​ Uses Replit, Claude Code, and Antigravity daily as AI-powered development and product productivity tools.
+

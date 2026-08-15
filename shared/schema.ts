@@ -1,6 +1,8 @@
 import { sql } from 'drizzle-orm';
 import {
   index,
+  uniqueIndex,
+  integer,
   jsonb,
   pgTable,
   timestamp,
@@ -82,6 +84,30 @@ export const searchHistory = pgTable("search_history", {
   index("idx_search_history_person_name").on(table.personName),
   index("idx_search_history_searched_at").on(table.searchedAt),
 ]);
+
+// Daily shortlisted job opportunities matched against the candidate profile
+export const jobMatches = pgTable("job_matches", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  runDate: varchar("run_date").notNull(), // YYYY-MM-DD (Asia/Kuala_Lumpur)
+  rank: integer("rank").notNull(),
+  title: varchar("title").notNull(),
+  company: varchar("company").notNull(),
+  location: varchar("location"),
+  country: varchar("country"),
+  source: varchar("source"), // job board the posting was found on
+  url: text("url"),
+  description: text("description"),
+  matchScore: integer("match_score"), // 0-100
+  matchReason: text("match_reason"),
+  tailoredCv: text("tailored_cv"), // generated on demand
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_job_matches_run_date").on(table.runDate),
+  uniqueIndex("uq_job_matches_run_date_rank").on(table.runDate, table.rank),
+]);
+
+export type JobMatch = typeof jobMatches.$inferSelect;
+export type UpsertJobMatch = typeof jobMatches.$inferInsert;
 
 export type UpsertUser = typeof users.$inferInsert;
 export type User = typeof users.$inferSelect;

@@ -11,10 +11,11 @@ interface SideMenuProps {
     onRefreshPerson: (person: Person) => void;
     onGoToSettings: () => void;
     onGoToUpcomingMeetings: () => void;
+    onGoToJobOpportunities?: () => void;
     onLogout: () => void;
 }
 
-const SideMenu: React.FC<SideMenuProps> = ({ isOpen, onClose, history, dossiers, onSelectPerson, onRefreshPerson, onGoToSettings, onGoToUpcomingMeetings, onLogout }) => {
+const SideMenu: React.FC<SideMenuProps> = ({ isOpen, onClose, history, dossiers, onSelectPerson, onRefreshPerson, onGoToSettings, onGoToUpcomingMeetings, onGoToJobOpportunities, onLogout }) => {
     
     const PersonListItem: React.FC<{person: Person, onRefresh?: (person: Person) => void}> = ({person, onRefresh}) => (
         <div className="flex items-center justify-between p-2 rounded-md hover:bg-cyan-900/50 group">
@@ -84,6 +85,11 @@ const SideMenu: React.FC<SideMenuProps> = ({ isOpen, onClose, history, dossiers,
                         <button onClick={onGoToUpcomingMeetings} className="w-full flex items-center space-x-3 px-4 py-2 text-cyan-200 hover:bg-cyan-800/60 rounded transition-colors text-left">
                             <CalendarIcon /> <span>Upcoming Meetings</span>
                         </button>
+                        {onGoToJobOpportunities && (
+                            <button onClick={onGoToJobOpportunities} className="w-full flex items-center space-x-3 px-4 py-2 text-cyan-200 hover:bg-cyan-800/60 rounded transition-colors text-left">
+                                <RefreshIcon /> <span>Job Opportunities</span>
+                            </button>
+                        )}
                         <button onClick={onGoToSettings} className="w-full flex items-center space-x-3 px-4 py-2 text-cyan-200 hover:bg-cyan-800/60 rounded transition-colors text-left">
                             <SettingsIcon /> <span>Settings</span>
                         </button>
