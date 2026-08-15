@@ -131,7 +131,8 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
             role: 'user',
             content: `Search for CURRENTLY OPEN job vacancies posted recently (within the last 2 weeks) in ${group.join(', ')} for these roles: ${roles.join(', ')}.
 Prioritize listings on these job boards: ${BOARDS.join(', ')} (e.g. use searches like "site:linkedin.com/jobs", "site:indeed.com", "site:jobstreet.com", "site:randstad.com", "site:hays.com" combined with role and country).
-For each vacancy found, report: exact job title, company, city/location, country, source job board, the direct URL to the posting, and a 1-2 sentence description of requirements.
+Prefer English-language postings, and note whenever a posting mentions visa sponsorship, relocation support, or welcoming international candidates.
+For each vacancy found, report: exact job title, company, city/location, country, source job board, the direct URL to the posting, and a 1-2 sentence description of requirements (including any visa/relocation notes).
 Only include postings that appear to be genuinely live (skip expired or generic search-page links). Find as many distinct real vacancies as you can.`,
           }],
           tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 } as any],
@@ -159,7 +160,13 @@ VACANCIES FOUND TODAY:
 ${allFindings.join('\n\n')}
 
 Select the 10 BEST matching opportunities. Judge match on: seniority fit (11+ yrs, lead/head level), domain fit (B2B SaaS, AI products, platform architecture, AdTech), role fit, and location (${COUNTRIES.join(', ')}).
-Discard anything without a real company name and plausible direct URL. Prefer diversity across countries and boards.
+
+SHORTLISTING PREFERENCE RULES (apply in this priority order):
+1. Prefer roles where the working language is English (deprioritize postings requiring Swedish, German, French, Polish, Portuguese, etc.).
+2. Prefer companies that provide visa sponsorship or explicitly welcome international candidates.
+3. Prefer English-speaking countries first, with Malaysia at the top: Malaysia > Australia, New Zealand, Ireland > the rest (Sweden, Switzerland, Poland, Portugal).
+
+Discard anything without a real company name and plausible direct URL. Prefer diversity across countries and boards, but never at the expense of the preference rules above.
 
 Return ONLY a JSON array (no markdown) of up to 10 objects, best match first:
 [{"title": "...", "company": "...", "location": "city", "country": "...", "source": "LinkedIn|Indeed|JobStreet|Randstad|Hays|Other", "url": "https://...", "description": "1-3 sentence summary of the role and key requirements", "matchScore": <0-100>, "matchReason": "1-2 sentences on why this fits the candidate"}]`,
@@ -248,6 +255,13 @@ Description / requirements: ${job.description || 'Not available — tailor based
 
 SOURCE CVs (choose the most relevant as the base, blend strengths from others):
 ${resumes.map((r) => `--- ${r.name} ---\n${r.text}`).join('\n\n')}
+
+CV CREATION RULES (mandatory):
+1. Follow the CV norms of ${job.country || 'the target country'} (e.g. length conventions, whether to include photo/date of birth — omit personal details where the norm is to exclude them).
+2. Keep the formatting simple: standard section headings, plain bullet points, no tables, columns, graphics, or icons.
+3. The document must be clean and ATS-friendly: conventional headings (Professional Summary, Work Experience, Skills, Education), standard date formats, keywords mirrored from the job description where truthful.
+4. Use simple, clear English — short sentences, active verbs, no jargon beyond what the job description itself uses.
+5. Optimize for getting shortlisted for THIS role: mirror the job's key requirements prominently in the summary and skills, and lead each role with the achievements most relevant to this job.
 
 Produce the complete tailored CV in clean Markdown (headings, bullet points), ready to copy into a document. Lead with a professional summary rewritten for this specific role, reorder core competencies to match the job's priorities, and emphasize the most relevant achievements in each role.`,
     }],

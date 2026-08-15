@@ -550,5 +550,3 @@ export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
   return httpServer;
 }
-
-const ADMIN_EMAIL = 'sanchit.neema@gmail.com';
