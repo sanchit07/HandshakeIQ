@@ -1295,9 +1295,15 @@ function getBoardConfigs(country: string): BoardConfig[] {
     {
       name: 'Randstad',
       domain: randstad,
-      urlHint: `a URL on ${randstad} that includes a job reference number or job slug — NOT the homepage or a /jobs category page`,
+      urlHint: `a URL on ${randstad} of the form /jobs/<title-slug>_<city>_<numeric-or-uuid-ref>/ — NOT a /jobs/<category>/ listing page or the homepage`,
       validDomains: [randstad],
-      // Randstad slugs vary widely; no reliable single path pattern — accept any valid-domain URL
+      // Randstad direct job ads across all active TLDs end with _<city>_<id>/ where <id> is either
+      // a 5+-digit numeric reference (MY, NZ, default) or a UUID (AU, CH, SE).
+      // Category/listing pages use paths like /jobs/s-<sector>/, /jobs/jt-<type>/,
+      // /jobs/our-current-vacancies/, /jobs/join-our-team/, etc. — none end with _<id>.
+      // Pattern is matched against pathname+search; (?:[?#].*)? allows tracking query params
+      // after the job slug without weakening listing-page rejection.
+      directUrlPatterns: [/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9]{5,})\/?(?:[?#].*)?$/i],
     },
     {
       name: 'Hays',

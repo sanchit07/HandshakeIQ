@@ -722,9 +722,11 @@ const LINKEDIN_BOARD: BoardConfig = {
 const RANDSTAD_BOARD: BoardConfig = {
   name: 'Randstad',
   domain: 'randstad.com.my',
-  urlHint: 'a URL on randstad.com.my that includes a job reference number or job slug',
+  urlHint: 'a URL on randstad.com.my of the form /jobs/<title-slug>_<city>_<numeric-or-uuid-ref>/',
   validDomains: ['randstad.com.my'],
-  // No directUrlPatterns — Randstad slugs vary; any path on the valid domain is accepted
+  // Real Randstad URL pattern: path ends with _<city>_<id>/ where id is numeric (MY, NZ) or UUID (AU, CH, SE)
+  // (?:[?#].*)? allows tracking query params without weakening listing-page rejection
+  directUrlPatterns: [/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9]{5,})\/?(?:[?#].*)?$/i],
 };
 
 // ── Indeed: /viewjob?jk= ──────────────────────────────────────────────────────
@@ -853,18 +855,180 @@ test('isDirectPostingUrl: LinkedIn homepage is rejected', () => {
   );
 });
 
-// ── Randstad: no path restriction ─────────────────────────────────────────────
+// ── Randstad: _<city>_<numeric-or-uuid-ref> ───────────────────────────────────
+//
+// Real Randstad direct-posting URLs observed across active TLDs:
+//   MY  /jobs/our-current-vacancies/<slug>_<city>_<numeric-ref>/   (e.g. _kuala-lumpur_47280800/)
+//   NZ  /jobs/join-our-team/<slug>_<city>_<numeric-ref>/           (e.g. _wellington_47245312/)
+//   AU  /jobs/<slug>_<city>_<uuid>/                                (e.g. _sydney_d95ff90a-d191-...-63cfd6393a27/)
+//   CH  /jobs/<slug>_<city>_<uuid>/                                (e.g. _schaffhausen_116bd636-.../)
+//   SE  /en/jobs/<slug>_<city>_<uuid>/                             (e.g. _motala_6bcc9649-.../)
+//   default (randstad.com) /jobs/<slug>_<city>_<numeric-ref>/      (e.g. _flussbach_47287033/)
+// Category/listing pages: /jobs/s-<sector>/, /jobs/jt-<type>/, /jobs/our-current-vacancies/ (bare), etc.
+// None of those end with _<city>_<id>, so anchoring the pattern to $ reliably rejects them.
 
-test('isDirectPostingUrl: Randstad any path is accepted (no directUrlPatterns defined)', () => {
-  // Randstad slug patterns vary by country — we don't enforce a path constraint
+test('isDirectPostingUrl: Randstad MY /jobs/our-current-vacancies/<slug>_<city>_<ref>/ is accepted', () => {
+  // Real shape observed on randstad.com.my
   assert.equal(
-    isDirectPostingUrl('https://randstad.com.my/jobs/product-manager-kuala-lumpur-ref123', RANDSTAD_BOARD),
+    isDirectPostingUrl(
+      'https://www.randstad.com.my/jobs/our-current-vacancies/senior-product-manager_kuala-lumpur_47280800/',
+      RANDSTAD_BOARD,
+    ),
+    true,
+    'MY direct posting with numeric ref must be accepted',
+  );
+});
+
+test('isDirectPostingUrl: Randstad AU /jobs/<slug>_<city>_<uuid>/ is accepted', () => {
+  // Real shape observed on randstad.com.au (UUID job ref)
+  const board: BoardConfig = { ...RANDSTAD_BOARD, domain: 'randstad.com.au', validDomains: ['randstad.com.au'] };
+  assert.equal(
+    isDirectPostingUrl(
+      'https://www.randstad.com.au/jobs/product-manager_sydney_d95ff90a-d191-4742-97a4-63cfd6393a27/',
+      board,
+    ),
+    true,
+    'AU direct posting with UUID ref must be accepted',
+  );
+});
+
+test('isDirectPostingUrl: Randstad NZ /jobs/join-our-team/<slug>_<city>_<ref>/ is accepted', () => {
+  // Real shape observed on randstad.co.nz
+  const board: BoardConfig = { ...RANDSTAD_BOARD, domain: 'randstad.co.nz', validDomains: ['randstad.co.nz'] };
+  assert.equal(
+    isDirectPostingUrl(
+      'https://www.randstad.co.nz/jobs/join-our-team/product-owner_auckland_47245312/',
+      board,
+    ),
+    true,
+    'NZ direct posting with numeric ref must be accepted',
+  );
+});
+
+test('isDirectPostingUrl: Randstad IE /jobs/our-current-vacancies/<slug>_<city>_<ref>/ is accepted', () => {
+  // IE uses same structure as MY/NZ (numeric ref)
+  const board: BoardConfig = { ...RANDSTAD_BOARD, domain: 'randstad.ie', validDomains: ['randstad.ie'] };
+  assert.equal(
+    isDirectPostingUrl(
+      'https://www.randstad.ie/jobs/our-current-vacancies/product-owner_dublin_47299876/',
+      board,
+    ),
     true,
   );
+});
+
+test('isDirectPostingUrl: Randstad CH /jobs/<slug>_<city>_<uuid>/ is accepted', () => {
+  // Real shape observed on randstad.ch (UUID job ref)
+  const board: BoardConfig = { ...RANDSTAD_BOARD, domain: 'randstad.ch', validDomains: ['randstad.ch'] };
   assert.equal(
-    isDirectPostingUrl('https://randstad.com.my/', RANDSTAD_BOARD),
+    isDirectPostingUrl(
+      'https://www.randstad.ch/jobs/senior-product-manager_zurich_116bd636-8798-43d8-8b21-29c0859f8f97/',
+      board,
+    ),
     true,
-    'Even homepage is accepted when no directUrlPatterns are set (hostname check is the guard)',
+    'CH direct posting with UUID ref must be accepted',
+  );
+});
+
+test('isDirectPostingUrl: Randstad SE /en/jobs/<slug>_<city>_<uuid>/ is accepted', () => {
+  // Real shape observed on randstad.se — Swedish site uses /en/jobs/ locale prefix
+  const board: BoardConfig = { ...RANDSTAD_BOARD, domain: 'randstad.se', validDomains: ['randstad.se'] };
+  assert.equal(
+    isDirectPostingUrl(
+      'https://www.randstad.se/en/jobs/product-manager_stockholm_6bcc9649-64f1-4e90-a436-7aa2d673659b/',
+      board,
+    ),
+    true,
+    'SE direct posting with UUID ref under /en/jobs/ must be accepted',
+  );
+});
+
+test('isDirectPostingUrl: Randstad PL /jobs/<slug>_<city>_<ref>/ is accepted', () => {
+  // PL assumed to follow same pattern as default randstad.com (numeric ref)
+  const board: BoardConfig = { ...RANDSTAD_BOARD, domain: 'randstad.pl', validDomains: ['randstad.pl'] };
+  assert.equal(
+    isDirectPostingUrl(
+      'https://www.randstad.pl/jobs/product-manager_warsaw_47301234/',
+      board,
+    ),
+    true,
+  );
+});
+
+test('isDirectPostingUrl: Randstad /jobs/s-<sector>/ listing page is rejected', () => {
+  // Sector listing pages — real observed pattern on all TLDs
+  assert.equal(
+    isDirectPostingUrl('https://www.randstad.com.my/jobs/s-accounting-finance/', RANDSTAD_BOARD),
+    false,
+    '/jobs/s-<sector>/ listing page must be rejected',
+  );
+});
+
+test('isDirectPostingUrl: Randstad /jobs/jt-<type>/ listing page is rejected', () => {
+  assert.equal(
+    isDirectPostingUrl('https://www.randstad.com.au/jobs/jt-permanent/', RANDSTAD_BOARD),
+    false,
+    '/jobs/jt-<type>/ listing page must be rejected',
+  );
+});
+
+test('isDirectPostingUrl: Randstad bare /jobs/our-current-vacancies/ listing is rejected', () => {
+  // The base sub-listing page (no job slug) must be rejected; only the full slug path is a direct ad
+  assert.equal(
+    isDirectPostingUrl('https://www.randstad.com.my/jobs/our-current-vacancies/', RANDSTAD_BOARD),
+    false,
+    'Bare /jobs/our-current-vacancies/ must be rejected',
+  );
+});
+
+test('isDirectPostingUrl: Randstad bare /jobs/join-our-team/ listing is rejected', () => {
+  assert.equal(
+    isDirectPostingUrl('https://www.randstad.co.nz/jobs/join-our-team/', RANDSTAD_BOARD),
+    false,
+    'Bare /jobs/join-our-team/ must be rejected',
+  );
+});
+
+test('isDirectPostingUrl: Randstad homepage is rejected', () => {
+  assert.equal(
+    isDirectPostingUrl('https://www.randstad.com.my/', RANDSTAD_BOARD),
+    false,
+    'Homepage must not be treated as a direct posting',
+  );
+});
+
+test('isDirectPostingUrl: Randstad bare /jobs/ listing is rejected', () => {
+  assert.equal(
+    isDirectPostingUrl('https://www.randstad.com.my/jobs/', RANDSTAD_BOARD),
+    false,
+    'Bare /jobs/ listing page must be rejected',
+  );
+});
+
+test('isDirectPostingUrl: Randstad default randstad.com /jobs/<slug>_<city>_<ref>/ is accepted', () => {
+  // Real shape observed on randstad.com (default fallback domain used when country has no TLD mapping)
+  // e.g. /jobs/fertigungsmitarbeiter-mwd_flussbach_47287033/ observed in the wild
+  const board: BoardConfig = { ...RANDSTAD_BOARD, domain: 'randstad.com', validDomains: ['randstad.com'] };
+  assert.equal(
+    isDirectPostingUrl(
+      'https://www.randstad.com/jobs/fertigungsmitarbeiter-mwd_flussbach_47287033/',
+      board,
+    ),
+    true,
+    'Default randstad.com direct posting with numeric ref must be accepted',
+  );
+});
+
+test('isDirectPostingUrl: Randstad direct posting URL with tracking query params is accepted', () => {
+  // Randstad URLs sometimes include tracking params; the slug+ref precedes them in the path,
+  // so the pattern must tolerate query strings without falsely rejecting real job ads.
+  assert.equal(
+    isDirectPostingUrl(
+      'https://www.randstad.com.my/jobs/our-current-vacancies/senior-product-manager_kuala-lumpur_47280800/?source=email&utm_medium=cpc',
+      RANDSTAD_BOARD,
+    ),
+    true,
+    'Direct posting URL with tracking query params must not be rejected',
   );
 });
 
