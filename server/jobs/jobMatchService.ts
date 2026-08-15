@@ -238,6 +238,11 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first:
   }
 }
 
+export async function getJobById(matchId: string): Promise<JobMatch | undefined> {
+  const [job] = await db.select().from(jobMatches).where(eq(jobMatches.id, matchId));
+  return job;
+}
+
 export async function getShortlist(runDate?: string): Promise<JobMatch[]> {
   const date = runDate || todayKL();
   return await db.select().from(jobMatches).where(eq(jobMatches.runDate, date)).orderBy(jobMatches.rank);

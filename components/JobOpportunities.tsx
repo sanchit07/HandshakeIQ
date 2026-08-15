@@ -102,14 +102,28 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
         }
     };
 
-    const downloadCv = (job: JobMatch) => {
-        if (!job.tailoredCv) return;
-        const blob = new Blob([job.tailoredCv], { type: 'text/markdown' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `Sanchit_Neema_CV_${job.company.replace(/[^a-z0-9]/gi, '_')}_${job.title.replace(/[^a-z0-9]/gi, '_')}.md`;
-        a.click();
-        URL.revokeObjectURL(a.href);
+    const [pdfLoading, setPdfLoading] = useState(false);
+
+    const downloadCvPdf = async (job: JobMatch) => {
+        if (!job.tailoredCv || pdfLoading) return;
+        setPdfLoading(true);
+        try {
+            const res = await fetch(`/api/jobs/${job.id}/cv.pdf`);
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.message || 'PDF generation failed');
+            }
+            const blob = await res.blob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `CV_${job.company.replace(/[^a-z0-9]/gi, '_')}_${job.title.replace(/[^a-z0-9]/gi, '_')}.pdf`;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        } catch (e: any) {
+            setError(e.message || 'PDF download failed');
+        } finally {
+            setPdfLoading(false);
+        }
     };
 
     if (viewingCv) {
@@ -120,8 +134,8 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                         <BackIcon />
                         <span className="font-bold font-exo">Back to Shortlist</span>
                     </button>
-                    <button onClick={() => downloadCv(viewingCv)} className="px-4 py-2 text-sm font-bold text-slate-900 bg-cyan-600 hover:bg-cyan-500 rounded-lg transition-colors btn-glow font-exo">
-                        Download CV
+                    <button onClick={() => downloadCvPdf(viewingCv)} disabled={pdfLoading} className="px-4 py-2 text-sm font-bold text-slate-900 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-60 disabled:cursor-not-allowed rounded-lg transition-colors btn-glow font-exo">
+                        {pdfLoading ? 'Generating PDF…' : 'Download PDF'}
                     </button>
                 </div>
                 <h2 className="font-exo text-xl text-white mb-1">Tailored CV — {viewingCv.title}</h2>

@@ -161,6 +161,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get('/api/jobs/:id/cv.pdf', requireAdmin, async (req: any, res) => {
+    try {
+      const { getJobById } = await import('./jobs/jobMatchService');
+      const job = await getJobById(req.params.id);
+      if (!job) return res.status(404).json({ message: 'Job not found' });
+      if (!job.tailoredCv) return res.status(404).json({ message: 'No tailored CV exists for this job yet. Generate one first.' });
+
+      const { generateCvPdf } = await import('./jobs/cvPdfGenerator');
+      const pdfBuffer = await generateCvPdf(job.tailoredCv, job.title, job.company);
+
+      const safeName = `CV_${job.company.replace(/[^a-z0-9]/gi, '_')}_${job.title.replace(/[^a-z0-9]/gi, '_')}.pdf`;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+      res.setHeader('Content-Length', pdfBuffer.length);
+      res.send(pdfBuffer);
+    } catch (error: any) {
+      console.error('[JOBS] PDF generation failed:', error);
+      res.status(500).json({ message: error?.message || 'PDF generation failed' });
+    }
+  });
+
   // Change own password (requires login; verifies current password)
   app.post('/api/auth/change-password', authRateLimit, attachSessionIfPresent, async (req: any, res) => {
     try {
