@@ -7,7 +7,7 @@ import http from 'node:http';
 import fs from 'fs';
 import path from 'path';
 import { db } from '../db';
-import { jobMatches, type JobMatch } from '../../shared/schema.js';
+import { jobMatches, jobQuestions, type JobMatch, type JobQuestion } from '../../shared/schema.js';
 import { eq, desc, sql } from 'drizzle-orm';
 
 const MODEL = 'claude-sonnet-4-5';
@@ -29,6 +29,7 @@ export function countryForToday(): string {
   return COUNTRY_BY_DAY[idx >= 0 ? idx : 0];
 }
 
+const MIN_DAILY_JOBS = 10;        // minimum live, real opportunities per day
 const COMPANY_COOLDOWN_DAYS = 28; // skip companies shortlisted in the last 4 weeks
 const VACANCY_DEDUP_DAYS = 90;    // never re-shortlist the same vacancy
 
@@ -45,7 +46,9 @@ const EXAMPLE_ROLES = [
 function getClient(): Anthropic {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured.');
-  return new Anthropic({ apiKey });
+  // Explicit timeout + limited retries so a stuck/rate-limited call can never
+  // hang the daily pipeline indefinitely (SDK default is 10 min × retries).
+  return new Anthropic({ apiKey, timeout: 5 * 60 * 1000, maxRetries: 1 });
 }
 
 const RESUME_DIR = path.join(process.cwd(), 'server', 'jobs', 'resumes');
@@ -146,28 +149,32 @@ export async function checkUrlLive(url: string | null | undefined): Promise<bool
     return true; // unparseable — keep
   }
 
-  // Domain allowlist: skip probe entirely for non-allowlisted hostnames
-  if (!isAllowedJobBoardDomain(parsedUrl.hostname)) {
-    console.log(`[LIVENESS] Skipping probe (non-allowlisted domain): ${parsedUrl.hostname}`);
-    return true;
-  }
+  // All public hostnames are probed (SSRF-safe lookup blocks private IPs at
+  // connection time). Non-allowlisted domains used to be skipped, which let
+  // dead career-page/regional-board postings through unverified.
 
-  // Single AbortController — shared across HEAD + fallback GET (10 s combined budget)
-  const TIMEOUT_MS = 10_000;
+  // Single AbortController shared across the probe (12 s budget)
+  const TIMEOUT_MS = 12_000;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    let status = await httpRequest(parsedUrl, 'HEAD', controller.signal);
+    // GET with body capture: many boards (LinkedIn included) return HTTP 200
+    // for expired jobs — only the page text reveals it's closed.
+    const { status, body } = await httpGetWithBody(parsedUrl, controller.signal);
 
-    // Some servers reject HEAD — retry with GET using the same signal (shared budget)
-    if (status === 405 || status === 501) {
-      status = await httpRequest(parsedUrl, 'GET', controller.signal);
+    if (status === 404 || status === 410) {
+      console.log(`[LIVENESS] DEAD (${status}): ${url}`);
+      return false;
     }
-
-    const dead = status === 404 || status === 410;
-    if (dead) console.log(`[LIVENESS] DEAD (${status}): ${url}`);
-    return !dead;
+    if (status >= 200 && status < 300 && body) {
+      const marker = findClosedMarker(body);
+      if (marker) {
+        console.log(`[LIVENESS] DEAD (closed marker "${marker}"): ${url}`);
+        return false;
+      }
+    }
+    return true;
   } catch (err: any) {
     if (err?.message?.startsWith('SSRF blocked')) {
       console.log(`[LIVENESS] ${err.message}`);
@@ -239,9 +246,12 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
     const boardConfigs = getBoardConfigs(country);
     console.log(`[JOB SEARCH] Searching ${boardConfigs.length} boards in parallel: ${boardConfigs.map((b) => b.name).join(', ')}`);
 
-    const boardResultSets = await Promise.all(
-      boardConfigs.map((board) => searchSingleBoard(client, board, country, roles, recentCompanies)),
-    );
+    // Sequential board search — parallel web-search calls trip Anthropic rate
+    // limits and stall the whole run in silent SDK retries.
+    const boardResultSets: Awaited<ReturnType<typeof searchSingleBoard>>[] = [];
+    for (const board of boardConfigs) {
+      boardResultSets.push(await searchSingleBoard(client, board, country, roles, recentCompanies));
+    }
 
     // Log per-board yield and build structured finding pool
     interface BoardFinding {
@@ -256,7 +266,11 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
       allFindings.push(...results);
     });
 
-    if (allFindings.length === 0) throw new Error('No job postings found across any board');
+    let rows: any[] = [];
+    if (allFindings.length === 0) {
+      // Fallback: boards yielded nothing — Phase 5 supplemental search will backfill
+      console.warn('[JOB SEARCH] No direct postings from any board — falling back to supplemental search');
+    } else {
 
     // Format findings for Phase 3 ranking
     const findingsText = boardConfigs.map((board, i) => {
@@ -311,14 +325,25 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Se
       source: deriveSourceFromUrl(typeof j.url === 'string' ? j.url : null, boardConfigs),
     }));
 
-    // Hard dedup enforcement (in case the model ignores exclusion rules)
+    // Hard dedup enforcement (in case the model ignores exclusion rules),
+    // including same-batch dedup by URL and company, plus a generic
+    // listing-page guard for boards without direct URL patterns.
+    const batchUrls = new Set<string>();
+    const batchCompanies = new Set<string>();
     const dedupedCandidates = rankedWithSource
       .filter((j: any) => j && typeof j.title === 'string' && typeof j.company === 'string')
       .filter((j: any) => {
         const url = typeof j.url === 'string' ? j.url.toLowerCase() : '';
-        if (url && pastUrls.has(url)) return false;
+        const companyKey = String(j.company).toLowerCase();
+        if (url && (pastUrls.has(url) || batchUrls.has(url))) return false;
         if (pastTitleCompany.has(`${j.title}::${j.company}`.toLowerCase())) return false;
-        if (cooldownCompanies.has(String(j.company).toLowerCase())) return false;
+        if (cooldownCompanies.has(companyKey) || batchCompanies.has(companyKey)) return false;
+        if (url && looksLikeListingPage(url)) {
+          console.log(`[JOB SEARCH] Rejected listing/search-page URL from ranked results: ${j.url}`);
+          return false;
+        }
+        if (url) batchUrls.add(url);
+        batchCompanies.add(companyKey);
         return true;
       });
 
@@ -326,46 +351,323 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Se
     console.log(`[JOB SEARCH] Liveness-checking ${dedupedCandidates.length} candidate URLs…`);
     const liveJobs = await filterLiveJobs(dedupedCandidates);
     console.log(`[JOB SEARCH] ${liveJobs.length} of ${dedupedCandidates.length} jobs passed liveness check`);
-    if (liveJobs.length === 0) throw new Error('All shortlisted jobs failed liveness check');
+    if (liveJobs.length === 0) {
+      console.warn('[JOB SEARCH] All board jobs failed liveness check — relying on supplemental rounds');
+    } else {
+      // Board-slot enforcement: every board that yielded ≥1 finding must appear in the final list.
+      const boardsWithFindings = boardConfigs.filter((_, i) => boardResultSets[i].length > 0).map((b) => b.name);
+      const dedupedRows = await enforceSlotCoverage(
+        liveJobs,
+        boardsWithFindings,
+        findingsByBoard,
+        pastUrls,
+        pastTitleCompany,
+        cooldownCompanies,
+      );
 
-    // Board-slot enforcement: every board that yielded ≥1 finding must appear in the final list.
-    const boardsWithFindings = boardConfigs.filter((_, i) => boardResultSets[i].length > 0).map((b) => b.name);
-    const dedupedRows = await enforceSlotCoverage(
-      liveJobs,
-      boardsWithFindings,
-      findingsByBoard,
-      pastUrls,
-      pastTitleCompany,
-      cooldownCompanies,
-    );
+      rows = dedupedRows.map((j: any, i: number) => ({
+        runDate,
+        rank: i + 1,
+        title: String(j.title).slice(0, 250),
+        company: String(j.company).slice(0, 250),
+        location: j.location ? String(j.location).slice(0, 250) : null,
+        country: j.country ? String(j.country).slice(0, 100) : country,
+        source: j.source ? String(j.source).slice(0, 100) : null,
+        url: typeof j.url === 'string' && /^https?:\/\//.test(j.url) ? j.url : null,
+        description: j.description ? String(j.description) : null,
+        matchScore: Number.isFinite(Number(j.matchScore)) ? Math.max(0, Math.min(100, Math.round(Number(j.matchScore)))) : null,
+        matchReason: j.matchReason ? String(j.matchReason) : null,
+      }));
+    }
+    } // end of board-findings branch
 
-    const rows = dedupedRows.map((j: any, i: number) => ({
-      runDate,
-      rank: i + 1,
-      title: String(j.title).slice(0, 250),
-      company: String(j.company).slice(0, 250),
-      location: j.location ? String(j.location).slice(0, 250) : null,
-      country: j.country ? String(j.country).slice(0, 100) : country,
-      source: j.source ? String(j.source).slice(0, 100) : null,
-      url: typeof j.url === 'string' && /^https?:\/\//.test(j.url) ? j.url : null,
-      description: j.description ? String(j.description) : null,
-      matchScore: Number.isFinite(Number(j.matchScore)) ? Math.max(0, Math.min(100, Math.round(Number(j.matchScore)))) : null,
-      matchReason: j.matchReason ? String(j.matchReason) : null,
-    }));
+    // Phase 5 (fallback rounds): if fewer than MIN_DAILY_JOBS live opportunities,
+    // run supplemental search rounds to backfill — the show must go on.
+    let finalRows = rows;
+    let round = 0;
+    while (finalRows.length < MIN_DAILY_JOBS && round < 3) {
+      round++;
+      console.log(`[JOB SEARCH] Only ${finalRows.length}/${MIN_DAILY_JOBS} live jobs — supplemental round ${round}`);
+      try {
+        const excludeCompanies = [
+          ...recentCompanies,
+          ...finalRows.map((r) => r.company),
+        ];
+        const extra = await supplementalSearch(client, country, roles, profile, excludeCompanies, MIN_DAILY_JOBS - finalRows.length, boardConfigs);
+        const seenCompanies = new Set(finalRows.map((r) => r.company.toLowerCase()));
+        const seenUrls = new Set(finalRows.map((r) => (r.url || '').toLowerCase()).filter(Boolean));
+        const extraDeduped = extra.filter((j: any) => {
+          const url = typeof j.url === 'string' ? j.url.toLowerCase() : '';
+          const companyKey = String(j.company).toLowerCase();
+          if (url && (pastUrls.has(url) || seenUrls.has(url))) return false;
+          if (pastTitleCompany.has(`${j.title}::${j.company}`.toLowerCase())) return false;
+          if (cooldownCompanies.has(companyKey)) return false;
+          if (seenCompanies.has(companyKey)) return false; // includes same-batch dedup
+          seenCompanies.add(companyKey);
+          if (url) seenUrls.add(url);
+          return true;
+        });
+        const extraLive = await filterLiveJobs(extraDeduped);
+        console.log(`[JOB SEARCH] Supplemental round ${round}: ${extraLive.length} additional live jobs`);
+        finalRows = [
+          ...finalRows,
+          ...extraLive.map((j: any, i: number) => ({
+            runDate,
+            rank: finalRows.length + i + 1,
+            title: String(j.title).slice(0, 250),
+            company: String(j.company).slice(0, 250),
+            location: j.location ? String(j.location).slice(0, 250) : null,
+            country: j.country ? String(j.country).slice(0, 100) : country,
+            source: deriveSourceFromUrl(typeof j.url === 'string' ? j.url : null, boardConfigs),
+            url: typeof j.url === 'string' && /^https?:\/\//.test(j.url) ? j.url : null,
+            description: j.description ? String(j.description) : null,
+            matchScore: Number.isFinite(Number(j.matchScore)) ? Math.max(0, Math.min(100, Math.round(Number(j.matchScore)))) : null,
+            matchReason: j.matchReason ? String(j.matchReason) : null,
+          })),
+        ].slice(0, Math.max(MIN_DAILY_JOBS, 10));
+      } catch (e) {
+        console.error(`[JOB SEARCH] Supplemental round ${round} failed (continuing):`, e);
+      }
+    }
+    if (finalRows.length < MIN_DAILY_JOBS) {
+      console.warn(`[JOB SEARCH] Could not reach ${MIN_DAILY_JOBS} live jobs after ${round} extra rounds — saving ${finalRows.length}`);
+    }
+
+    if (finalRows.length === 0) {
+      console.error(`[JOB SEARCH] No live jobs found at all for ${runDate} — keeping any existing shortlist`);
+      return { runDate, count: 0 };
+    }
 
     // Atomic replace: never leave the day empty if the insert fails
     await db.transaction(async (tx) => {
       if (force) {
         await tx.delete(jobMatches).where(eq(jobMatches.runDate, runDate));
       }
-      await tx.insert(jobMatches).values(rows);
+      await tx.insert(jobMatches).values(finalRows);
     });
 
-    console.log(`[JOB SEARCH] Saved ${rows.length} shortlisted jobs for ${runDate}`);
-    return { runDate, count: rows.length };
+    console.log(`[JOB SEARCH] Saved ${finalRows.length} shortlisted jobs for ${runDate}`);
+
+    // Phase 6: auto-generate a tailored CV for every shortlisted opportunity,
+    // one by one, with retry + status tracking. A failure never stops the run.
+    await autoGenerateCvsForDate(runDate);
+
+    return { runDate, count: finalRows.length };
   } finally {
     await db.execute(sql`SELECT pg_advisory_unlock(${RUN_LOCK_KEY})`).catch(() => {});
   }
+}
+
+// Country-specific regional job sources fed to supplemental discovery.
+const REGIONAL_SOURCES: Record<string, string[]> = {
+  Malaysia:      ['hiredly.com', 'foundit.my', 'maukerja.my', 'jobstore.com'],
+  Australia:     ['seek.com.au', 'careerone.com.au', 'workforceaustralia.gov.au'],
+  'New Zealand': ['seek.co.nz', 'trademe.co.nz'],
+  Ireland:       ['irishjobs.ie', 'jobs.ie', 'recruitireland.com'],
+  Switzerland:   ['jobs.ch', 'jobup.ch', 'jobscout24.ch'],
+  Sweden:        ['arbetsformedlingen.se', 'thehub.io', 'jobbsafari.se'],
+  Poland:        ['pracuj.pl', 'justjoin.it', 'nofluffjobs.com', 'rocketjobs.pl', 'bulldogjob.pl'],
+};
+
+/**
+ * Google Custom Search discovery: finds candidate job-ad URLs on regional
+ * boards and company career pages. Returns raw hint URLs (title + link) that
+ * the supplemental Claude round verifies and structures. Fails soft.
+ */
+async function googleDiscoverJobUrls(country: string, roles: string[]): Promise<Array<{ title: string; url: string }>> {
+  const key = process.env.GOOGLE_SEARCH_API_KEY;
+  const cx = process.env.GOOGLE_SEARCH_ENGINE_ID;
+  if (!key || !cx) return [];
+  const regional = REGIONAL_SOURCES[country] || [];
+  const roleQ = roles.slice(0, 2).join(' OR ');
+  const queries = [
+    ...regional.slice(0, 3).map((d) => `${roleQ} site:${d}`),
+    `${roleQ} ${country} careers apply`,
+  ];
+  const found: Array<{ title: string; url: string }> = [];
+  for (const q of queries) {
+    try {
+      const params = new URLSearchParams({ key, cx, q, num: '10', dateRestrict: 'd21' });
+      const res = await fetch(`https://www.googleapis.com/customsearch/v1?${params}`);
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        const reason = errBody.match(/"message":\s*"([^"]+)"/)?.[1] || res.status;
+        console.warn(`[JOB SEARCH] Google discovery failed (${reason}) for: ${q}`);
+        if (String(reason).toLowerCase().includes('key')) break; // key problem — stop trying
+        continue;
+      }
+      const data: any = await res.json();
+      for (const item of data.items || []) {
+        if (typeof item.link === 'string' && /^https?:\/\//.test(item.link) && !looksLikeListingPage(item.link)) {
+          found.push({ title: String(item.title || '').slice(0, 200), url: item.link });
+        }
+      }
+    } catch (e) {
+      console.warn('[JOB SEARCH] Google discovery error (continuing):', e);
+    }
+  }
+  const seen = new Set<string>();
+  const deduped = found.filter((f) => { const k = f.url.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+  console.log(`[JOB SEARCH] Google discovery: ${deduped.length} candidate URL(s) from regional sources`);
+  return deduped;
+}
+
+// Supplemental search round used when the day's live-job count is below minimum
+async function supplementalSearch(
+  client: Anthropic,
+  country: string,
+  roles: string[],
+  profile: string,
+  excludeCompanies: string[],
+  needed: number,
+  boardConfigs: BoardConfig[],
+): Promise<any[]> {
+  const regional = REGIONAL_SOURCES[country] || [];
+  const googleHints = await googleDiscoverJobUrls(country, roles);
+  const response = await client.messages.create({
+    model: MODEL,
+    max_tokens: 8192,
+    messages: [{
+      role: 'user',
+      content: `Find ${needed + 3} MORE currently open job vacancies in ${country} for these roles: ${roles.join(', ')}.
+Search broadly — company career pages, greenhouse/lever/workday ATS pages, major job boards, AND these regional ${country} job boards: ${regional.join(', ') || 'any local boards you know'}. Every result MUST be a direct URL to an individual live job ad (never a search page or careers homepage).
+${googleHints.length ? `\nCANDIDATE URLS discovered via Google (verify each is live, a direct job ad, and a good match before including — extract the real company name):\n${googleHints.slice(0, 20).map((h) => `- ${h.title}: ${h.url}`).join('\n')}\n` : ''}
+Do NOT include these companies: ${excludeCompanies.slice(0, 80).join(', ')}.
+Prefer English-language roles and companies open to international candidates.
+The candidate: ${profile.slice(0, 2000)}
+Return ONLY a JSON array: [{"title","company","location","country","url","description","matchScore":<0-100>,"matchReason"}]`,
+    }],
+    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 10 } as any],
+  });
+  const text = extractText(response);
+  let parsed: any = null;
+  try {
+    parsed = parseJsonLoose(text);
+  } catch {
+    // Claude sometimes answers in prose. Recovery pass: ask it (without web
+    // search) to convert its own findings into the required JSON array.
+    console.warn(`[JOB SEARCH] Supplemental: response not parseable (${text.length} chars) — running JSON recovery pass`);
+    console.warn(`[JOB SEARCH] Supplemental raw response preview: ${text.slice(0, 500).replace(/\n/g, ' | ')}`);
+    try {
+      const fixResponse = await client.messages.create({
+        model: MODEL,
+        max_tokens: 4096,
+        messages: [{
+          role: 'user',
+          content: `Convert the following job-search findings into ONLY a JSON array of the form [{"title","company","location","country","url","description","matchScore":<0-100>,"matchReason"}]. Include only entries that have a direct job-ad URL. If there are none, return [].\n\nFINDINGS:\n${text.slice(0, 6000)}`,
+        }],
+      });
+      parsed = parseJsonLoose(extractText(fixResponse));
+    } catch (e2) {
+      console.error('[JOB SEARCH] Supplemental: JSON recovery pass also failed:', e2);
+      return [];
+    }
+  }
+  if (!Array.isArray(parsed)) {
+    console.warn(`[JOB SEARCH] Supplemental: response was not a JSON array (${String(text).slice(0, 120)}...)`);
+    return [];
+  }
+  console.log(`[JOB SEARCH] Supplemental: ${parsed.length} raw result(s) from search`);
+  return parsed
+    .filter((j: any) => j && typeof j.title === 'string' && typeof j.company === 'string')
+    .filter((j: any) => {
+      // Reject placeholder/unknown company names — a real opportunity always has one
+      if (/not specified|unknown|n\/a|unspecified|confidential compan/i.test(j.company)) {
+        console.log(`[JOB SEARCH] Supplemental: rejected result with placeholder company: "${j.company}"`);
+        return false;
+      }
+      if (typeof j.url !== 'string' || !/^https?:\/\//.test(j.url)) return false;
+      if (looksLikeListingPage(j.url)) {
+        console.log(`[JOB SEARCH] Supplemental: rejected listing/search-page URL: ${j.url}`);
+        return false;
+      }
+      return true;
+    });
+}
+
+/**
+ * Generic heuristic for search/category/listing pages that are not a direct
+ * link to one specific job ad (used for supplemental results where no
+ * board-specific URL pattern applies). Exported for unit tests.
+ */
+export function looksLikeListingPage(url: string): boolean {
+  try {
+    const u = new URL(url);
+    const path = (u.pathname + u.search).toLowerCase();
+    if (path === '/' || path === '') return true;
+    const markers = ['/search', 'refreshfacet', '/q-', 'jobs?q=', '?q=', '&q=', '/jobs/in-', '-jobs.html'];
+    if (markers.some((m) => path.includes(m))) return true;
+    // Category pages like /head-of-product-jobs or /Jobs/Company-x-Jobs-EI_IE...
+    if (/-jobs\/?$/.test(u.pathname.toLowerCase())) return true;
+    if (/\/jobs\/?$/.test(u.pathname.toLowerCase())) return true;
+    if (/\/careers\/?$/.test(u.pathname.toLowerCase())) return true;
+    if (u.hostname.includes('glassdoor') && u.pathname.startsWith('/Jobs/')) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+// Generate CVs for every job of the day that doesn't have one yet.
+// Each job gets up to MAX_CV_ATTEMPTS attempts; failures set status and the loop moves on.
+export async function autoGenerateCvsForDate(runDate: string): Promise<{ generated: number; failed: number }> {
+  const MAX_CV_ATTEMPTS = 2;
+  const jobs = await db.select().from(jobMatches)
+    .where(sql`${jobMatches.runDate} = ${runDate} AND ${jobMatches.tailoredCv} IS NULL`)
+    .orderBy(jobMatches.rank);
+  let generated = 0, failed = 0;
+  for (const job of jobs) {
+    let done = false;
+    for (let attempt = 1; attempt <= MAX_CV_ATTEMPTS && !done; attempt++) {
+      try {
+        await tailorCvForJob(job.id);
+        await db.update(jobMatches).set({ status: 'cv_ready' }).where(eq(jobMatches.id, job.id));
+        console.log(`[CV AUTO] rank ${job.rank} (${job.company}): CV generated (attempt ${attempt})`);
+        generated++;
+        done = true;
+      } catch (e) {
+        console.error(`[CV AUTO] rank ${job.rank} (${job.company}): attempt ${attempt} failed:`, e);
+        if (attempt === MAX_CV_ATTEMPTS) {
+          await db.update(jobMatches).set({ status: 'cv_failed' }).where(eq(jobMatches.id, job.id)).catch(() => {});
+          failed++;
+        }
+      }
+    }
+  }
+  console.log(`[CV AUTO] Done for ${runDate}: ${generated} generated, ${failed} failed`);
+  return { generated, failed };
+}
+
+// Clears a stored CV so tailorCvForJob regenerates it (used with answered questions)
+export async function clearTailoredCv(matchId: string): Promise<void> {
+  await db.update(jobMatches)
+    .set({ tailoredCv: null, cvVariant: null, status: 'shortlisted' })
+    .where(eq(jobMatches.id, matchId));
+}
+
+// ===== Admin Q&A / learning system =====
+
+export async function getQuestionsForJob(jobMatchId: string): Promise<JobQuestion[]> {
+  return await db.select().from(jobQuestions).where(eq(jobQuestions.jobMatchId, jobMatchId)).orderBy(jobQuestions.createdAt);
+}
+
+export async function answerQuestion(questionId: string, answer: string): Promise<JobQuestion> {
+  const [updated] = await db.update(jobQuestions)
+    .set({ answer, answeredAt: new Date() })
+    .where(eq(jobQuestions.id, questionId))
+    .returning();
+  if (!updated) throw new Error('Question not found');
+  return updated;
+}
+
+// Answered questions become durable learnings injected into future CV prompts
+async function getLearnings(): Promise<string> {
+  const answered = await db.select().from(jobQuestions)
+    .where(sql`${jobQuestions.answer} IS NOT NULL`)
+    .orderBy(desc(jobQuestions.answeredAt))
+    .limit(40);
+  if (answered.length === 0) return '';
+  return answered.map((q) => `Q: ${q.question}\nA: ${q.answer}`).join('\n\n');
 }
 
 export async function getJobById(matchId: string): Promise<JobMatch | undefined> {
@@ -404,6 +706,7 @@ async function doTailorCv(matchId: string): Promise<JobMatch> {
 
   const client = getClient();
   const resumes = loadResumes();
+  const learnings = await getLearnings();
 
   const response = await client.messages.create({
     model: MODEL,
@@ -433,7 +736,11 @@ CV CREATION RULES (mandatory):
 
 Produce the complete tailored CV in clean Markdown (headings, bullet points), ready to copy into a document. Lead with a professional summary rewritten for this specific role, reorder core competencies to match the job's priorities, and emphasize the most relevant achievements in each role.
 
-The VERY FIRST line of your response must be exactly: "BASE CV: <name of the source CV you used as the base>" followed by a blank line, then the CV itself (do not include any other commentary).`,
+${learnings ? `KNOWLEDGE FROM PREVIOUS ADMIN ANSWERS (use these instead of asking again):\n${learnings}\n` : ''}
+QUESTIONS POLICY: Work autonomously. If information is missing, first try to find it yourself via web search. Only if something truly requires the admin's personal input (e.g. salary expectations, willingness to relocate to a specific city, a certification you cannot verify) AND it is not answered in the knowledge above, you may ask. Most CVs should need ZERO questions.
+
+The VERY FIRST line of your response must be exactly: "BASE CV: <name of the source CV you used as the base>" followed by a blank line, then the CV itself.
+If (and only if) admin input is truly required, append at the VERY END a line "ADMIN QUESTIONS:" followed by a JSON array of question strings (max 3). Otherwise do not include that section.`,
     }],
   });
 
@@ -448,7 +755,23 @@ The VERY FIRST line of your response must be exactly: "BASE CV: <name of the sou
     tailoredCv = tailoredCv.replace(/^\s*BASE CV:.*\n+/, '');
   }
 
-  await db.update(jobMatches).set({ tailoredCv, cvVariant }).where(eq(jobMatches.id, matchId));
+  // Extract optional admin questions block, store questions, strip from CV
+  const qMatch = tailoredCv.match(/\n?ADMIN QUESTIONS:\s*(\[[\s\S]*?\])\s*$/);
+  if (qMatch) {
+    tailoredCv = tailoredCv.replace(/\n?ADMIN QUESTIONS:[\s\S]*$/, '').trimEnd();
+    try {
+      const qs = JSON.parse(qMatch[1]);
+      if (Array.isArray(qs)) {
+        const values = qs.filter((q: any) => typeof q === 'string' && q.trim()).slice(0, 3)
+          .map((q: string) => ({ jobMatchId: matchId, question: q.trim().slice(0, 1000) }));
+        if (values.length) await db.insert(jobQuestions).values(values);
+      }
+    } catch (e) {
+      console.error('[CV] Failed to parse admin questions block:', e);
+    }
+  }
+
+  await db.update(jobMatches).set({ tailoredCv, cvVariant, status: 'cv_ready' }).where(eq(jobMatches.id, matchId));
   return { ...job, tailoredCv, cvVariant };
 }
 
@@ -626,7 +949,14 @@ export async function ssrfSafeLookup(
       }
     }
 
-    // All candidates are public — use the first for the connection
+    // All candidates are public — use the first for the connection.
+    // Honor the `all` option (some agents request every address): passing a
+    // plain string when `all` is set makes Node fail with "Invalid IP address:
+    // undefined", which used to force-keep unverifiable URLs.
+    if ((_opts as any)?.all) {
+      (callback as any)(null, candidates.map((c) => ({ address: c.address, family: c.family })));
+      return;
+    }
     const { address, family } = candidates[0];
     callback(null, address, family);
   } catch (err: any) {
@@ -639,6 +969,112 @@ export async function ssrfSafeLookup(
  * lookup function. Returns the HTTP status code (0 on connection failure).
  * Redirects are NOT followed — a 3xx status counts as "live".
  */
+/**
+ * Multi-language markers indicating a job posting is closed/expired even when
+ * the page still returns HTTP 200. Exported for unit tests.
+ */
+export const CLOSED_JOB_MARKERS: string[] = [
+  // English
+  'no longer accepting applications',
+  'this job has expired',
+  'job has expired',
+  'this position has been filled',
+  'position has been filled',
+  'this job is no longer available',
+  'job is no longer available',
+  'posting has expired',
+  'this vacancy has closed',
+  'vacancy has closed',
+  'applications for this job are closed',
+  'this job posting has been closed',
+  'job posting is no longer active',
+  'this job ad has expired',
+  'sorry, this job is no longer open',
+  'no longer active',
+  // Polish
+  'oferta wygasła',
+  'ogłoszenie wygasło',
+  'nie przyjmuje już zgłoszeń',
+  'oferta pracy jest nieaktualna',
+  // Swedish
+  'annonsen har utgått',
+  'ansökningstiden har gått ut',
+  'tjänsten är tillsatt',
+  // German (Switzerland)
+  'stelle wurde bereits besetzt',
+  'stellenangebot ist nicht mehr verfügbar',
+  'diese stelle ist nicht mehr verfügbar',
+  // French (Switzerland/Ireland)
+  'cette offre a expiré',
+  "offre n'est plus disponible",
+];
+
+/** Returns the first closed-job marker found in the page text, or null. Exported for unit tests. */
+export function findClosedMarker(html: string): string | null {
+  // Strip tags/scripts and collapse whitespace so markers split across inline tags still match
+  const text = html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+  for (const marker of CLOSED_JOB_MARKERS) {
+    if (text.includes(marker)) return marker;
+  }
+  return null;
+}
+
+/** GET request that captures up to 400 KB of the response body (SSRF-safe). */
+function httpGetWithBody(parsedUrl: URL, signal: AbortSignal): Promise<{ status: number; body: string }> {
+  const MAX_BODY = 400 * 1024;
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(new Error('AbortError')); return; }
+    const isHttps = parsedUrl.protocol === 'https:';
+    const mod = isHttps ? https : http;
+    const req = mod.request(
+      {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (isHttps ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en',
+        },
+        lookup: (h: string, o: LookupOptions, cb: any) => { ssrfSafeLookup(h, o, cb); },
+      },
+      (res) => {
+        let size = 0;
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => {
+          size += chunk.length;
+          chunks.push(chunk);
+          if (size >= MAX_BODY) res.destroy(); // enough to detect closed markers
+        });
+        const finish = () => {
+          signal.removeEventListener('abort', onAbort);
+          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') });
+        };
+        res.on('end', finish);
+        res.on('close', finish);
+        res.on('error', finish); // destroyed after cap — use what we have
+      },
+    );
+    function onAbort() {
+      req.destroy(new Error('AbortError'));
+      reject(new Error('AbortError'));
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    req.on('error', (err) => {
+      signal.removeEventListener('abort', onAbort);
+      reject(err);
+    });
+    req.end();
+  });
+}
+
 function httpRequest(parsedUrl: URL, method: string, signal: AbortSignal): Promise<number> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) { reject(new Error('AbortError')); return; }
@@ -866,10 +1302,10 @@ function getBoardConfigs(country: string): BoardConfig[] {
     {
       name: 'Hays',
       domain: hays,
-      urlHint: `a URL on ${hays} that contains /job/ followed by a job reference or title slug`,
+      urlHint: `a URL on ${hays} that contains /job/ or /job-detail/ followed by a job reference or title slug`,
       validDomains: [hays],
-      // Hays direct job ads always include /job/ in the path
-      directUrlPatterns: [/\/job\//],
+      // Hays direct job ads use /job/ or /job-detail/<slug>_<ref-number>
+      directUrlPatterns: [/\/job\//, /\/job-detail\//],
     },
   ];
   // JobStreet is only active in Malaysia (jobstreet.com.my).

@@ -101,6 +101,7 @@ export const jobMatches = pgTable("job_matches", {
   matchReason: text("match_reason"),
   tailoredCv: text("tailored_cv"), // generated on demand
   cvVariant: varchar("cv_variant"), // which base CV was used for tailoring (role→CV mapping)
+  status: varchar("status").notNull().default("shortlisted"), // shortlisted | cv_ready | cv_failed
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [
   index("idx_job_matches_run_date").on(table.runDate),
@@ -109,6 +110,22 @@ export const jobMatches = pgTable("job_matches", {
 
 export type JobMatch = typeof jobMatches.$inferSelect;
 export type UpsertJobMatch = typeof jobMatches.$inferInsert;
+
+// Questions the AI needs the admin to answer for a specific opportunity.
+// Answered questions become "learnings" injected into future prompts so
+// the number of questions trends toward zero over time.
+export const jobQuestions = pgTable("job_questions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobMatchId: varchar("job_match_id").notNull().references(() => jobMatches.id, { onDelete: "cascade" }),
+  question: text("question").notNull(),
+  answer: text("answer"),
+  createdAt: timestamp("created_at").defaultNow(),
+  answeredAt: timestamp("answered_at"),
+}, (table) => [
+  index("idx_job_questions_match").on(table.jobMatchId),
+]);
+
+export type JobQuestion = typeof jobQuestions.$inferSelect;
 
 export type UpsertUser = typeof users.$inferInsert;
 export type User = typeof users.$inferSelect;

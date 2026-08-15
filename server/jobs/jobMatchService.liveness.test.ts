@@ -48,16 +48,59 @@ function lookup(hostname: string): Promise<{ address: string; family: number }> 
  * Builds a minimal mock for https.request / http.request that immediately
  * fires the response callback with a given status code.
  */
-function mockRequest(mod: typeof https | typeof http, status: number) {
+function mockRequest(mod: typeof https | typeof http, status: number, body = '<html><body>Apply now</body></html>') {
   mock.method(mod, 'request', (_opts: any, callback: (res: any) => void) => {
     // Call the response handler on next tick to simulate async behaviour
     const fakeReq = {
-      end() { Promise.resolve().then(() => callback({ statusCode: status, destroy() {} })); return this; },
+      end() {
+        Promise.resolve().then(() => {
+          const handlers: Record<string, Array<(...args: any[]) => void>> = {};
+          const fakeRes = {
+            statusCode: status,
+            destroy() {},
+            on(event: string, handler: (...args: any[]) => void) {
+              (handlers[event] ||= []).push(handler);
+              return this;
+            },
+          };
+          callback(fakeRes);
+          // Emit body + end on the following tick, after handlers are attached
+          Promise.resolve().then(() => {
+            (handlers['data'] || []).forEach((h) => h(Buffer.from(body)));
+            (handlers['end'] || []).forEach((h) => h());
+          });
+        });
+        return this;
+      },
       on(_event: string, _handler: (...args: any[]) => void) { return this; },
       destroy() {},
     };
     return fakeReq;
   });
+}
+
+/** Body-capable fake request for per-URL status mocks. */
+function fakeBodyReq(callback: (res: any) => void, status: number, body = '<body>Apply now</body>') {
+  const fakeReq = {
+    end() {
+      Promise.resolve().then(() => {
+        const handlers: Record<string, Array<(...args: any[]) => void>> = {};
+        callback({
+          statusCode: status,
+          destroy() {},
+          on(event: string, handler: (...args: any[]) => void) { (handlers[event] ||= []).push(handler); return this; },
+        });
+        Promise.resolve().then(() => {
+          (handlers['data'] || []).forEach((h) => h(Buffer.from(body)));
+          (handlers['end'] || []).forEach((h) => h());
+        });
+      });
+      return this;
+    },
+    on() { return this; },
+    destroy() {},
+  };
+  return fakeReq;
 }
 
 afterEach(() => mock.restoreAll());
@@ -175,12 +218,46 @@ test('checkUrlLive: non-http URL → live (keep)', async () => {
   assert.equal(await checkUrlLive('ftp://example.com/file'), true);
 });
 
-test('checkUrlLive: non-allowlisted domain → live (no network call)', async () => {
-  let requested = false;
-  mock.method(https, 'request', () => { requested = true; return { end() {}, on() {} }; });
-  const live = await checkUrlLive('https://evil.com/job/123');
-  assert.equal(live, true);
-  assert.equal(requested, false, 'https.request must NOT be called for non-allowlisted domains');
+test('checkUrlLive: non-allowlisted public domain IS probed (200 → live)', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequest(https, 200);
+  assert.equal(await checkUrlLive('https://some-regional-board.com/job/123'), true);
+});
+
+test('checkUrlLive: non-allowlisted domain 404 → dead', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequest(https, 404);
+  assert.equal(await checkUrlLive('https://some-regional-board.com/job/123'), false);
+});
+
+test('checkUrlLive: 200 with "no longer accepting applications" → dead', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequest(https, 200, '<html><body><div>No longer accepting applications</div></body></html>');
+  assert.equal(await checkUrlLive('https://linkedin.com/jobs/view/123'), false);
+});
+
+test('checkUrlLive: 200 with Polish expired marker → dead', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequest(https, 200, '<html><body>Oferta wygasła</body></html>');
+  assert.equal(await checkUrlLive('https://pracuj.pl/praca/oferta,123'), false);
+});
+
+test('checkUrlLive: marker split across inline tags still detected', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequest(https, 200, '<span>This job has</span> <b>expired</b>');
+  assert.equal(await checkUrlLive('https://indeed.com/viewjob?jk=x'), false);
+});
+
+test('checkUrlLive: marker inside script tag ignored', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequest(https, 200, '<script>var t="this job has expired";</script><body>Apply today</body>');
+  assert.equal(await checkUrlLive('https://indeed.com/viewjob?jk=y'), true);
 });
 
 test('checkUrlLive: 200 → live', async () => {
@@ -232,37 +309,11 @@ test('checkUrlLive: 429 → live (rate-limited)', async () => {
   assert.equal(await checkUrlLive('https://seek.com/job/1'), true);
 });
 
-test('checkUrlLive: HEAD 405 → retries GET, 200 → live', async () => {
+test('checkUrlLive: 405 (method quirk) → live (conservative keep)', async () => {
   mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
   mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
-  let callCount = 0;
-  mock.method(https, 'request', (_opts: any, callback: (res: any) => void) => {
-    const status = callCount++ === 0 ? 405 : 200;
-    const fakeReq = {
-      end() { Promise.resolve().then(() => callback({ statusCode: status, destroy() {} })); return this; },
-      on() { return this; },
-      destroy() {},
-    };
-    return fakeReq;
-  });
+  mockRequest(https, 405);
   assert.equal(await checkUrlLive('https://greenhouse.io/jobs/1'), true);
-  assert.equal(callCount, 2);
-});
-
-test('checkUrlLive: HEAD 405 → GET 404 → dead', async () => {
-  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
-  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
-  let callCount = 0;
-  mock.method(https, 'request', (_opts: any, callback: (res: any) => void) => {
-    const status = callCount++ === 0 ? 405 : 404;
-    const fakeReq = {
-      end() { Promise.resolve().then(() => callback({ statusCode: status, destroy() {} })); return this; },
-      on() { return this; },
-      destroy() {},
-    };
-    return fakeReq;
-  });
-  assert.equal(await checkUrlLive('https://greenhouse.io/jobs/expired'), false);
 });
 
 test('checkUrlLive: network error → live (keep, transient failure)', async () => {
@@ -345,15 +396,8 @@ test('checkUrlLive: mixed public+private DNS answers → dead (SSRF protection a
 test('filterLiveJobs: removes dead (404) jobs, keeps live ones', async () => {
   mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
   mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
-  mock.method(https, 'request', (opts: any, callback: (res: any) => void) => {
-    const status = (opts.path as string).includes('dead') ? 404 : 200;
-    const fakeReq = {
-      end() { Promise.resolve().then(() => callback({ statusCode: status, destroy() {} })); return this; },
-      on() { return this; },
-      destroy() {},
-    };
-    return fakeReq;
-  });
+  mock.method(https, 'request', (opts: any, callback: (res: any) => void) =>
+    fakeBodyReq(callback, (opts.path as string).includes('dead') ? 404 : 200));
 
   const jobs = [
     { title: 'PM', company: 'Acme', url: 'https://linkedin.com/jobs/live1' },
@@ -517,13 +561,11 @@ test('checkUrlLive: jobstreet.com.my 200 → live (Malaysia JobStreet is probed)
   assert.equal(await checkUrlLive('https://jobstreet.com.my/job/12345'), true);
 });
 
-test('checkUrlLive: jobstreet.com.au → not probed (domain shut down, not allowlisted)', async () => {
-  let requested = false;
-  mock.method(https, 'request', () => { requested = true; return { end() {}, on() {} }; });
-  // jobstreet.com.au is no longer in the allowlist; checkUrlLive must skip and return true (keep)
-  const live = await checkUrlLive('https://jobstreet.com.au/job/12345');
-  assert.equal(live, true, 'Unallowlisted domain must be kept without probing');
-  assert.equal(requested, false, 'https.request must NOT fire for unallowlisted domain');
+test('checkUrlLive: jobstreet.com.au (shut-down domain) → probed, 404 → dead', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequest(https, 404);
+  assert.equal(await checkUrlLive('https://jobstreet.com.au/job/12345'), false);
 });
 
 // ── Slot-fill liveness guarantee ──────────────────────────────────────────────
@@ -625,16 +667,9 @@ test('enforceSlotCoverage: no cross-board candidate pollution across multiple fi
 test('filterLiveJobs: dead candidate from regional Randstad domain is excluded', async () => {
   mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
   mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
-  mock.method(https, 'request', (opts: any, callback: (res: any) => void) => {
-    // randstad.com.au URL returns 404; hays.ie URL returns 200
-    const status = (opts.hostname as string).includes('randstad') ? 404 : 200;
-    const fakeReq = {
-      end() { Promise.resolve().then(() => callback({ statusCode: status, destroy() {} })); return this; },
-      on() { return this; },
-      destroy() {},
-    };
-    return fakeReq;
-  });
+  // randstad.com.au URL returns 404; hays.ie URL returns 200
+  mock.method(https, 'request', (opts: any, callback: (res: any) => void) =>
+    fakeBodyReq(callback, (opts.hostname as string).includes('randstad') ? 404 : 200));
   const jobs = [
     { title: 'PM', company: 'Acme', url: 'https://randstad.com.au/jobs/dead-randstad' },
     { title: 'BA', company: 'Beta', url: 'https://hays.ie/job/live-hays' },

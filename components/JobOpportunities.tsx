@@ -16,6 +16,14 @@ interface JobMatch {
     matchReason: string | null;
     tailoredCv: string | null;
     cvVariant?: string | null;
+    status?: string | null;
+}
+
+interface JobQuestion {
+    id: string;
+    jobMatchId: string;
+    question: string;
+    answer: string | null;
 }
 
 interface JobOpportunitiesProps {
@@ -31,6 +39,37 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
     const [error, setError] = useState<string | null>(null);
     const [tailoringId, setTailoringId] = useState<string | null>(null);
     const [viewingCv, setViewingCv] = useState<JobMatch | null>(null);
+    const [questions, setQuestions] = useState<Record<string, JobQuestion[]>>({});
+    const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
+
+    const loadQuestions = useCallback(async (jobIds: string[]) => {
+        const entries = await Promise.all(jobIds.map(async (id) => {
+            try {
+                const res = await fetch(`/api/jobs/${id}/questions`);
+                return [id, res.ok ? await res.json() : []] as const;
+            } catch { return [id, []] as const; }
+        }));
+        setQuestions(Object.fromEntries(entries));
+    }, []);
+
+    const submitAnswer = async (q: JobQuestion) => {
+        const answer = (answerDrafts[q.id] || '').trim();
+        if (!answer) return;
+        try {
+            const res = await fetch(`/api/jobs/questions/${q.id}/answer`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ answer }),
+            });
+            if (res.ok) {
+                const updated = await res.json();
+                setQuestions((prev) => ({
+                    ...prev,
+                    [q.jobMatchId]: (prev[q.jobMatchId] || []).map((x) => (x.id === q.id ? updated : x)),
+                }));
+            }
+        } catch { /* noop */ }
+    };
 
     const loadDates = useCallback(async () => {
         try {
@@ -60,6 +99,7 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
 
     useEffect(() => { loadDates(); }, [loadDates]);
     useEffect(() => { if (selectedDate) loadJobs(selectedDate); }, [selectedDate, loadJobs]);
+    useEffect(() => { if (jobs.length) loadQuestions(jobs.map((j) => j.id)); }, [jobs, loadQuestions]);
 
     const handleRunNow = async () => {
         setRunning(true);
@@ -82,15 +122,19 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
         }
     };
 
-    const handleTailorCv = async (job: JobMatch) => {
-        if (job.tailoredCv) {
+    const handleTailorCv = async (job: JobMatch, force = false) => {
+        if (job.tailoredCv && !force) {
             setViewingCv(job);
             return;
         }
         setTailoringId(job.id);
         setError(null);
         try {
-            const res = await fetch(`/api/jobs/${job.id}/tailor-cv`, { method: 'POST' });
+            const res = await fetch(`/api/jobs/${job.id}/tailor-cv`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ force }),
+            });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.message || 'CV tailoring failed');
             setJobs((prev) => prev.map((j) => (j.id === job.id ? data : j)));
@@ -208,6 +252,37 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                         {job.description && <p className="text-sm text-gray-400 mt-2">{job.description}</p>}
                                         {job.matchReason && <p className="text-sm text-gray-300 mt-2 italic">Why it fits: {job.matchReason}</p>}
                                         {job.cvVariant && <p className="text-xs text-cyan-400/80 mt-1">CV used: {job.cvVariant}</p>}
+                                        {job.status === 'cv_ready' && <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-green-900/40 text-green-300 border border-green-500/30 rounded-full">CV Ready</span>}
+                                        {job.status === 'cv_failed' && <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-red-900/40 text-red-300 border border-red-500/30 rounded-full">CV Failed — click "Prepare Tailored CV" to retry</span>}
+                                        {(!job.status || job.status === 'shortlisted') && <span className="inline-block mt-1 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide bg-gray-800 text-gray-400 border border-gray-600/40 rounded-full">Shortlisted</span>}
+                                        {(questions[job.id] || []).map((q) => (
+                                            <div key={q.id} className="mt-2 p-2 bg-amber-900/20 border border-amber-500/30 rounded-lg">
+                                                <p className="text-xs text-amber-300">❓ {q.question}</p>
+                                                {q.answer ? (
+                                                    <div className="mt-1 flex items-center justify-between gap-2">
+                                                        <p className="text-xs text-green-300">✓ Answered: {q.answer}</p>
+                                                        {job.tailoredCv && (
+                                                            <button onClick={() => handleTailorCv(job, true)} disabled={tailoringId === job.id} className="shrink-0 px-2 py-0.5 text-[10px] font-bold text-slate-900 bg-cyan-400 hover:bg-cyan-300 rounded disabled:opacity-50">
+                                                                {tailoringId === job.id ? 'Regenerating…' : 'Regenerate CV with this answer'}
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex gap-2 mt-1">
+                                                        <input
+                                                            type="text"
+                                                            value={answerDrafts[q.id] || ''}
+                                                            onChange={(e) => setAnswerDrafts((p) => ({ ...p, [q.id]: e.target.value }))}
+                                                            placeholder="Your answer…"
+                                                            className="flex-1 px-2 py-1 text-xs bg-gray-900/70 border border-amber-500/30 rounded text-white focus:outline-none"
+                                                        />
+                                                        <button onClick={() => submitAnswer(q)} className="px-2 py-1 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded">
+                                                            Save
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))}
                                     </div>
                                 </div>
                                 <div className="flex flex-wrap gap-2 mt-3">

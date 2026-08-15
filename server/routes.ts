@@ -117,7 +117,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ===== Job Hunt (admin only) =====
-  const { runDailyJobSearch, getShortlist, getShortlistDates, tailorCvForJob } = await import('./jobs/jobMatchService');
+  const { runDailyJobSearch, getShortlist, getShortlistDates, tailorCvForJob, clearTailoredCv, getQuestionsForJob, answerQuestion } = await import('./jobs/jobMatchService');
+
+  app.get('/api/jobs/:id/questions', requireAdmin, async (req: any, res) => {
+    try {
+      res.json(await getQuestionsForJob(req.params.id));
+    } catch (error) {
+      console.error('[JOBS] Error fetching questions:', error);
+      res.status(500).json({ message: 'Failed to fetch questions' });
+    }
+  });
+
+  app.post('/api/jobs/questions/:qid/answer', requireAdmin, async (req: any, res) => {
+    try {
+      const answer = typeof req.body?.answer === 'string' ? req.body.answer.trim() : '';
+      if (!answer) return res.status(400).json({ message: 'Answer is required' });
+      res.json(await answerQuestion(req.params.qid, answer.slice(0, 4000)));
+    } catch (error: any) {
+      console.error('[JOBS] Error answering question:', error);
+      res.status(500).json({ message: error?.message || 'Failed to save answer' });
+    }
+  });
 
   app.get('/api/jobs/dates', requireAdmin, async (_req, res) => {
     try {
@@ -153,6 +173,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post('/api/jobs/:id/tailor-cv', requireAdmin, tailorRateLimit, async (req: any, res) => {
     try {
+      // force=true regenerates the CV (e.g. after answering an admin question)
+      if (req.body?.force) await clearTailoredCv(req.params.id);
       const job = await tailorCvForJob(req.params.id);
       res.json(job);
     } catch (error: any) {
