@@ -15,6 +15,7 @@ interface JobMatch {
     matchScore: number | null;
     matchReason: string | null;
     tailoredCv: string | null;
+    cvVariant?: string | null;
 }
 
 interface JobOpportunitiesProps {
@@ -192,6 +193,7 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                         </p>
                                         {job.description && <p className="text-sm text-gray-400 mt-2">{job.description}</p>}
                                         {job.matchReason && <p className="text-sm text-gray-300 mt-2 italic">Why it fits: {job.matchReason}</p>}
+                                        {job.cvVariant && <p className="text-xs text-cyan-400/80 mt-1">CV used: {job.cvVariant}</p>}
                                     </div>
                                 </div>
                                 <div className="flex flex-wrap gap-2 mt-3">

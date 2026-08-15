@@ -100,6 +100,7 @@ export const jobMatches = pgTable("job_matches", {
   matchScore: integer("match_score"), // 0-100
   matchReason: text("match_reason"),
   tailoredCv: text("tailored_cv"), // generated on demand
+  cvVariant: varchar("cv_variant"), // which base CV was used for tailoring (role→CV mapping)
   createdAt: timestamp("created_at").defaultNow(),
 }, (table) => [
   index("idx_job_matches_run_date").on(table.runDate),
