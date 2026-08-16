@@ -13,6 +13,7 @@
     "db:studio": "drizzle-kit studio",
     "test:liveness": "node --import tsx/esm --test server/jobs/jobMatchService.liveness.test.ts",
     "test:fallback": "node --import tsx/esm --experimental-test-module-mocks --test services/intelligenceService.fallback.test.ts",
+    "test:register": "node --import tsx/esm --experimental-test-module-mocks --test server/routes.register.test.ts",
     "test:components": "vitest run --config vite.config.ts"
   },
   "dependencies": {

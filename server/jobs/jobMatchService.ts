@@ -252,8 +252,22 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
     }
     console.log(`[JOB SEARCH] Target roles: ${roles.join(', ')}`);
 
-    // Phase 2: one dedicated Claude API call per board so results are attributable per-source.
+    // Pre-search canary check: verify that each board's directUrlPatterns still
+    // match a known-live direct-posting URL before spending API credits. Policy:
+    // warn-and-proceed — a stale canary means pattern filtering may silently drop
+    // some URLs, but aborting the entire search would cause a missed day.
+    // Redirect-following is enabled here (resolveCanaryFinalUrl) so a board that
+    // returns 301→homepage for expired postings is correctly detected as stale.
     const boardConfigs = getBoardConfigs(country);
+    await verifyBoardPatterns(
+      boardConfigs,
+      undefined,           // use BOARD_CANARY_URLS
+      checkUrlLive,
+      undefined,           // use RANDSTAD_CANARY_URLS
+      resolveCanaryFinalUrl,
+    );
+
+    // Phase 2: one dedicated Claude API call per board so results are attributable per-source.
     console.log(`[JOB SEARCH] Searching ${boardConfigs.length} boards in parallel: ${boardConfigs.map((b) => b.name).join(', ')}`);
 
     // Sequential board search — parallel web-search calls trip Anthropic rate
@@ -1047,6 +1061,90 @@ export function findClosedMarker(html: string): string | null {
 }
 
 /** GET request that captures up to 400 KB of the response body (SSRF-safe). */
+/**
+ * Follows up to maxHops HTTP redirects from startUrl using SSRF-safe HEAD
+ * requests and returns the final URL after all redirects have settled.
+ *
+ * Used by verifyBoardPatterns to detect canary postings that have expired and
+ * been redirected to a generic/homepage URL (e.g. a board returns 301→homepage
+ * instead of 404 when a job closes). A redirect to a non-posting destination
+ * fails the pattern check and triggers a warning, preventing silent false-OKs.
+ *
+ * On any error (network failure, SSRF block, timeout) returns startUrl unchanged —
+ * the live/dead verdict is already covered by checkUrlLive; this function only
+ * resolves the canonical destination for pattern matching.
+ *
+ * Exported so tests can inject a mock via verifyBoardPatterns' 5th parameter.
+ */
+export async function resolveCanaryFinalUrl(startUrl: string, maxHops = 3): Promise<string> {
+  const TIMEOUT_MS = 12_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    let current = startUrl;
+    for (let hop = 0; hop < maxHops; hop++) {
+      let parsedUrl: URL;
+      try { parsedUrl = new URL(current); } catch { return current; }
+
+      // ── SSRF guard (IP-literal check) ──────────────────────────────────────
+      // Node's `lookup` hook (ssrfSafeLookup) is bypassed when the hostname is
+      // already an IP literal — the TCP stack connects directly without a DNS
+      // lookup. We therefore check BEFORE opening any socket.
+      //   1. Reject non-HTTP/S protocols (file:, ftp:, …).
+      //   2. WHATWG URL.hostname INCLUDES brackets for IPv6 literals:
+      //      new URL('http://[::1]/').hostname === '[::1]'
+      //      Strip them before passing to net.isIPv6 / isPrivateIp.
+      //   3. If the hostname is a private/reserved IP address, stop
+      //      redirect-following and return current URL unchanged.
+      if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+        return current;
+      }
+      const rawHost = parsedUrl.hostname; // may include brackets for IPv6: [::1]
+      // Strip IPv6 brackets — net.isIPv6 / isPrivateIp require bare addresses
+      const bareHost = rawHost.startsWith('[') && rawHost.endsWith(']')
+        ? rawHost.slice(1, -1)
+        : rawHost;
+      if ((net.isIPv4(bareHost) || net.isIPv6(bareHost)) && isPrivateIp(bareHost)) {
+        return current; // refuse to connect to private IP literals
+      }
+
+      const locationOrNull = await new Promise<string | null>((resolve, reject) => {
+        if (controller.signal.aborted) { reject(new Error('AbortError')); return; }
+        const isHttps = parsedUrl.protocol === 'https:';
+        const mod = isHttps ? https : http;
+        const req = mod.request(
+          {
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port || (isHttps ? 443 : 80),
+            path: parsedUrl.pathname + parsedUrl.search,
+            method: 'HEAD',
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; JobPatternBot/1.0)' },
+            lookup: (h: string, o: LookupOptions, cb: any) => { ssrfSafeLookup(h, o, cb); },
+          },
+          (res) => {
+            const status = res.statusCode ?? 0;
+            const loc = (res.headers.location as string | undefined) ?? null;
+            res.destroy();
+            controller.signal.removeEventListener('abort', onAbort);
+            resolve(status >= 300 && status < 400 && loc ? loc : null);
+          },
+        );
+        function onAbort() { req.destroy(new Error('AbortError')); reject(new Error('AbortError')); }
+        controller.signal.addEventListener('abort', onAbort, { once: true });
+        req.on('error', (err) => { controller.signal.removeEventListener('abort', onAbort); reject(err); });
+        req.end();
+      });
+      if (locationOrNull === null) return current;
+      try { current = new URL(locationOrNull, current).href; } catch { return current; }
+    }
+    return current; // max hops exceeded — return best-known URL
+  } catch {
+    return startUrl; // network/SSRF error — caller has the live/dead verdict already
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function httpGetWithBody(parsedUrl: URL, signal: AbortSignal): Promise<{ status: number; body: string }> {
   const MAX_BODY = 400 * 1024;
   return new Promise((resolve, reject) => {
@@ -1300,7 +1398,9 @@ Return ONLY a valid JSON array (empty array [] if nothing valid was found — do
  *
  * Last verified: 2025-08 (update this comment whenever entries are refreshed).
  *
- * Randstad and JobStreet define no directUrlPatterns and need no canary entry.
+ * Randstad uses a separate per-TLD map (RANDSTAD_CANARY_URLS) because it
+ * operates on seven country-specific domains that all share the same URL pattern.
+ * JobStreet defines no directUrlPatterns and needs no canary entry.
  */
 const BOARD_CANARY_URLS: Record<string, string> = {
   // LinkedIn: verified live 2025-08 (returns 301 → live; checkUrlLive treats any non-404/410 as live)
@@ -1312,6 +1412,44 @@ const BOARD_CANARY_URLS: Record<string, string> = {
 };
 
 /**
+ * Per-TLD Randstad canary URLs — one real direct-posting URL for each active
+ * Randstad country domain. All seven TLDs share the same directUrlPatterns
+ * regex, so a separate entry per domain is required to verify the pattern still
+ * matches each regional URL format independently.
+ *
+ * URL shapes observed per TLD:
+ *   MY  /jobs/our-current-vacancies/<slug>_<city>_<numeric-ref>/
+ *   AU  /jobs/<slug>_<city>_<uuid>/
+ *   NZ  /jobs/join-our-team/<slug>_<city>_<numeric-ref>/
+ *   IE  /jobs/our-current-vacancies/<slug>_<city>_<numeric-ref>/
+ *   CH  /jobs/<slug>_<city>_<uuid>/
+ *   SE  /en/jobs/<slug>_<city>_<uuid>/
+ *   PL  /jobs/<slug>_<city>_<numeric-ref>/
+ *
+ * When a posting expires (canary returns 404/410) the probe warns so the entry
+ * can be refreshed. To replace: visit the regional Randstad site, open any
+ * current posting, copy its URL, and confirm isDirectPostingUrl() accepts it.
+ *
+ * Last verified: 2025-08 (update this comment whenever entries are refreshed).
+ */
+export const RANDSTAD_CANARY_URLS: Record<string, string> = {
+  // Malaysia: numeric ref — verified URL shape 2025-08
+  'randstad.com.my': 'https://www.randstad.com.my/jobs/our-current-vacancies/senior-product-manager_kuala-lumpur_47280800/',
+  // Australia: UUID ref — verified URL shape 2025-08
+  'randstad.com.au': 'https://www.randstad.com.au/jobs/product-manager_sydney_d95ff90a-d191-4742-97a4-63cfd6393a27/',
+  // New Zealand: numeric ref — verified URL shape 2025-08
+  'randstad.co.nz':  'https://www.randstad.co.nz/jobs/join-our-team/product-owner_auckland_47245312/',
+  // Switzerland: UUID ref — verified URL shape 2025-08
+  'randstad.ch':     'https://www.randstad.ch/jobs/senior-product-manager_zurich_116bd636-8798-43d8-8b21-29c0859f8f97/',
+  // Sweden: UUID ref under /en/jobs/ locale prefix — verified URL shape 2025-08
+  'randstad.se':     'https://www.randstad.se/en/jobs/product-manager_stockholm_6bcc9649-64f1-4e90-a436-7aa2d673659b/',
+  // NOTE — randstad.ie and randstad.pl are intentionally omitted until live direct-posting
+  // URLs are confirmed. As of 2026-08: randstad.ie redirects all /jobs/ paths to
+  // randstad.co.uk/ireland/ (site migration), and randstad.pl returns 404 for all /jobs/
+  // paths (domain restructure). Add entries once valid regional URLs are available.
+};
+
+/**
  * Startup probe: for each board with directUrlPatterns, fetches its canary URL
  * and verifies the response is live AND the URL still matches the expected path
  * pattern. Emits structured console warnings for:
@@ -1320,24 +1458,39 @@ const BOARD_CANARY_URLS: Record<string, string> = {
  *   3. A live canary URL whose path no longer matches directUrlPatterns (board
  *      may have changed its URL structure, silently rejecting all its postings).
  *
+ * Randstad is handled separately via a per-TLD loop (overrideRandstadCanaryUrls /
+ * RANDSTAD_CANARY_URLS) because it operates on seven country domains that share
+ * one directUrlPatterns regex — each domain needs its own canary check.
+ *
  * Designed to run at startup and produce actionable warnings within hours of
  * a board changing its URL structure, rather than after a missed daily run.
  *
- * @param overrideBoards     Board config list (injected by tests; defaults to real configs).
- * @param overrideCanaryUrls Canary URL map (injected by tests; defaults to BOARD_CANARY_URLS).
- * @param liveCheckFn        URL liveness checker (injected by tests; defaults to checkUrlLive).
+ * @param overrideBoards            Board config list (injected by tests; defaults to real configs).
+ * @param overrideCanaryUrls        Canary URL map (injected by tests; defaults to BOARD_CANARY_URLS).
+ * @param liveCheckFn               URL liveness checker (injected by tests; defaults to checkUrlLive).
+ * @param overrideRandstadCanaryUrls Per-TLD Randstad canary map (injected by tests; defaults to RANDSTAD_CANARY_URLS).
+ * @param resolveFinalUrlFn         Redirect resolver (injected by tests; production passes resolveCanaryFinalUrl).
+ *                                  Default is an identity function (no redirect following) so unit tests that
+ *                                  inject mocked liveCheckFn do not make real network calls.
  */
 export async function verifyBoardPatterns(
   overrideBoards?: BoardConfig[],
   overrideCanaryUrls?: Record<string, string>,
   liveCheckFn: (url: string) => Promise<boolean> = checkUrlLive,
+  overrideRandstadCanaryUrls?: Record<string, string>,
+  resolveFinalUrlFn: (url: string) => Promise<string> = async (url: string) => url,
 ): Promise<void> {
   // Malaysia config gives the widest board set (LinkedIn, Indeed, Randstad, Hays, JobStreet).
   const boards = overrideBoards ?? getBoardConfigs('Malaysia');
   const canaryUrls = overrideCanaryUrls ?? BOARD_CANARY_URLS;
 
+  // ── Per-board canary check (LinkedIn, Indeed, Hays, …) ─────────────────────
+  // Randstad is skipped here because its canary lives in the per-TLD map below;
+  // the board-level Randstad entry has directUrlPatterns but no BOARD_CANARY_URLS
+  // entry by design.
   for (const board of boards) {
     if (!board.directUrlPatterns || board.directUrlPatterns.length === 0) continue;
+    if (board.name === 'Randstad') continue; // handled in the per-TLD loop below
 
     const canaryUrl = canaryUrls[board.name];
     if (!canaryUrl) {
@@ -1361,11 +1514,31 @@ export async function verifyBoardPatterns(
       continue;
     }
 
-    // Step 2: canary is live — confirm its path still matches the board's directUrlPatterns.
-    // A live URL that fails the pattern means the board may have changed its URL structure,
-    // which would silently reject every posting Claude returns from that board.
-    const matchesPattern = isDirectPostingUrl(canaryUrl, board);
-    if (!matchesPattern) {
+    // Step 2: follow redirects to resolve the final destination URL, then confirm
+    // (a) the final URL stays on this board's domain, and (b) its path still matches
+    // directUrlPatterns. Without both checks a cross-domain redirect whose path
+    // happens to contain _<city>_<id> would falsely pass (e.g. a board that moves
+    // all postings to a partner site with a similar URL scheme).
+    const finalUrl = await resolveFinalUrlFn(canaryUrl);
+    const finalHostname = (() => { try { return new URL(finalUrl).hostname; } catch { return ''; } })();
+    const finalOnDomain = hostnameMatchesBoardDomain(finalHostname, board.validDomains);
+    const matchesPattern = isDirectPostingUrl(finalUrl, board);
+
+    if (finalUrl !== canaryUrl && !finalOnDomain) {
+      console.warn(
+        `[BOARD PATTERN] WARNING: ${board.name} canary URL redirects to a different domain. ` +
+        `The board may have migrated — postings from ${board.validDomains.join(', ')} could be silently rejected. ` +
+        `Replace the canary with a current ${board.name} direct-posting URL and update BOARD_CANARY_URLS. ` +
+        `Canary: ${canaryUrl} → Redirect destination: ${finalUrl}`,
+      );
+    } else if (!matchesPattern && finalUrl !== canaryUrl) {
+      console.warn(
+        `[BOARD PATTERN] WARNING: ${board.name} canary URL is live but redirects to a non-posting URL. ` +
+        `The job posting has likely expired — the board is returning a redirect instead of 404/410. ` +
+        `Replace the canary with a current ${board.name} direct-posting URL and update BOARD_CANARY_URLS. ` +
+        `Canary: ${canaryUrl} → Redirect destination: ${finalUrl}`,
+      );
+    } else if (!matchesPattern) {
       console.warn(
         `[BOARD PATTERN] WARNING: ${board.name} canary URL is live but no longer matches directUrlPatterns. ` +
         `The board may have changed its URL structure — this would silently reject all postings from it. ` +
@@ -1376,9 +1549,96 @@ export async function verifyBoardPatterns(
       console.log(`[BOARD PATTERN] OK: ${board.name} canary is live and matches pattern (${canaryUrl})`);
     }
   }
+
+  // ── Per-TLD Randstad canary check ──────────────────────────────────────────
+  // Randstad uses seven country-specific domains that all share the same
+  // directUrlPatterns. Each TLD gets its own canary URL so a regional URL-
+  // structure change (e.g. AU migrating to a new path format) is caught even
+  // when the other TLDs are unaffected.
+  const randstadCanaries = overrideRandstadCanaryUrls ?? RANDSTAD_CANARY_URLS;
+  // Obtain the shared Randstad directUrlPatterns from the Malaysia board config
+  // (all TLDs share the same patterns; we only need the patterns, not the domain).
+  const randstadPatternBoard = (overrideBoards ?? getBoardConfigs('Malaysia'))
+    .find((b) => b.name === 'Randstad');
+
+  if (randstadPatternBoard?.directUrlPatterns && randstadPatternBoard.directUrlPatterns.length > 0) {
+    // ── Coverage-gap check ─────────────────────────────────────────────────────
+    // For each Randstad board in the passed-in board list, confirm its TLD domain
+    // has a canary entry. When verifyBoardPatterns is called from runDailyJobSearch
+    // the boards list contains only today's country, so this fires immediately when
+    // today's Randstad domain (e.g. randstad.ie) has no canary to verify against.
+    for (const board of boards) {
+      if (board.name !== 'Randstad') continue;
+      for (const tldDomain of board.validDomains) {
+        if (!randstadCanaries[tldDomain]) {
+          console.warn(
+            `[BOARD PATTERN] WARNING: Randstad (${tldDomain}) has no canary URL configured. ` +
+            `URL pattern correctness cannot be confirmed for this region's search. ` +
+            `Known issue: ${tldDomain === 'randstad.ie' ? 'randstad.ie redirects all /jobs/ paths to randstad.co.uk/ireland/ (site migration)' : tldDomain === 'randstad.pl' ? 'randstad.pl returns 404 for all /jobs/ paths (domain restructure)' : 'no verified direct-posting URL available'}. ` +
+            `Add a valid direct-posting URL to RANDSTAD_CANARY_URLS once one is available for ${tldDomain}.`,
+          );
+        }
+      }
+    }
+
+    for (const [tldDomain, canaryUrl] of Object.entries(randstadCanaries)) {
+      // Build a temporary board config for this TLD so isDirectPostingUrl uses
+      // the shared pattern against the right domain.
+      const tldBoard: BoardConfig = {
+        ...randstadPatternBoard,
+        validDomains: [tldDomain],
+      };
+
+      // Step 1: confirm the canary posting is still live.
+      const isLive = await liveCheckFn(canaryUrl);
+      if (!isLive) {
+        console.warn(
+          `[BOARD PATTERN] WARNING: Randstad (${tldDomain}) canary URL returned a dead status (404/410). ` +
+          `The job posting has likely expired — replace it with a current ${tldDomain} direct-posting URL ` +
+          `and update RANDSTAD_CANARY_URLS so the pattern stays verified. Expired canary: ${canaryUrl}`,
+        );
+        continue;
+      }
+
+      // Step 2: follow redirects to the final destination URL, then confirm
+      // (a) it stays on this TLD's domain, and (b) its path still matches
+      // directUrlPatterns. Both checks together prevent a cross-domain redirect
+      // (e.g. randstad.ie → randstad.co.uk/ireland/) from passing as OK when the
+      // redirect destination's path happens to match the posting pattern.
+      const finalUrl = await resolveFinalUrlFn(canaryUrl);
+      const finalHostname = (() => { try { return new URL(finalUrl).hostname; } catch { return ''; } })();
+      const finalOnTld = hostnameMatchesBoardDomain(finalHostname, [tldDomain]);
+      const matchesPattern = isDirectPostingUrl(finalUrl, tldBoard);
+
+      if (finalUrl !== canaryUrl && !finalOnTld) {
+        console.warn(
+          `[BOARD PATTERN] WARNING: Randstad (${tldDomain}) canary URL redirects to a different domain. ` +
+          `The regional site may have migrated — postings from ${tldDomain} could be silently rejected. ` +
+          `Replace the canary with a current ${tldDomain} direct-posting URL and update RANDSTAD_CANARY_URLS. ` +
+          `Canary: ${canaryUrl} → Redirect destination: ${finalUrl}`,
+        );
+      } else if (!matchesPattern && finalUrl !== canaryUrl) {
+        console.warn(
+          `[BOARD PATTERN] WARNING: Randstad (${tldDomain}) canary URL is live but redirects to a non-posting URL. ` +
+          `The job posting has likely expired — the board is returning a redirect instead of 404/410. ` +
+          `Replace the canary with a current ${tldDomain} direct-posting URL and update RANDSTAD_CANARY_URLS. ` +
+          `Canary: ${canaryUrl} → Redirect destination: ${finalUrl}`,
+        );
+      } else if (!matchesPattern) {
+        console.warn(
+          `[BOARD PATTERN] WARNING: Randstad (${tldDomain}) canary URL is live but no longer matches directUrlPatterns. ` +
+          `The board may have changed its URL structure on ${tldDomain} — this would silently reject all postings from it. ` +
+          `Review and update directUrlPatterns in getBoardConfigs(). ` +
+          `Canary: ${canaryUrl} | Patterns: ${randstadPatternBoard.directUrlPatterns.map((p) => p.toString()).join(', ')}`,
+        );
+      } else {
+        console.log(`[BOARD PATTERN] OK: Randstad (${tldDomain}) canary is live and matches pattern (${canaryUrl})`);
+      }
+    }
+  }
 }
 
-function getBoardConfigs(country: string): BoardConfig[] {
+export function getBoardConfigs(country: string): BoardConfig[] {
   const randstad = RANDSTAD_TLD[country] ?? 'randstad.com';
   const hays = HAYS_TLD[country] ?? 'hays.com';
   const configs: BoardConfig[] = [
@@ -1400,7 +1660,15 @@ function getBoardConfigs(country: string): BoardConfig[] {
       // Indeed direct job ads use /viewjob?jk= or /rc/clk?jk=; /jobs?q= pages are search results
       directUrlPatterns: [/\/viewjob\?.*jk=/, /\/rc\/clk\?.*jk=/],
     },
-    {
+    // Randstad is only included when its TLD domain has a verified canary in
+    // RANDSTAD_CANARY_URLS. Without a canary the pre-search URL-pattern check
+    // cannot confirm the filter is still valid — searching under an unverified
+    // directUrlPatterns would silently reject every Randstad URL Claude returns.
+    // Known excluded TLDs:
+    //   randstad.ie — all /jobs/ paths redirect to randstad.co.uk/ireland/ (site migration)
+    //   randstad.pl — all /jobs/ paths return 404 (domain restructure)
+    // Add a verified entry to RANDSTAD_CANARY_URLS to re-enable Randstad for that country.
+    ...(RANDSTAD_CANARY_URLS[randstad] ? [{
       name: 'Randstad',
       domain: randstad,
       urlHint: `a URL on ${randstad} of the form /jobs/<title-slug>_<city>_<numeric-or-uuid-ref>/ — NOT a /jobs/<category>/ listing page or the homepage`,
@@ -1412,7 +1680,14 @@ function getBoardConfigs(country: string): BoardConfig[] {
       // Pattern is matched against pathname+search; (?:[?#].*)? allows tracking query params
       // after the job slug without weakening listing-page rejection.
       directUrlPatterns: [/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9]{5,})\/?(?:[?#].*)?$/i],
-    },
+    } as BoardConfig] : (() => {
+      console.warn(
+        `[BOARD PATTERN] Randstad (${randstad}) excluded from ${country} search — no verified canary URL configured. ` +
+        `Searching under an unverified directUrlPatterns would silently reject all Randstad results. ` +
+        `Add a real direct-posting URL from ${randstad} to RANDSTAD_CANARY_URLS to re-enable Randstad for ${country}.`,
+      );
+      return [];
+    })()),
     {
       name: 'Hays',
       domain: hays,

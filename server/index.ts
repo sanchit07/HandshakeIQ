@@ -1,7 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import cron from "node-cron";
 import { registerRoutes } from "./routes";
-import { runDailyJobSearch, verifyBoardPatterns } from "./jobs/jobMatchService";
+import { runDailyJobSearch, verifyBoardPatterns, resolveCanaryFinalUrl } from "./jobs/jobMatchService";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -51,7 +51,10 @@ const isProduction = process.env.NODE_ENV === 'production';
     // Startup probe: fetch each board's canary URL and confirm it is live and still
     // matches directUrlPatterns. Warns if a board changed its URL structure or the
     // canary job posting has expired.
-    verifyBoardPatterns().catch((err) =>
+    // Pass resolveCanaryFinalUrl so the probe follows redirects: a board that
+    // returns 301→homepage for expired postings (instead of 404) is detected
+    // as a stale canary rather than silently logged as OK.
+    verifyBoardPatterns(undefined, undefined, undefined, undefined, resolveCanaryFinalUrl).catch((err) =>
       console.error('[BOARD PATTERN] Startup probe failed unexpectedly:', err),
     );
   });

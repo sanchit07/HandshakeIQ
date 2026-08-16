@@ -31,6 +31,9 @@ import {
   deriveSourceFromUrl,
   isDirectPostingUrl,
   verifyBoardPatterns,
+  RANDSTAD_CANARY_URLS,
+  resolveCanaryFinalUrl,
+  getBoardConfigs,
   type BoardConfig,
 } from './jobMatchService.js';
 
@@ -1216,4 +1219,732 @@ test('verifyBoardPatterns: multiple boards — only the broken one emits a warni
 
   assert.ok(warnings.some((w) => w.includes('Indeed')), 'Indeed dead canary must warn');
   assert.ok(!warnings.some((w) => w.includes('Hays')), 'Hays live+matching canary must not warn');
+});
+
+// ── RANDSTAD_CANARY_URLS — fixture validity ────────────────────────────────────
+//
+// These tests confirm that every entry in RANDSTAD_CANARY_URLS matches the
+// shared Randstad directUrlPatterns regex. They catch a misconfigured fixture
+// (e.g. someone pasting a listing-page URL as the canary) before it reaches CI.
+
+const RANDSTAD_PATTERN_BOARD: BoardConfig = {
+  name: 'Randstad',
+  domain: 'randstad.com.my',
+  urlHint: 'a Randstad direct-posting URL ending with _<city>_<numeric-or-uuid-ref>/',
+  validDomains: ['randstad.com.my'],
+  directUrlPatterns: [/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9]{5,})\/?(?:[?#].*)?$/i],
+};
+
+test('RANDSTAD_CANARY_URLS: every entry matches the shared directUrlPatterns regex', () => {
+  // Each canary URL must be a direct-posting URL (not a listing page) so the
+  // verifyBoardPatterns probe can actually detect a URL-structure change.
+  for (const [domain, url] of Object.entries(RANDSTAD_CANARY_URLS)) {
+    const tldBoard: BoardConfig = { ...RANDSTAD_PATTERN_BOARD, validDomains: [domain] };
+    assert.equal(
+      isDirectPostingUrl(url, tldBoard),
+      true,
+      `RANDSTAD_CANARY_URLS['${domain}'] = '${url}' must match directUrlPatterns`,
+    );
+  }
+});
+
+test('RANDSTAD_CANARY_URLS: covers all active Randstad TLDs with verified live URLs', () => {
+  // IE and PL are intentionally omitted — randstad.ie migrated to co.uk/ireland/
+  // and randstad.pl removed its /jobs/ path as of 2026-08. Add them back once
+  // valid regional direct-posting URLs are confirmed.
+  const expected = [
+    'randstad.com.my',
+    'randstad.com.au',
+    'randstad.co.nz',
+    'randstad.ch',
+    'randstad.se',
+  ];
+  for (const domain of expected) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(RANDSTAD_CANARY_URLS, domain),
+      `Missing canary for Randstad TLD: ${domain}`,
+    );
+  }
+  // Confirm the known-broken TLDs are absent so no false-OK is logged for them
+  assert.ok(
+    !Object.prototype.hasOwnProperty.call(RANDSTAD_CANARY_URLS, 'randstad.ie'),
+    'randstad.ie must not be in RANDSTAD_CANARY_URLS until a live IE URL is confirmed',
+  );
+  assert.ok(
+    !Object.prototype.hasOwnProperty.call(RANDSTAD_CANARY_URLS, 'randstad.pl'),
+    'randstad.pl must not be in RANDSTAD_CANARY_URLS until a live PL URL is confirmed',
+  );
+});
+
+test('RANDSTAD_CANARY_URLS: no entry is a listing-page URL (numeric ref must be 5+ digits or UUID)', () => {
+  // Guard against accidentally storing a category page (e.g. /jobs/our-current-vacancies/)
+  // as the canary. The pattern requires either a 5+ digit numeric ref or a full UUID.
+  for (const [domain, url] of Object.entries(RANDSTAD_CANARY_URLS)) {
+    assert.ok(
+      !url.endsWith('/jobs/') &&
+      !url.endsWith('/jobs/our-current-vacancies/') &&
+      !url.endsWith('/jobs/join-our-team/'),
+      `RANDSTAD_CANARY_URLS['${domain}'] looks like a listing page: ${url}`,
+    );
+  }
+});
+
+// ── verifyBoardPatterns — Randstad per-TLD canary checks ──────────────────────
+
+/** Minimal board fixture with Randstad's shared directUrlPatterns — used in
+ *  verifyBoardPatterns tests that exercise the per-TLD Randstad loop. */
+const VERIFY_RANDSTAD_WITH_PATTERNS: BoardConfig = {
+  name: 'Randstad',
+  domain: 'randstad.com.my',
+  urlHint: 'a Randstad direct-posting URL',
+  validDomains: ['randstad.com.my'],
+  directUrlPatterns: [/_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9]{5,})\/?(?:[?#].*)?$/i],
+};
+
+test('verifyBoardPatterns: all Randstad TLD canaries live and matching → no warning, OK logs emitted', async () => {
+  const alwaysLive = async (_url: string) => true;
+
+  const randstadCanaries: Record<string, string> = {
+    'randstad.com.my': 'https://www.randstad.com.my/jobs/our-current-vacancies/senior-product-manager_kuala-lumpur_47280800/',
+    'randstad.com.au': 'https://www.randstad.com.au/jobs/product-manager_sydney_d95ff90a-d191-4742-97a4-63cfd6393a27/',
+  };
+
+  const warnings: string[] = [];
+  const logs: string[] = [];
+  const origWarn = console.warn;
+  const origLog = console.log;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  console.log  = (...args: any[]) => { logs.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns([VERIFY_RANDSTAD_WITH_PATTERNS], {}, alwaysLive, randstadCanaries);
+  } finally {
+    console.warn = origWarn;
+    console.log  = origLog;
+  }
+
+  assert.equal(warnings.length, 0, `No warnings expected when all Randstad canaries are live and matching. Got: ${warnings.join('\n')}`);
+  assert.equal(logs.filter((l) => l.includes('[BOARD PATTERN] OK')).length, 2, 'Expected one OK log per TLD');
+});
+
+test('verifyBoardPatterns: dead Randstad TLD canary (404) → warns with TLD domain name', async () => {
+  // Models: the randstad.com.au posting expires; the other TLD canary is still live.
+  const mockLive = async (url: string) => !url.includes('randstad.com.au');
+
+  const randstadCanaries: Record<string, string> = {
+    'randstad.com.my': 'https://www.randstad.com.my/jobs/our-current-vacancies/pm_kuala-lumpur_47280800/',
+    'randstad.com.au': 'https://www.randstad.com.au/jobs/pm_sydney_d95ff90a-d191-4742-97a4-63cfd6393a27/',
+  };
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns([VERIFY_RANDSTAD_WITH_PATTERNS], {}, mockLive, randstadCanaries);
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.ok(warnings.length > 0, 'Expected a warning about the dead AU canary');
+  assert.ok(
+    warnings.some((w) => w.includes('randstad.com.au') && w.includes('dead')),
+    `Warning must name the TLD domain and report dead status. Got: ${warnings.join('\n')}`,
+  );
+  assert.ok(
+    !warnings.some((w) => w.includes('randstad.com.my')),
+    'Live MY canary must not produce a warning',
+  );
+});
+
+test('verifyBoardPatterns: live Randstad TLD canary that no longer matches pattern → warns with TLD domain name', async () => {
+  // Models: Randstad AU changes its URL structure to a new path that the regex does not match.
+  // The canary posting is still live (returns 200) but isDirectPostingUrl now returns false.
+  const alwaysLive = async (_url: string) => true;
+
+  const randstadCanaries: Record<string, string> = {
+    'randstad.com.my': 'https://www.randstad.com.my/jobs/our-current-vacancies/pm_kuala-lumpur_47280800/',
+    // AU has switched to a hypothetical new URL format that does not end with _<id>
+    'randstad.com.au': 'https://www.randstad.com.au/jobs/all-jobs/product-manager/',
+  };
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns([VERIFY_RANDSTAD_WITH_PATTERNS], {}, alwaysLive, randstadCanaries);
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.ok(warnings.length > 0, 'Expected a warning about the pattern mismatch on AU');
+  assert.ok(
+    warnings.some((w) => w.includes('randstad.com.au') && w.includes('no longer matches')),
+    `Warning must name the TLD domain and report pattern mismatch. Got: ${warnings.join('\n')}`,
+  );
+  assert.ok(
+    !warnings.some((w) => w.includes('randstad.com.my')),
+    'MY canary that still matches must not produce a warning',
+  );
+});
+
+test('verifyBoardPatterns: Randstad board without directUrlPatterns → per-TLD loop is skipped entirely', async () => {
+  // When the injected Randstad board has no directUrlPatterns (simulates a future
+  // config that drops the patterns), the per-TLD loop must produce no output at all.
+  const alwaysLive = async (_url: string) => true;
+
+  // Use VERIFY_RANDSTAD_BOARD (no directUrlPatterns) as the injected board
+  const boards: BoardConfig[] = [{
+    name: 'Randstad',
+    domain: 'randstad.com.my',
+    urlHint: '',
+    validDomains: ['randstad.com.my'],
+    // deliberately no directUrlPatterns
+  }];
+
+  const randstadCanaries: Record<string, string> = {
+    'randstad.com.my': 'https://www.randstad.com.my/jobs/our-current-vacancies/pm_kuala-lumpur_47280800/',
+  };
+
+  const logged: string[] = [];
+  const origLog = console.log;
+  const origWarn = console.warn;
+  console.log  = (...args: any[]) => { logged.push(args.join(' ')); };
+  console.warn = (...args: any[]) => { logged.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(boards, {}, alwaysLive, randstadCanaries);
+  } finally {
+    console.log  = origLog;
+    console.warn = origWarn;
+  }
+
+  assert.equal(logged.length, 0, 'No output expected when Randstad board has no directUrlPatterns');
+});
+
+// ── verifyBoardPatterns — redirect-aware canary checks ────────────────────────
+//
+// These tests verify that a canary URL which is "live" (returns 3xx instead of
+// 404/410) but redirects to a generic/homepage URL is correctly detected as
+// stale — rather than producing a false-positive "OK" because the original URL
+// happens to match the directUrlPatterns regex.
+//
+// The real-world trigger: Randstad IE redirects all /jobs/our-current-vacancies/
+// paths to randstad.co.uk/ireland/ instead of returning 404 for expired postings.
+// Without redirect-following, checkUrlLive returns true (3xx = live) and
+// isDirectPostingUrl(originalUrl) returns true (original URL matches pattern),
+// giving a false "OK". With resolveFinalUrlFn injected, the final URL
+// (https://www.randstad.ie/) is checked — it does NOT match the pattern →
+// correct warning is emitted.
+
+test('verifyBoardPatterns: canary that redirects to generic homepage → warns "redirects to non-posting URL"', async () => {
+  // Models Randstad IE behaviour: canary is "live" (3xx) but redirects to homepage.
+  const alwaysLive = async (_url: string) => true;
+  // Simulate 301 → homepage
+  const redirectsToHomepage = async (_url: string) => 'https://www.randstad.ie/';
+
+  const randstadCanaries: Record<string, string> = {
+    'randstad.ie': 'https://www.randstad.ie/jobs/our-current-vacancies/product-owner_dublin_47299876/',
+  };
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(
+      [VERIFY_RANDSTAD_WITH_PATTERNS],
+      {},
+      alwaysLive,
+      randstadCanaries,
+      redirectsToHomepage,
+    );
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.ok(warnings.length > 0, 'Expected a warning about the redirect to a non-posting URL');
+  assert.ok(
+    warnings.some((w) => w.includes('randstad.ie') && w.includes('redirect')),
+    `Warning must name the TLD domain and report the redirect. Got: ${warnings.join('\n')}`,
+  );
+  assert.ok(
+    warnings.some((w) => w.includes('https://www.randstad.ie/')),
+    `Warning must include the redirect destination URL. Got: ${warnings.join('\n')}`,
+  );
+});
+
+test('verifyBoardPatterns: canary redirects but final URL still matches pattern → no warning, OK logged', async () => {
+  // Models a canonical redirect (e.g. http → https, or a slug change that
+  // preserves the _<city>_<id> suffix). The final URL still matches the pattern
+  // so no warning should be emitted.
+  const alwaysLive = async (_url: string) => true;
+  // Simulate a redirect that preserves the posting-URL shape
+  const redirectsToCanonical = async (_url: string) =>
+    'https://www.randstad.com.my/jobs/our-current-vacancies/pm-canonical_kuala-lumpur_47280800/';
+
+  const randstadCanaries: Record<string, string> = {
+    'randstad.com.my': 'https://www.randstad.com.my/jobs/our-current-vacancies/pm_kuala-lumpur_47280800/',
+  };
+
+  const warnings: string[] = [];
+  const logs: string[] = [];
+  const origWarn = console.warn;
+  const origLog  = console.log;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  console.log  = (...args: any[]) => { logs.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(
+      [VERIFY_RANDSTAD_WITH_PATTERNS],
+      {},
+      alwaysLive,
+      randstadCanaries,
+      redirectsToCanonical,
+    );
+  } finally {
+    console.warn = origWarn;
+    console.log  = origLog;
+  }
+
+  assert.equal(warnings.length, 0, `No warnings expected for canonical redirect. Got: ${warnings.join('\n')}`);
+  assert.ok(logs.some((l) => l.includes('[BOARD PATTERN] OK')), 'OK log must be emitted');
+});
+
+test('verifyBoardPatterns: main board loop (non-Randstad) canary redirect to generic page → warns', async () => {
+  // Confirms redirect-aware checking also applies to the per-board loop
+  // (LinkedIn, Indeed, Hays), not only the Randstad per-TLD loop.
+  const alwaysLive = async (_url: string) => true;
+  // Indeed canary redirects to the homepage instead of returning 404
+  const redirectsToHomepage = async (_url: string) => 'https://indeed.com/';
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(
+      [VERIFY_INDEED_BOARD],
+      { Indeed: 'https://indeed.com/viewjob?jk=expired00000' },
+      alwaysLive,
+      {},
+      redirectsToHomepage,
+    );
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.ok(warnings.length > 0, 'Expected a warning about the redirect to a non-posting URL');
+  assert.ok(
+    warnings.some((w) => w.includes('Indeed') && w.includes('redirect')),
+    `Warning must name the board and report the redirect. Got: ${warnings.join('\n')}`,
+  );
+});
+
+// ── verifyBoardPatterns — coverage-gap warnings for uncovered Randstad TLDs ───
+//
+// When verifyBoardPatterns is called from runDailyJobSearch it receives the board
+// configs for today's country (e.g. Randstad with validDomains: ['randstad.ie']
+// on Ireland days). If that TLD has no entry in RANDSTAD_CANARY_URLS the probe
+// cannot verify the URL pattern for that region. These tests confirm an explicit
+// warning is emitted rather than silently skipping the check.
+
+test('verifyBoardPatterns: searched Randstad TLD has no canary → warns about missing coverage', async () => {
+  // Models an Ireland-day run: the board is randstad.ie but no canary exists for it.
+  const alwaysLive = async (_url: string) => true;
+  const identityResolve = async (url: string) => url;
+
+  // Pass an empty canary map — simulates IE/PL having no entry
+  const emptyRandstadCanaries: Record<string, string> = {};
+
+  const irlBoard: BoardConfig = {
+    ...VERIFY_RANDSTAD_WITH_PATTERNS,
+    validDomains: ['randstad.ie'],
+  };
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(
+      [irlBoard],
+      {},
+      alwaysLive,
+      emptyRandstadCanaries,
+      identityResolve,
+    );
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.ok(warnings.length > 0, 'Expected a coverage-gap warning for randstad.ie with no canary configured');
+  assert.ok(
+    warnings.some((w) => w.includes('randstad.ie') && w.includes('no canary')),
+    `Warning must name the TLD and mention "no canary". Got: ${warnings.join('\n')}`,
+  );
+});
+
+test('verifyBoardPatterns: searched Randstad TLD is covered by canary → no coverage-gap warning', async () => {
+  // Models a Malaysia-day run where randstad.com.my has a canary entry.
+  const alwaysLive = async (_url: string) => true;
+  const identityResolve = async (url: string) => url;
+
+  const myCanaries: Record<string, string> = {
+    'randstad.com.my': 'https://www.randstad.com.my/jobs/our-current-vacancies/pm_kuala-lumpur_47280800/',
+  };
+
+  const myBoard: BoardConfig = {
+    ...VERIFY_RANDSTAD_WITH_PATTERNS,
+    validDomains: ['randstad.com.my'],
+  };
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(
+      [myBoard],
+      {},
+      alwaysLive,
+      myCanaries,
+      identityResolve,
+    );
+  } finally {
+    console.warn = origWarn;
+  }
+
+  const coverageGapWarnings = warnings.filter((w) => w.includes('no canary'));
+  assert.equal(
+    coverageGapWarnings.length, 0,
+    `No coverage-gap warning expected when the TLD has a canary. Got: ${coverageGapWarnings.join('\n')}`,
+  );
+});
+
+test('verifyBoardPatterns: Randstad TLD canary redirects to a different domain → warns "different domain"', async () => {
+  // Models Randstad IE: the canary redirects 301 to randstad.co.uk/ireland/
+  // which is a DIFFERENT domain from randstad.ie. Without a hostname check,
+  // if that destination URL happened to contain a matching path suffix it would
+  // pass as OK — this test ensures the cross-domain redirect is always flagged.
+  const alwaysLive = async (_url: string) => true;
+  // Simulate 301 → randstad.co.uk (different domain, not randstad.ie)
+  const redirectsToDifferentDomain = async (_url: string) =>
+    'https://www.randstad.co.uk/ireland/';
+
+  const randstadCanaries: Record<string, string> = {
+    'randstad.ie': 'https://www.randstad.ie/jobs/our-current-vacancies/product-owner_dublin_47299876/',
+  };
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(
+      [VERIFY_RANDSTAD_WITH_PATTERNS],
+      {},
+      alwaysLive,
+      randstadCanaries,
+      redirectsToDifferentDomain,
+    );
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.ok(warnings.length > 0, 'Expected a warning about the cross-domain redirect');
+  assert.ok(
+    warnings.some((w) => w.includes('randstad.ie') && w.includes('different domain')),
+    `Warning must name the TLD domain and report "different domain". Got: ${warnings.join('\n')}`,
+  );
+  assert.ok(
+    warnings.some((w) => w.includes('randstad.co.uk')),
+    `Warning must include the redirect destination. Got: ${warnings.join('\n')}`,
+  );
+});
+
+test('verifyBoardPatterns: main board loop canary redirects to a different domain → warns "different domain"', async () => {
+  // Confirms cross-domain redirect detection also applies to the per-board loop
+  // (LinkedIn, Indeed, Hays), not only the Randstad per-TLD loop.
+  // Example scenario: Indeed migrates postings to a partner domain.
+  const alwaysLive = async (_url: string) => true;
+  // Indeed canary redirects to a completely different domain
+  const redirectsToDifferentDomain = async (_url: string) =>
+    'https://www.glassdoor.com/job-listing/12345';
+
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  try {
+    await verifyBoardPatterns(
+      [VERIFY_INDEED_BOARD],
+      { Indeed: 'https://au.indeed.com/viewjob?jk=abc123' },
+      alwaysLive,
+      {},
+      redirectsToDifferentDomain,
+    );
+  } finally {
+    console.warn = origWarn;
+  }
+
+  assert.ok(warnings.length > 0, 'Expected a warning about the cross-domain redirect');
+  assert.ok(
+    warnings.some((w) => w.includes('Indeed') && w.includes('different domain')),
+    `Warning must name the board and report "different domain". Got: ${warnings.join('\n')}`,
+  );
+  assert.ok(
+    warnings.some((w) => w.includes('glassdoor.com')),
+    `Warning must include the redirect destination. Got: ${warnings.join('\n')}`,
+  );
+});
+
+test('verifyBoardPatterns: resolveCanaryFinalUrl is exported and is a function', () => {
+  // Smoke-test: confirms the function is exported correctly so server/index.ts
+  // can import and pass it as the 5th argument.
+  assert.equal(typeof resolveCanaryFinalUrl, 'function', 'resolveCanaryFinalUrl must be an exported function');
+});
+
+// ── getBoardConfigs — Randstad inclusion/exclusion policy per active TLD ──────
+//
+// For every country in RANDSTAD_TLD, getBoardConfigs must either:
+//   (a) include Randstad in the returned board list (TLD has a verified canary), OR
+//   (b) exclude Randstad and log a warning (TLD has no verified canary — known site
+//       migration or domain restructure).
+// Policy: never search under an unverified directUrlPatterns filter; it would
+// silently reject every Randstad URL Claude returns for that country.
+
+test('getBoardConfigs: Ireland → Randstad excluded (randstad.ie has no canary) + warning logged', () => {
+  // randstad.ie redirects all /jobs/ paths to randstad.co.uk/ireland/ (site migration).
+  // Until a live IE direct-posting URL is confirmed the board must be excluded.
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  let boards: BoardConfig[];
+  try {
+    boards = getBoardConfigs('Ireland');
+  } finally {
+    console.warn = origWarn;
+  }
+
+  const randstadBoard = boards.find((b) => b.name === 'Randstad');
+  assert.equal(
+    randstadBoard, undefined,
+    'Randstad must not be included in Ireland board configs — randstad.ie has no verified canary',
+  );
+  assert.ok(
+    warnings.some((w) => w.includes('randstad.ie') && w.includes('excluded')),
+    `A warning about the exclusion must be logged. Got: ${warnings.join('\n')}`,
+  );
+});
+
+test('getBoardConfigs: Poland → Randstad excluded (randstad.pl has no canary) + warning logged', () => {
+  // randstad.pl returns 404 for all /jobs/ paths (domain restructure).
+  const warnings: string[] = [];
+  const origWarn = console.warn;
+  console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+  let boards: BoardConfig[];
+  try {
+    boards = getBoardConfigs('Poland');
+  } finally {
+    console.warn = origWarn;
+  }
+
+  const randstadBoard = boards.find((b) => b.name === 'Randstad');
+  assert.equal(
+    randstadBoard, undefined,
+    'Randstad must not be included in Poland board configs — randstad.pl has no verified canary',
+  );
+  assert.ok(
+    warnings.some((w) => w.includes('randstad.pl') && w.includes('excluded')),
+    `A warning about the exclusion must be logged. Got: ${warnings.join('\n')}`,
+  );
+});
+
+test('getBoardConfigs: Malaysia → Randstad included (randstad.com.my has a verified canary)', () => {
+  const boards = getBoardConfigs('Malaysia');
+  const randstadBoard = boards.find((b) => b.name === 'Randstad');
+  assert.ok(
+    randstadBoard !== undefined,
+    'Randstad must be included in Malaysia board configs — randstad.com.my has a verified canary',
+  );
+  assert.equal(randstadBoard?.validDomains?.[0], 'randstad.com.my');
+});
+
+test('getBoardConfigs: every active RANDSTAD_TLD country is either included-with-canary or excluded-with-warning', () => {
+  // Exhaustive policy check: for every country that maps to a Randstad TLD, the
+  // board config must be consistent with RANDSTAD_CANARY_URLS.
+  // Countries that should be included (have verified canaries):
+  const shouldInclude: string[] = ['Malaysia', 'Australia', 'New Zealand', 'Switzerland', 'Sweden'];
+  // Countries that should be excluded (known broken TLDs):
+  const shouldExclude: string[] = ['Ireland', 'Poland'];
+
+  for (const country of shouldInclude) {
+    const boards = getBoardConfigs(country);
+    const randstadBoard = boards.find((b) => b.name === 'Randstad');
+    assert.ok(
+      randstadBoard !== undefined,
+      `${country} must include Randstad — its TLD has a verified canary in RANDSTAD_CANARY_URLS`,
+    );
+  }
+
+  for (const country of shouldExclude) {
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: any[]) => { warnings.push(args.join(' ')); };
+    let boards: BoardConfig[];
+    try {
+      boards = getBoardConfigs(country);
+    } finally {
+      console.warn = origWarn;
+    }
+    const randstadBoard = boards.find((b) => b.name === 'Randstad');
+    assert.equal(
+      randstadBoard, undefined,
+      `${country} must NOT include Randstad — its TLD has no verified canary`,
+    );
+    assert.ok(
+      warnings.some((w) => w.includes('excluded')),
+      `${country}: expected a warning about Randstad exclusion. Got: ${warnings.join('\n')}`,
+    );
+  }
+});
+
+// ── resolveCanaryFinalUrl — SSRF protection for IP-literal redirect targets ──
+//
+// Node bypasses the custom `lookup` hook when a redirect's Location header
+// points to an IP literal (e.g. http://127.0.0.1/).  The lookup hook is only
+// called during DNS resolution — IP literals connect directly without it.
+// These tests verify that resolveCanaryFinalUrl rejects private-IP-literal
+// redirect targets BEFORE opening any socket, so no connection is made.
+
+import { EventEmitter } from 'node:events';
+
+/** Build a minimal mock http.ClientRequest that never does anything. */
+function makeNullReq() {
+  const emitter = new EventEmitter() as any;
+  emitter.end = () => {};
+  emitter.destroy = () => {};
+  return emitter;
+}
+
+/** Build a minimal mock http.IncomingMessage that looks like a 301 redirect. */
+function makeRedirectRes(location: string) {
+  const emitter = new EventEmitter() as any;
+  emitter.statusCode = 301;
+  emitter.headers = { location };
+  emitter.destroy = () => {};
+  return emitter;
+}
+
+test('resolveCanaryFinalUrl SSRF: startUrl with 127.0.0.1 literal → returns URL unchanged, http.request NOT called', async () => {
+  // The function must detect the private IP at hop 0 and return immediately.
+  const httpCalls: string[] = [];
+  const m = mock.method(http, 'request', (opts: any, _cb: any) => {
+    httpCalls.push(opts?.hostname ?? String(opts));
+    return makeNullReq();
+  });
+  try {
+    const result = await resolveCanaryFinalUrl('http://127.0.0.1/admin');
+    assert.equal(result, 'http://127.0.0.1/admin', 'Must return the original URL unchanged');
+    assert.equal(httpCalls.length, 0, 'http.request must NOT be called for a 127.0.0.1 URL');
+  } finally {
+    m.mock.restore();
+  }
+});
+
+test('resolveCanaryFinalUrl SSRF: redirect to 127.0.0.1 → no http.request made to private IP', async () => {
+  // Simulates: https://www.randstad.ie/canary → 301 → http://127.0.0.1:8080/
+  // Expected: one HTTPS request to the legitimate host; zero HTTP requests to 127.0.0.1.
+  const httpCalls: string[] = [];
+  const httpsM = mock.method(https, 'request', (opts: any, callback: any) => {
+    // Simulate the legitimate host returning a 301 to a private IP
+    const res = makeRedirectRes('http://127.0.0.1:8080/');
+    setTimeout(() => callback(res), 0);
+    return makeNullReq();
+  });
+  const httpM = mock.method(http, 'request', (opts: any, _cb: any) => {
+    httpCalls.push(opts?.hostname ?? String(opts));
+    return makeNullReq();
+  });
+  try {
+    const result = await resolveCanaryFinalUrl('https://www.randstad.ie/jobs/canary_dublin_47299876/');
+    assert.equal(result, 'http://127.0.0.1:8080/', 'Must return the redirect destination unchanged (not followed)');
+    assert.equal(httpCalls.length, 0, 'http.request must NOT be called for the 127.0.0.1 redirect target');
+  } finally {
+    httpsM.mock.restore();
+    httpM.mock.restore();
+  }
+});
+
+test('resolveCanaryFinalUrl SSRF: redirect to RFC1918 192.168.x.x → no connection made', async () => {
+  const httpCalls: string[] = [];
+  const httpsM = mock.method(https, 'request', (opts: any, callback: any) => {
+    const res = makeRedirectRes('http://192.168.1.1/');
+    setTimeout(() => callback(res), 0);
+    return makeNullReq();
+  });
+  const httpM = mock.method(http, 'request', (opts: any, _cb: any) => {
+    httpCalls.push(opts?.hostname ?? String(opts));
+    return makeNullReq();
+  });
+  try {
+    const result = await resolveCanaryFinalUrl('https://example.com/canary');
+    assert.equal(result, 'http://192.168.1.1/', 'Must return the redirect destination unchanged (not followed)');
+    assert.equal(httpCalls.length, 0, 'http.request must NOT be called for a 192.168.x.x redirect target');
+  } finally {
+    httpsM.mock.restore();
+    httpM.mock.restore();
+  }
+});
+
+test('resolveCanaryFinalUrl SSRF: redirect to link-local 169.254.x.x → no connection made', async () => {
+  // 169.254.169.254 is the cloud metadata endpoint (AWS/GCP/Azure).
+  const httpCalls: string[] = [];
+  const httpsM = mock.method(https, 'request', (opts: any, callback: any) => {
+    const res = makeRedirectRes('http://169.254.169.254/latest/meta-data/');
+    setTimeout(() => callback(res), 0);
+    return makeNullReq();
+  });
+  const httpM = mock.method(http, 'request', (opts: any, _cb: any) => {
+    httpCalls.push(opts?.hostname ?? String(opts));
+    return makeNullReq();
+  });
+  try {
+    const result = await resolveCanaryFinalUrl('https://example.com/canary');
+    assert.equal(result, 'http://169.254.169.254/latest/meta-data/', 'Must return the redirect destination unchanged (not followed)');
+    assert.equal(httpCalls.length, 0, 'http.request must NOT be called for a link-local metadata redirect target');
+  } finally {
+    httpsM.mock.restore();
+    httpM.mock.restore();
+  }
+});
+
+test('resolveCanaryFinalUrl SSRF: startUrl with IPv6 loopback [::1] literal → returns unchanged, no connection made', async () => {
+  // Tests the same guard (hop-0 IP-literal check) as a "redirect to [::1]" scenario —
+  // the SSRF guard fires at the start of every hop before any socket is opened,
+  // so the code path is identical whether the IP arrives as the start URL or via a
+  // Location redirect header. Using a direct startUrl avoids HTTPS mock fragility.
+  const httpCalls: string[] = [];
+  const m = mock.method(http, 'request', (opts: any, _cb: any) => {
+    httpCalls.push(opts?.hostname ?? String(opts));
+    return makeNullReq();
+  });
+  try {
+    const result = await resolveCanaryFinalUrl('http://[::1]:8080/');
+    assert.equal(result, 'http://[::1]:8080/', 'IPv6 loopback URL must be returned unchanged (guard fires on hop 0)');
+    assert.equal(httpCalls.length, 0, 'http.request must NOT be called for an IPv6 loopback startUrl');
+  } finally {
+    m.mock.restore();
+  }
+});
+
+test('resolveCanaryFinalUrl SSRF: startUrl with ULA IPv6 [fc00::1] literal → returns unchanged, no connection made', async () => {
+  // fc00::/7 (fc and fd prefixes) are Unique Local Addresses (RFC 4193).
+  // Same guard as above — same hop-0 code path that also fires for redirect destinations.
+  const httpCalls: string[] = [];
+  const m = mock.method(http, 'request', (opts: any, _cb: any) => {
+    httpCalls.push(opts?.hostname ?? String(opts));
+    return makeNullReq();
+  });
+  try {
+    const result = await resolveCanaryFinalUrl('http://[fc00::1]/internal/');
+    assert.ok(
+      result.includes('fc00'),
+      `Must return the ULA IPv6 URL unchanged (guard fires on hop 0). Got: ${result}`,
+    );
+    assert.equal(httpCalls.length, 0, 'http.request must NOT be called for a ULA IPv6 startUrl');
+  } finally {
+    m.mock.restore();
+  }
 });

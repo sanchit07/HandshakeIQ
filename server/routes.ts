@@ -277,7 +277,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const existing = await storage.getUserByEmail(email);
-      if (existing?.passwordHash) {
+      if (existing) {
+        // Block registration for any existing account — including OAuth-only accounts
+        // (no passwordHash). Allowing unauthenticated password attachment to an
+        // OAuth account is an account-takeover vector: knowing the email is enough
+        // to claim the session. A verified account-linking flow is needed if this
+        // use-case is ever required.
         return res.status(409).json({ message: "An account with this email already exists. Please sign in." });
       }
 
@@ -285,19 +290,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const ADMIN_EMAIL_ENV = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
       const isAdmin = ADMIN_EMAIL_ENV ? email.trim().toLowerCase() === ADMIN_EMAIL_ENV : false;
 
-      let user;
-      if (existing) {
-        // Existing OAuth user attaching a password — upsert rather than create
-        user = await storage.upsertUser({ ...existing, passwordHash, isAdmin: existing.isAdmin || isAdmin });
-      } else {
-        user = await storage.createUser({
-          email: email.trim(),
-          firstName: firstName || null,
-          lastName: lastName || null,
-          passwordHash,
-          isAdmin,
-        });
-      }
+      const user = await storage.createUser({
+        email: email.trim(),
+        firstName: firstName || null,
+        lastName: lastName || null,
+        passwordHash,
+        isAdmin,
+      });
 
       req.session.user = { id: user.id, email: user.email, provider: 'email', isAdmin: !!user.isAdmin };
       req.session.save((err: any) => {
