@@ -238,7 +238,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!job.tailoredCv) return res.status(404).json({ message: 'No tailored CV exists for this job yet. Generate one first.' });
 
       const { generateCvPdf } = await import('./jobs/cvPdfGenerator');
+      const { checkCvParseable } = await import('./jobs/cvParseChecker');
       const pdfBuffer = await generateCvPdf(job.tailoredCv, job.title, job.company);
+
+      // Safety-net parse check: catch any CV whose PDF became unparseable
+      // after being stored (e.g. due to a renderer change or DB corruption).
+      const parseResult = await checkCvParseable(pdfBuffer);
+      if (parseResult.ok === false) {
+        console.error(`[JOBS] PDF parse check failed for job ${job.id}: ${parseResult.reason}`);
+        // Mark the stored CV as failed so the UI shows the correct state
+        const { db } = await import('./db');
+        const { jobMatches } = await import('../shared/schema.js');
+        const { eq } = await import('drizzle-orm');
+        await db.update(jobMatches).set({ status: 'cv_failed' }).where(eq(jobMatches.id, job.id)).catch(() => {});
+        return res.status(422).json({ message: `CV failed ATS parse check: ${parseResult.reason}` });
+      }
 
       const safeName = `CV_${job.company.replace(/[^a-z0-9]/gi, '_')}_${job.title.replace(/[^a-z0-9]/gi, '_')}.pdf`;
       res.setHeader('Content-Type', 'application/pdf');

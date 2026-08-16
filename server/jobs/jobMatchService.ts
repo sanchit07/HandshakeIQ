@@ -1045,6 +1045,27 @@ ${tailoredCv}`,
     }
   }
 
+  // ── Parse-ability gate ────────────────────────────────────────────────────
+  // Generate the PDF from the final markdown and confirm pdftotext can extract
+  // all fields an ATS needs: name on line 1, email, phone, standard headings,
+  // and at least one valid date range in Work Experience. Fail fast here rather
+  // than serving a broken PDF for real job applications.
+  try {
+    const { generateCvPdf } = await import('./cvPdfGenerator.js');
+    const { checkCvParseable } = await import('./cvParseChecker.js');
+    const pdfBuffer = await generateCvPdf(tailoredCv, job.title, job.company);
+    const parseResult = await checkCvParseable(pdfBuffer);
+    if (parseResult.ok === false) {
+      console.error(`[CV] Parse check FAILED for ${job.company} (${job.title}): ${parseResult.reason}`);
+      throw new Error(`CV parse check failed: ${parseResult.reason}`);
+    }
+    console.log(`[CV] Parse check passed for ${job.company} (${job.title})`);
+  } catch (e: any) {
+    // Re-throw parse-check errors; they will be caught by autoGenerateCvsForDate's
+    // retry loop and ultimately mark the job cv_failed after MAX_CV_ATTEMPTS.
+    throw e;
+  }
+
   await db.update(jobMatches).set({ tailoredCv, cvVariant, status: 'cv_ready' }).where(eq(jobMatches.id, matchId));
   return { ...job, tailoredCv, cvVariant };
 }

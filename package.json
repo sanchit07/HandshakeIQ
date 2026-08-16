@@ -16,6 +16,7 @@
     "test:register": "node --import tsx/esm --experimental-test-module-mocks --test server/routes.register.test.ts",
     "test:contacts": "node --import tsx/esm --test server/jobs/contactDiscovery.test.ts",
     "test:google-discovery": "node --import tsx/esm --test server/jobs/googleDiscovery.test.ts",
+    "test:cv-checker": "node --import tsx/esm --test server/jobs/cvParseChecker.test.ts",
     "test:components": "vitest run --config vite.config.ts"
   },
   "dependencies": {
