@@ -153,6 +153,16 @@ export async function checkUrlLive(url: string | null | undefined): Promise<bool
   // connection time). Non-allowlisted domains used to be skipped, which let
   // dead career-page/regional-board postings through unverified.
 
+  // IP-literal hosts bypass the custom DNS lookup callback entirely — reject
+  // non-public literals up front (SSRF guard for e.g. http://127.0.0.1/…).
+  const bareHost = parsedUrl.hostname.replace(/^\[|\]$/g, '');
+  if (net.isIPv4(bareHost) || net.isIPv6(bareHost)) {
+    if (isPrivateIp(bareHost)) {
+      console.log(`[LIVENESS] SSRF blocked (private IP literal): ${url}`);
+      return false;
+    }
+  }
+
   // Single AbortController shared across the probe (12 s budget)
   const TIMEOUT_MS = 12_000;
   const controller = new AbortController();
@@ -523,7 +533,7 @@ async function googleDiscoverJobUrls(country: string, roles: string[]): Promise<
   for (const q of queries) {
     try {
       const params = new URLSearchParams({ key, cx, q, num: '10', dateRestrict: 'd21' });
-      const res = await fetch(`https://www.googleapis.com/customsearch/v1?${params}`);
+      const res = await fetch(`https://www.googleapis.com/customsearch/v1?${params}`, { signal: AbortSignal.timeout(10_000) });
       if (!res.ok) {
         const errBody = await res.text().catch(() => '');
         const reason = errBody.match(/"message":\s*"([^"]+)"/)?.[1] || res.status;
@@ -768,6 +778,13 @@ CV CREATION RULES (mandatory):
 3. The document must be clean and ATS-friendly: conventional headings (Professional Summary, Work Experience, Skills, Education), standard date formats, keywords mirrored from the job description where truthful.
 4. Use simple, clear English — short sentences, active verbs, no jargon beyond what the job description itself uses.
 5. Optimize for getting shortlisted for THIS role: mirror the job's key requirements prominently in the summary and skills, and lead each role with the achievements most relevant to this job.
+6. LENGTH: strictly 2 pages maximum (~750–900 words). To achieve this: the 2 most recent/relevant roles get up to 5 bullets each; every older role gets at most 2–3 bullets; earliest/least relevant roles get 1–2 bullets.
+7. PROFESSIONAL SUMMARY: 3–4 lines maximum — seniority, domain, and the two most impressive numbers. Never a paragraph longer than 4 lines.
+8. SKILLS / CORE COMPETENCIES: at most 4 groups with at most 6 items each, chosen to mirror this job's requirements. No exhaustive keyword lists.
+9. NO DUPLICATION: do not include a separate "Key Achievements" section that repeats experience bullets. Each achievement appears exactly once, inside the role where it happened.
+10. Doctoral/ongoing research: at most 2 lines under Education (degree, institution, one-line thesis topic). No research-question lists.
+11. Certifications: include only credible, role-relevant ones. Drop generic workshop/masterclass items and certifications older than ~8 years unless directly required by the job description.
+12. Layout: left-align everything (no centered lines or padding spaces); format each role as "Job Title" then "Company — Location | Start – End" on the next line. Copy contact details (email, phone, LinkedIn, GitHub) EXACTLY as written in the source CV — never shorten or rewrite URLs.
 
 Produce the complete tailored CV in clean Markdown (headings, bullet points), ready to copy into a document. Lead with a professional summary rewritten for this specific role, reorder core competencies to match the job's priorities, and emphasize the most relevant achievements in each role.
 
@@ -782,12 +799,16 @@ If (and only if) admin input is truly required, append at the VERY END a line "A
   let tailoredCv = extractText(response);
   if (!tailoredCv || tailoredCv.length < 500) throw new Error('CV generation returned insufficient content');
 
-  // Extract the role→CV mapping declared on the first line
+  // Extract the role→CV mapping declared on the "BASE CV:" line. Claude
+  // sometimes prefixes internal reasoning before that line — strip EVERYTHING
+  // up to and including it so no planning notes leak into the delivered CV.
   let cvVariant: string | null = null;
-  const baseMatch = tailoredCv.match(/^\s*BASE CV:\s*(.+?)\s*$/m);
+  // Tolerate markdown decoration around the sentinel (e.g. "**BASE CV: X**", "# BASE CV: X")
+  const baseMatch = tailoredCv.match(/^[ \t#*_>-]*BASE CV:[ \t]*(.+?)[ \t*_]*$/m);
   if (baseMatch) {
-    cvVariant = baseMatch[1].slice(0, 200);
-    tailoredCv = tailoredCv.replace(/^\s*BASE CV:.*\n+/, '');
+    cvVariant = baseMatch[1].replace(/[*_]+$/, '').trim().slice(0, 200);
+    const idx = tailoredCv.indexOf(baseMatch[0]);
+    tailoredCv = tailoredCv.slice(idx + baseMatch[0].length).replace(/^[\s*_-]+/, '');
   }
 
   // Extract optional admin questions block, store questions, strip from CV
@@ -803,6 +824,44 @@ If (and only if) admin input is truly required, append at the VERY END a line "A
       }
     } catch (e) {
       console.error('[CV] Failed to parse admin questions block:', e);
+    }
+  }
+
+  // Enforcement pass: if the CV violates the hard rules (too long, duplicate
+  // achievements section, leftover preamble), run one condensation call.
+  const wordCount = tailoredCv.split(/\s+/).length;
+  const hasDupSection = /^#{0,3}[ \t*_]*key achievements/im.test(tailoredCv);
+  const hasPreamble = /based on my research|key findings/i.test(tailoredCv.slice(0, 600));
+  if (wordCount > 1000 || hasDupSection || hasPreamble) {
+    console.log(`[CV] Enforcement pass for ${job.company} (words=${wordCount}, dupSection=${hasDupSection}, preamble=${hasPreamble})`);
+    const fixResponse = await client.messages.create({
+      model: MODEL,
+      max_tokens: 8192,
+      messages: [{
+        role: 'user',
+        content: `Edit this CV to satisfy ALL of these rules, changing nothing else and inventing nothing:
+- Maximum 900 words total (2 printed pages). Trim by cutting bullets from older roles first (oldest roles keep 1-2 bullets, 2 most recent roles keep up to 5).
+- Professional summary: 3-4 lines max.
+- Remove any "Key Achievements" section; if it contains a fact not already in a role's bullets, move that fact into the right role instead.
+- Remove any commentary, research notes, or explanations that are not part of the CV document itself.
+- Skills: at most 4 groups of at most 6 items.
+- Doctoral research: max 2 lines under Education.
+- Keep contact details exactly as they are.
+Return ONLY the edited CV in clean Markdown — no preamble, no explanation.
+
+CV:
+${tailoredCv}`,
+      }],
+    });
+    const condensed = extractText(fixResponse).trim();
+    // Only accept the rewrite if it actually satisfies the rules it enforces
+    const okLength = condensed.split(/\s+/).length <= 1000;
+    const okNoDup = !/^#{0,3}[ \t*_]*key achievements/im.test(condensed);
+    const okNoPreamble = !/based on my research|key findings/i.test(condensed.slice(0, 600));
+    if (condensed.length > 500 && okLength && okNoDup && okNoPreamble) {
+      tailoredCv = condensed;
+    } else {
+      throw new Error(`CV enforcement pass produced a non-compliant result (len=${condensed.length}, okLength=${okLength}, okNoDup=${okNoDup}, okNoPreamble=${okNoPreamble})`);
     }
   }
 
@@ -1014,7 +1073,6 @@ export const CLOSED_JOB_MARKERS: string[] = [
   'this job has expired',
   'job has expired',
   'this position has been filled',
-  'position has been filled',
   'this job is no longer available',
   'job is no longer available',
   'posting has expired',
@@ -1025,7 +1083,9 @@ export const CLOSED_JOB_MARKERS: string[] = [
   'job posting is no longer active',
   'this job ad has expired',
   'sorry, this job is no longer open',
-  'no longer active',
+  // NOTE: deliberately NOT included: broad phrases like "no longer active" or
+  // "position has been filled" alone appear in nav/related-jobs widgets on
+  // LIVE pages and cause false positives — keep markers job-ad specific.
   // Polish
   'oferta wygasła',
   'ogłoszenie wygasło',
