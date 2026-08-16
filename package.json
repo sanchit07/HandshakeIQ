@@ -12,6 +12,7 @@
     "db:push": "drizzle-kit push",
     "db:studio": "drizzle-kit studio",
     "test:liveness": "node --import tsx/esm --test server/jobs/jobMatchService.liveness.test.ts",
+    "test:audit": "node --import tsx/esm --test server/jobs/jobMatchService.audit.test.ts",
     "test:fallback": "node --import tsx/esm --experimental-test-module-mocks --test services/intelligenceService.fallback.test.ts",
     "test:register": "node --import tsx/esm --experimental-test-module-mocks --test server/routes.register.test.ts",
     "test:contacts": "node --import tsx/esm --test server/jobs/contactDiscovery.test.ts",
