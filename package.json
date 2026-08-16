@@ -17,6 +17,7 @@
     "test:contacts": "node --import tsx/esm --test server/jobs/contactDiscovery.test.ts",
     "test:google-discovery": "node --import tsx/esm --test server/jobs/googleDiscovery.test.ts",
     "test:cv-checker": "node --import tsx/esm --test server/jobs/cvParseChecker.test.ts",
+    "test:recheck": "node --import tsx/esm --test server/jobs/recheckShortlist.test.ts",
     "test:components": "vitest run --config vite.config.ts"
   },
   "dependencies": {

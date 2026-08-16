@@ -1,7 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import cron from "node-cron";
 import { registerRoutes } from "./routes";
-import { runDailyJobSearch, verifyBoardPatterns, resolveCanaryFinalUrl } from "./jobs/jobMatchService";
+import { runDailyJobSearch, recheckRecentShortlist, verifyBoardPatterns, resolveCanaryFinalUrl } from "./jobs/jobMatchService";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -82,6 +82,18 @@ const isProduction = process.env.NODE_ENV === 'production';
   cron.schedule('0 7 * * *', async () => {
     console.log('[CRON] Starting scheduled daily job search');
     await runDailyWithRetries('Daily job search');
+    // Re-verify recent shortlist jobs (from the past 7 days) and remove any
+    // that have gone dead or stale since they were first shortlisted.
+    // Runs after the daily search so today's fresh postings are not re-checked
+    // immediately (they were just verified during discovery).
+    try {
+      const recheckResult = await recheckRecentShortlist();
+      console.log(
+        `[CRON] Recheck done: ${recheckResult.checked} checked, ${recheckResult.removed.length} removed`,
+      );
+    } catch (err) {
+      console.error('[CRON] Recheck of recent shortlist failed (non-fatal):', err);
+    }
   }, { timezone: 'Asia/Kuala_Lumpur' });
 
   // Catch-up: if the server was down at 7:00 AM, run the (idempotent) daily

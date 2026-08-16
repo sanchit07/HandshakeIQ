@@ -856,6 +856,120 @@ export async function autoDiscoverContactsForDate(runDate: string): Promise<{ di
   return { discovered, failed };
 }
 
+// ---------------------------------------------------------------------------
+// Periodic recheck of recent shortlist jobs
+// ---------------------------------------------------------------------------
+
+/** How many days back the recheck window extends (excludes today's run). */
+export const RECHECK_LOOKBACK_DAYS = 7;
+
+export interface RemovedJob {
+  id: string;
+  title: string;
+  company: string;
+  url: string | null;
+  reason: string;
+}
+
+/**
+ * Re-verifies shortlisted jobs from the last `lookbackDays` days.
+ *
+ * Today's run is excluded — those URLs were checked moments ago during
+ * discovery. Older shortlisted jobs can die after being stored (posting
+ * closed, company withdrew, aggregator page expired).
+ *
+ * Dead or stale rows are deleted. Because jobContacts and jobQuestions
+ * reference jobMatches with ON DELETE CASCADE, related rows are removed
+ * automatically by the database.
+ *
+ * UI alerts for today's run-date are updated so removals surface in the
+ * alerts panel without requiring a log search.
+ *
+ * @param lookbackDays   Window size in days (default: RECHECK_LOOKBACK_DAYS).
+ * @param liveCheckFn    Injectable for tests; defaults to checkUrlLive.
+ * @param queryFn        Injectable DB query for tests; defaults to real DB.
+ * @param deleteFn       Injectable DB delete for tests; defaults to real DB.
+ */
+export async function recheckRecentShortlist(
+  lookbackDays = RECHECK_LOOKBACK_DAYS,
+  liveCheckFn: (url: string | null | undefined) => Promise<boolean> = checkUrlLive,
+  queryFn?: (lookbackDays: number, excludeDate: string) => Promise<Array<{
+    id: string; title: string; company: string; url: string | null; runDate: string;
+  }>>,
+  deleteFn?: (id: string) => Promise<void>,
+): Promise<{ checked: number; removed: RemovedJob[] }> {
+  const runDate = todayKL();
+
+  const defaultQuery = async (days: number, excludeDate: string) =>
+    db
+      .select({
+        id: jobMatches.id,
+        title: jobMatches.title,
+        company: jobMatches.company,
+        url: jobMatches.url,
+        runDate: jobMatches.runDate,
+      })
+      .from(jobMatches)
+      .where(
+        sql`${jobMatches.runDate} >= (${excludeDate}::date - (${String(days)} || ' days')::interval)::date
+            AND ${jobMatches.runDate} < ${excludeDate}
+            AND ${jobMatches.url} IS NOT NULL`,
+      )
+      .orderBy(jobMatches.runDate, jobMatches.rank);
+
+  const defaultDelete = async (id: string) => {
+    await db.delete(jobMatches).where(eq(jobMatches.id, id));
+  };
+
+  const doQuery = queryFn ?? defaultQuery;
+  const doDelete = deleteFn ?? defaultDelete;
+
+  const recentJobs = await doQuery(lookbackDays, runDate);
+
+  if (recentJobs.length === 0) {
+    console.log(`[RECHECK] No recent shortlist jobs to re-verify (lookback ${lookbackDays} days)`);
+    return { checked: 0, removed: [] };
+  }
+
+  console.log(`[RECHECK] Re-verifying ${recentJobs.length} job(s) from the last ${lookbackDays} days`);
+
+  const removed: RemovedJob[] = [];
+  for (const job of recentJobs) {
+    try {
+      const live = await liveCheckFn(job.url);
+      if (!live) {
+        await doDelete(job.id);
+        const reason = 'URL is no longer live (dead or stale posting)';
+        removed.push({ id: job.id, title: job.title, company: job.company, url: job.url, reason });
+        console.log(`[RECHECK] Removed stale job: "${job.title}" at ${job.company} (${job.url})`);
+      }
+    } catch (e) {
+      // Network errors → keep (conservative policy: never discard a real job
+      // because of a transient timeout or DNS hiccup)
+      console.log(
+        `[RECHECK] Network error re-checking ${job.url} — keeping: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    }
+  }
+
+  console.log(`[RECHECK] Done: ${recentJobs.length} checked, ${removed.length} removed`);
+
+  // Surface removals in today's UI alert panel so they're visible without
+  // reading server logs.
+  if (removed.length > 0) {
+    const existing = boardAlertsCache.get(runDate) ?? [];
+    const names = removed.map((r) => `${r.title} at ${r.company}`).join('; ');
+    boardAlertsCache.set(runDate, [
+      ...existing,
+      `Recheck removed ${removed.length} stale job(s) from the past ${lookbackDays} days: ${names}.`,
+    ]);
+  }
+
+  return { checked: recentJobs.length, removed };
+}
+
 // Clears a stored CV so tailorCvForJob regenerates it (used with answered questions)
 export async function clearTailoredCv(matchId: string): Promise<void> {
   await db.update(jobMatches)
