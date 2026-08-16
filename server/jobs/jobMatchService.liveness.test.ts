@@ -280,11 +280,11 @@ test('checkUrlLive: 301 redirect → live (not followed)', async () => {
   assert.equal(await checkUrlLive('https://indeed.com/viewjob?jk=abc'), true);
 });
 
-test('checkUrlLive: 403 → live (bot-blocking board)', async () => {
+test('checkUrlLive: 403 → rejected (bot-blocked = unverifiable, fail closed)', async () => {
   mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
   mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
   mockRequest(https, 403);
-  assert.equal(await checkUrlLive('https://linkedin.com/jobs/view/999'), true);
+  assert.equal(await checkUrlLive('https://linkedin.com/jobs/view/999'), false);
 });
 
 test('checkUrlLive: 404 → dead', async () => {
@@ -308,11 +308,11 @@ test('checkUrlLive: 500 → live (transient error)', async () => {
   assert.equal(await checkUrlLive('https://hays.com/job/1'), true);
 });
 
-test('checkUrlLive: 429 → live (rate-limited)', async () => {
+test('checkUrlLive: 429 → rejected (bot-blocked = unverifiable, fail closed)', async () => {
   mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
   mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
   mockRequest(https, 429);
-  assert.equal(await checkUrlLive('https://seek.com/job/1'), true);
+  assert.equal(await checkUrlLive('https://seek.com/job/1'), false);
 });
 
 test('checkUrlLive: 405 (method quirk) → live (conservative keep)', async () => {
