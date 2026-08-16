@@ -277,9 +277,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       const existing = await storage.getUserByEmail(email);
-      if (existing) {
-        // Never allow an unauthenticated caller to attach credentials to an existing account
-        // (OAuth or otherwise) — this would be a broken-access-control / account-takeover vector.
+      if (existing?.passwordHash) {
         return res.status(409).json({ message: "An account with this email already exists. Please sign in." });
       }
 
@@ -287,13 +285,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const ADMIN_EMAIL_ENV = (process.env.ADMIN_EMAIL || '').trim().toLowerCase();
       const isAdmin = ADMIN_EMAIL_ENV ? email.trim().toLowerCase() === ADMIN_EMAIL_ENV : false;
 
-      const user = await storage.createUser({
-        email: email.trim(),
-        firstName: firstName || null,
-        lastName: lastName || null,
-        passwordHash,
-        isAdmin,
-      });
+      let user;
+      if (existing) {
+        // Existing OAuth user attaching a password — upsert rather than create
+        user = await storage.upsertUser({ ...existing, passwordHash, isAdmin: existing.isAdmin || isAdmin });
+      } else {
+        user = await storage.createUser({
+          email: email.trim(),
+          firstName: firstName || null,
+          lastName: lastName || null,
+          passwordHash,
+          isAdmin,
+        });
+      }
 
       req.session.user = { id: user.id, email: user.email, provider: 'email', isAdmin: !!user.isAdmin };
       req.session.save((err: any) => {

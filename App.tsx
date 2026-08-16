@@ -1,13 +1,18 @@
-import React, { useState, useCallback } from 'react';
-import LoginScreen from './components/LoginScreen';
-import Dashboard from './components/Dashboard';
-import PersonProfile from './components/PersonProfile';
-import SettingsScreen from './components/SettingsScreen';
-import CardScanner from './components/CardScanner';
-import SideMenu from './components/SideMenu';
-import UpcomingMeetings from './components/UpcomingMeetings';
-import JobOpportunities from './components/JobOpportunities';
+import React, { useState, useCallback, Suspense } from 'react';
+import ErrorBoundary from './components/ErrorBoundary';
 import SaveConfirmation from './components/modals/SaveConfirmation';
+
+// Lazy-loaded so that a broken icon import (or any module-load failure) inside
+// these screens surfaces as a React render error, which the ErrorBoundary CAN
+// catch — unlike a static import, which fails before React renders anything.
+const LoginScreen      = React.lazy(() => import('./components/LoginScreen'));
+const Dashboard        = React.lazy(() => import('./components/Dashboard'));
+const PersonProfile    = React.lazy(() => import('./components/PersonProfile'));
+const SettingsScreen   = React.lazy(() => import('./components/SettingsScreen'));
+const CardScanner      = React.lazy(() => import('./components/CardScanner'));
+const SideMenu         = React.lazy(() => import('./components/SideMenu'));
+const UpcomingMeetings = React.lazy(() => import('./components/UpcomingMeetings'));
+const JobOpportunities = React.lazy(() => import('./components/JobOpportunities'));
 import { Person, CalendarAttendee, Dossier, IntelligenceReport, GroundingChunk, SocialMediaLink } from './types';
 import { MOCK_PEOPLE, MOCK_MEETINGS } from './constants';
 import { MovingWallsLogo, HandshakeIQLogo } from './components/icons/Logos';
@@ -208,8 +213,14 @@ const App: React.FC = () => {
               </div>
             </div>
           ) : showLoginScreen || isLoginVisible ? (
-            <LoginScreen onContinueAsGuest={handleContinueAsGuest} />
+            <ErrorBoundary name="Login Screen">
+              <Suspense fallback={null}>
+                <LoginScreen onContinueAsGuest={handleContinueAsGuest} />
+              </Suspense>
+            </ErrorBoundary>
           ) : showAppContent ? (
+            <ErrorBoundary name="App">
+            <Suspense fallback={null}>
             <div className="relative w-full h-full">
                <div className={`transition-all duration-500 ease-in-out ${isProfileVisible || isSettingsVisible || isUpcomingMeetingsVisible || isJobOpportunitiesVisible ? 'transform -translate-x-full opacity-0 scale-95' : 'transform translate-x-0 opacity-100 scale-100'}`}>
                 <Dashboard
@@ -254,11 +265,21 @@ const App: React.FC = () => {
                 </div>
               )}
             </div>
+            </Suspense>
+            </ErrorBoundary>
           ) : null}
         </main>
-        {view === 'scanner' && <CardScanner onClose={handleCloseScanner} />}
+        {view === 'scanner' && (
+          <ErrorBoundary name="Card Scanner">
+            <Suspense fallback={null}>
+              <CardScanner onClose={handleCloseScanner} />
+            </Suspense>
+          </ErrorBoundary>
+        )}
         {isAuthenticated && (
-            <SideMenu 
+          <ErrorBoundary name="Side Menu">
+            <Suspense fallback={null}>
+              <SideMenu 
                 isOpen={isMenuOpen}
                 onClose={() => setIsMenuOpen(false)}
                 history={searchHistory}
@@ -269,7 +290,9 @@ const App: React.FC = () => {
                 onGoToUpcomingMeetings={handleGoToUpcomingMeetings}
                 onGoToJobOpportunities={isAdmin ? handleGoToJobOpportunities : undefined}
                 onLogout={handleLogout}
-            />
+              />
+            </Suspense>
+          </ErrorBoundary>
         )}
         <SaveConfirmation 
           isOpen={showSaveConfirmation} 
