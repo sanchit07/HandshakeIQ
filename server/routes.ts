@@ -117,7 +117,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ===== Job Hunt (admin only) =====
-  const { runDailyJobSearch, getShortlist, getShortlistDates, tailorCvForJob, clearTailoredCv, getQuestionsForJob, answerQuestion, getBoardAlerts } = await import('./jobs/jobMatchService');
+  const { runDailyJobSearch, getShortlist, getShortlistDates, tailorCvForJob, clearTailoredCv, getQuestionsForJob, answerQuestion, getBoardAlerts, getGoogleDiscoveryStatus } = await import('./jobs/jobMatchService');
 
   app.get('/api/jobs/:id/questions', requireAdmin, async (req: any, res) => {
     try {
@@ -158,11 +158,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get('/api/jobs/google-discovery-status', requireAdmin, async (_req, res) => {
+    try {
+      res.json({ googleDiscoveryStatus: getGoogleDiscoveryStatus() });
+    } catch (error) {
+      console.error('[JOBS] Error fetching Google discovery status:', error);
+      res.status(500).json({ message: 'Failed to fetch Google discovery status' });
+    }
+  });
+
   app.get('/api/jobs/board-alerts', requireAdmin, async (req: any, res) => {
     try {
       const date = typeof req.query.date === 'string' ? req.query.date : undefined;
       if (!date) return res.status(400).json({ message: 'date query parameter is required' });
-      res.json({ alerts: getBoardAlerts(date) });
+      res.json({ alerts: getBoardAlerts(date), googleDiscoveryStatus: getGoogleDiscoveryStatus() });
     } catch (error) {
       console.error('[JOBS] Error fetching board alerts:', error);
       res.status(500).json({ message: 'Failed to fetch board alerts' });
@@ -175,15 +184,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/jobs/run', requireAdmin, jobsRunRateLimit, async (req: any, res) => {
     try {
       const result = await runDailyJobSearch(!!req.body?.force);
-      res.json(result);
+      res.json({ ...result, googleDiscoveryStatus: getGoogleDiscoveryStatus() });
     } catch (error: any) {
       console.error('[JOBS] Manual run failed:', error);
-      // Include any board alerts collected before the failure (e.g. all boards returned zero)
+      // Include any board alerts and Google status collected before the failure
       const runDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
       const alerts = getBoardAlerts(runDate);
       res.status(500).json({
         message: error?.message || 'Job search run failed. Check server logs.',
         boardAlerts: alerts.length > 0 ? alerts : undefined,
+        googleDiscoveryStatus: getGoogleDiscoveryStatus(),
       });
     }
   });

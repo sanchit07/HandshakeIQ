@@ -207,6 +207,20 @@ export function getBoardAlerts(runDate: string): string[] {
   return boardAlertsCache.get(runDate) ?? [];
 }
 
+// In-memory store for the last Google Custom Search API failure.
+// Cleared automatically when a discovery call succeeds.
+let googleDiscoveryStatus: { error: string; timestamp: string } | null = null;
+
+/** Returns the last Google discovery error, or null if the last call succeeded. */
+export function getGoogleDiscoveryStatus(): { error: string; timestamp: string } | null {
+  return googleDiscoveryStatus;
+}
+
+/** Reset the Google discovery status — for testing only. */
+export function _resetGoogleDiscoveryStatus(): void {
+  googleDiscoveryStatus = null;
+}
+
 export async function runDailyJobSearch(force = false): Promise<{ runDate: string; count: number; skipped?: boolean; boardAlerts?: string[] }> {
   const runDate = todayKL();
 
@@ -519,10 +533,14 @@ const REGIONAL_SOURCES: Record<string, string[]> = {
  * boards and company career pages. Returns raw hint URLs (title + link) that
  * the supplemental Claude round verifies and structures. Fails soft.
  */
-async function googleDiscoverJobUrls(country: string, roles: string[]): Promise<Array<{ title: string; url: string }>> {
+export async function googleDiscoverJobUrls(country: string, roles: string[]): Promise<Array<{ title: string; url: string }>> {
   const key = process.env.GOOGLE_SEARCH_API_KEY;
   const cx = process.env.GOOGLE_SEARCH_ENGINE_ID;
-  if (!key || !cx) return [];
+  if (!key || !cx) {
+    const missing = [!key && 'GOOGLE_SEARCH_API_KEY', !cx && 'GOOGLE_SEARCH_ENGINE_ID'].filter(Boolean).join(', ');
+    googleDiscoveryStatus = { error: `Missing configuration: ${missing}`, timestamp: new Date().toISOString() };
+    return [];
+  }
   const regional = REGIONAL_SOURCES[country] || [];
   const roleQ = roles.slice(0, 2).join(' OR ');
   const queries = [
@@ -530,17 +548,21 @@ async function googleDiscoverJobUrls(country: string, roles: string[]): Promise<
     `${roleQ} ${country} careers apply`,
   ];
   const found: Array<{ title: string; url: string }> = [];
+  let atLeastOneSuccess = false;
   for (const q of queries) {
     try {
       const params = new URLSearchParams({ key, cx, q, num: '10', dateRestrict: 'd21' });
       const res = await fetch(`https://www.googleapis.com/customsearch/v1?${params}`, { signal: AbortSignal.timeout(10_000) });
       if (!res.ok) {
         const errBody = await res.text().catch(() => '');
-        const reason = errBody.match(/"message":\s*"([^"]+)"/)?.[1] || res.status;
+        const reason = errBody.match(/"message":\s*"([^"]+)"/)?.[1] || String(res.status);
+        const errorMsg = `HTTP ${res.status}: ${reason}`;
         console.warn(`[JOB SEARCH] Google discovery failed (${reason}) for: ${q}`);
-        if (String(reason).toLowerCase().includes('key')) break; // key problem — stop trying
+        googleDiscoveryStatus = { error: errorMsg, timestamp: new Date().toISOString() };
+        if (String(reason).toLowerCase().includes('key') || res.status === 400 || res.status === 403) break; // key/auth problem — stop trying
         continue;
       }
+      atLeastOneSuccess = true;
       const data: any = await res.json();
       for (const item of data.items || []) {
         if (typeof item.link === 'string' && /^https?:\/\//.test(item.link) && !looksLikeListingPage(item.link)) {
@@ -549,7 +571,12 @@ async function googleDiscoverJobUrls(country: string, roles: string[]): Promise<
       }
     } catch (e) {
       console.warn('[JOB SEARCH] Google discovery error (continuing):', e);
+      googleDiscoveryStatus = { error: String(e instanceof Error ? e.message : e), timestamp: new Date().toISOString() };
     }
+  }
+  if (atLeastOneSuccess) {
+    // At least one query worked — clear any stale error
+    googleDiscoveryStatus = null;
   }
   const seen = new Set<string>();
   const deduped = found.filter((f) => { const k = f.url.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });

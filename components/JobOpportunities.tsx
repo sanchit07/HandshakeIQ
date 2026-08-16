@@ -40,6 +40,7 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
     const [tailoringId, setTailoringId] = useState<string | null>(null);
     const [viewingCv, setViewingCv] = useState<JobMatch | null>(null);
     const [boardAlerts, setBoardAlerts] = useState<string[]>([]);
+    const [googleDiscoveryError, setGoogleDiscoveryError] = useState<{ error: string; timestamp: string } | null>(null);
     const [questions, setQuestions] = useState<Record<string, JobQuestion[]>>({});
     const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
 
@@ -97,8 +98,10 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
             if (alertsRes.ok) {
                 const alertData = await alertsRes.json();
                 setBoardAlerts(Array.isArray(alertData.alerts) ? alertData.alerts : []);
+                setGoogleDiscoveryError(alertData.googleDiscoveryStatus ?? null);
             } else {
                 setBoardAlerts([]);
+                setGoogleDiscoveryError(null);
             }
         } catch (e: any) {
             setError(e.message || 'Failed to load jobs');
@@ -107,7 +110,21 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
         }
     }, []);
 
-    useEffect(() => { loadDates(); }, [loadDates]);
+    // Fetch Google discovery status independently of a saved shortlist date so the
+    // warning is visible even when no shortlist exists yet (e.g. first-run or
+    // after a failed search).
+    const loadGoogleStatus = useCallback(async () => {
+        try {
+            const res = await fetch('/api/jobs/google-discovery-status');
+            if (res.ok) {
+                const data = await res.json();
+                // Only overwrite if loadJobs hasn't already set a more recent value
+                setGoogleDiscoveryError((prev) => prev ?? (data.googleDiscoveryStatus ?? null));
+            }
+        } catch { /* noop */ }
+    }, []);
+
+    useEffect(() => { loadDates(); loadGoogleStatus(); }, [loadDates, loadGoogleStatus]);
     useEffect(() => { if (selectedDate) loadJobs(selectedDate); }, [selectedDate, loadJobs]);
     useEffect(() => { if (jobs.length) loadQuestions(jobs.map((j) => j.id)); }, [jobs, loadQuestions]);
 
@@ -121,9 +138,12 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                 body: JSON.stringify({ force: false }),
             });
             const data = await res.json().catch(() => ({}));
-            // Extract board alerts from both success and error responses (e.g. all boards returned zero)
+            // Extract board alerts and Google discovery status from both success and error responses
             if (Array.isArray(data.boardAlerts) && data.boardAlerts.length > 0) {
                 setBoardAlerts(data.boardAlerts);
+            }
+            if (data.googleDiscoveryStatus !== undefined) {
+                setGoogleDiscoveryError(data.googleDiscoveryStatus ?? null);
             }
             if (!res.ok) throw new Error(data.message || 'Job search failed');
             await loadDates();
@@ -240,6 +260,15 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                 <p className="text-xs text-gray-500">
                     Automatic search runs every day at 7:00 AM (MYT) across LinkedIn, Indeed, JobStreet, Randstad and Hays in Malaysia, New Zealand, Australia, Sweden, Switzerland, Ireland, Poland and Portugal.
                 </p>
+
+                {googleDiscoveryError && (
+                    <div className="bg-red-900/20 border border-red-500/40 rounded-lg p-3 space-y-1">
+                        <p className="text-xs font-bold text-red-400 uppercase tracking-wide">🔴 Google Discovery Unavailable</p>
+                        <p className="text-xs text-red-300">Google Custom Search API error: {googleDiscoveryError.error}</p>
+                        <p className="text-xs text-red-400">Last failed: {new Date(googleDiscoveryError.timestamp).toLocaleString()}</p>
+                        <p className="text-xs text-red-500 mt-1">Regional job URL discovery is degraded. Check that GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID are valid and have remaining quota. Supplemental search will still run but may find fewer targeted leads.</p>
+                    </div>
+                )}
 
                 {boardAlerts.length > 0 && (
                     <div className="bg-yellow-900/20 border border-yellow-500/40 rounded-lg p-3 space-y-1">
