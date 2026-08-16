@@ -9,6 +9,7 @@ import path from 'path';
 import { db } from '../db';
 import { jobMatches, jobQuestions, type JobMatch, type JobQuestion } from '../../shared/schema.js';
 import { eq, desc, sql } from 'drizzle-orm';
+import { discoverContactsForJob } from './contactDiscoveryService.js';
 
 const MODEL = 'claude-sonnet-4-5';
 
@@ -551,6 +552,11 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Se
     // one by one, with retry + status tracking. A failure never stops the run.
     await autoGenerateCvsForDate(runDate);
 
+    // Phase 7: auto-discover contacts (HR + hiring manager) for every shortlisted
+    // job. Sequential per job; fail-soft per job so one lookup failure never
+    // blocks the rest of the pipeline.
+    await autoDiscoverContactsForDate(runDate);
+
     return { runDate, count: finalRows.length, boardAlerts: zeroBoardAlerts.length > 0 ? zeroBoardAlerts : undefined };
   } finally {
     await db.execute(sql`SELECT pg_advisory_unlock(${RUN_LOCK_KEY})`).catch(() => {});
@@ -817,6 +823,37 @@ export async function autoGenerateCvsForDate(runDate: string): Promise<{ generat
   }
   console.log(`[CV AUTO] Done for ${runDate}: ${generated} generated, ${failed} failed`);
   return { generated, failed };
+}
+
+/**
+ * Auto-discovers contacts (HR + hiring manager) for every job in a day's
+ * shortlist that doesn't already have contacts. Runs sequentially — Explorium
+ * and Anthropic web-search calls are rate-sensitive. Fail-soft per job so one
+ * lookup failure never blocks the rest of the pipeline.
+ */
+export async function autoDiscoverContactsForDate(runDate: string): Promise<{ discovered: number; failed: number }> {
+  // Only process jobs that have no contacts yet (idempotent re-runs)
+  const jobs = await db.select({ id: jobMatches.id, rank: jobMatches.rank, company: jobMatches.company })
+    .from(jobMatches)
+    .where(sql`${jobMatches.runDate} = ${runDate}`)
+    .orderBy(jobMatches.rank);
+
+  let discovered = 0, failed = 0;
+  console.log(`[CONTACTS AUTO] Starting contact discovery for ${jobs.length} job(s) on ${runDate}`);
+
+  for (const job of jobs) {
+    try {
+      const contacts = await discoverContactsForJob(job.id);
+      console.log(`[CONTACTS AUTO] rank ${job.rank} (${job.company}): ${contacts.length} contact(s) found`);
+      discovered++;
+    } catch (e) {
+      console.error(`[CONTACTS AUTO] rank ${job.rank} (${job.company}): discovery failed:`, e);
+      failed++;
+    }
+  }
+
+  console.log(`[CONTACTS AUTO] Done for ${runDate}: ${discovered} jobs processed, ${failed} failed`);
+  return { discovered, failed };
 }
 
 // Clears a stored CV so tailorCvForJob regenerates it (used with answered questions)
