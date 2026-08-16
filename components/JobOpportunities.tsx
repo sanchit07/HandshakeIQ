@@ -71,6 +71,7 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
     const [googleDiscoveryError, setGoogleDiscoveryError] = useState<{ error: string; timestamp: string } | null>(null);
     const [questions, setQuestions] = useState<Record<string, JobQuestion[]>>({});
     const [contacts, setContacts] = useState<Record<string, JobContact[]>>({});
+    const [contactRunResults, setContactRunResults] = useState<Record<string, { summary: string; checkedAt: string }>>({});
     const [findingContactsId, setFindingContactsId] = useState<string | null>(null);
 
     const loadContacts = useCallback(async (jobIds: string[]) => {
@@ -88,9 +89,17 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
         setError(null);
         try {
             const res = await fetch(`/api/jobs/${job.id}/find-contacts`, { method: 'POST' });
-            const data = await res.json().catch(() => ([]));
+            const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error((data as any).message || 'Contact discovery failed');
-            setContacts((prev) => ({ ...prev, [job.id]: data }));
+            // Response shape: { contacts: JobContact[], summary: string, checkedAt: string }
+            const contactList: JobContact[] = Array.isArray(data.contacts) ? data.contacts : data;
+            setContacts((prev) => ({ ...prev, [job.id]: contactList }));
+            if (data.summary) {
+                setContactRunResults((prev) => ({
+                    ...prev,
+                    [job.id]: { summary: data.summary, checkedAt: data.checkedAt || new Date().toISOString() },
+                }));
+            }
         } catch (e: any) {
             setError(e.message || 'Contact discovery failed');
         } finally {
@@ -393,9 +402,12 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                         ))}
                                     </div>
                                 </div>
-                                {(contacts[job.id] || []).length > 0 && (
+                                {(contacts[job.id] || []).length > 0 ? (
                                     <div className="mt-3 p-3 bg-gray-900/70 border border-purple-500/20 rounded-lg space-y-2">
                                         <p className="text-xs font-bold text-purple-300 uppercase tracking-wide">Contacts</p>
+                                        {contactRunResults[job.id] && (
+                                            <p className="text-xs text-gray-500 italic">{contactRunResults[job.id].summary}</p>
+                                        )}
                                         {(contacts[job.id] || []).map((c) => (
                                             <div key={c.id} className="flex flex-wrap items-center gap-2 text-xs">
                                                 <span className="px-2 py-0.5 bg-purple-900/40 text-purple-300 border border-purple-500/30 rounded-full">{CONTACT_ROLE_LABEL[c.contactRole] || c.contactRole}</span>
@@ -409,7 +421,13 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                             </div>
                                         ))}
                                     </div>
-                                )}
+                                ) : contactRunResults[job.id] ? (
+                                    <div className="mt-3 p-3 bg-gray-900/70 border border-purple-500/20 rounded-lg">
+                                        <p className="text-xs font-bold text-purple-300 uppercase tracking-wide">Contacts</p>
+                                        <p className="text-xs text-gray-400 mt-1">{contactRunResults[job.id].summary}</p>
+                                        <p className="text-xs text-gray-600 mt-1">Checked {new Date(contactRunResults[job.id].checkedAt).toLocaleString()}</p>
+                                    </div>
+                                ) : null}
                                 <div className="flex flex-wrap gap-2 mt-3">
                                     {job.url && (
                                         <a href={job.url} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 text-xs text-cyan-300 border border-cyan-400/50 rounded-full hover:bg-cyan-900/50 transition-colors">

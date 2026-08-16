@@ -213,8 +213,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/jobs/:id/find-contacts', requireAdmin, tailorRateLimit, async (req: any, res) => {
     try {
       const { discoverContactsForJob } = await import('./jobs/contactDiscoveryService');
-      const contacts = await discoverContactsForJob(req.params.id);
-      res.json(contacts);
+      const result = await discoverContactsForJob(req.params.id);
+      res.json(result);
     } catch (error: any) {
       console.error('[CONTACTS] Discovery failed:', error);
       res.status(500).json({ message: error?.message || 'Contact discovery failed' });

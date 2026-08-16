@@ -280,11 +280,18 @@ If no one can be confirmed, respond with [].`,
     .slice(0, 3);
 }
 
+export interface ContactDiscoveryResult {
+  contacts: JobContact[];
+  summary: string;
+  checkedAt: string;
+}
+
 /** Full discovery for one job match. Replaces any previous contacts. */
-export async function discoverContactsForJob(matchId: string): Promise<JobContact[]> {
+export async function discoverContactsForJob(matchId: string): Promise<ContactDiscoveryResult> {
   const [job] = await db.select().from(jobMatches).where(eq(jobMatches.id, matchId));
   if (!job) throw new Error('Job match not found');
 
+  const checkedAt = new Date().toISOString();
   const rows: Array<typeof jobContacts.$inferInsert> = [];
 
   // 1. Emails printed directly in the job posting (highest-trust HR channel)
@@ -307,10 +314,14 @@ export async function discoverContactsForJob(matchId: string): Promise<JobContac
   // 2. AI web-search identification (with mandatory evidence URLs)
   const people = await identifyPeople(job);
 
+  // Count rejections for the summary (filterByEvidenceUrl logs each rejection)
+  const validPeople = filterByEvidenceUrl(people);
+  const rejectedCount = people.length - validPeople.length;
+
   // 3. Verified email lookup for each identified person (sequential — small N)
-  //    filterByEvidenceUrl rejects anyone whose evidence_url is missing, uses an
-  //    unsafe scheme (javascript:, data:), or resolves to a bare IP address.
-  for (const p of filterByEvidenceUrl(people)) {
+  //    filterByEvidenceUrl already rejected unsafe/missing evidence URLs.
+  //    lookupEmail tries Hunter.io first, Explorium as fallback/second-opinion.
+  for (const p of validPeople) {
     const evidenceUrl = sanitizeHttpUrl(p.evidence_url)!; // guaranteed non-null after filter
     const linkedinUrl = sanitizeHttpUrl(p.linkedin_url);
     const lookup = await lookupEmail(p.full_name, job.company, linkedinUrl);
@@ -333,9 +344,50 @@ export async function discoverContactsForJob(matchId: string): Promise<JobContac
     await tx.delete(jobContacts).where(eq(jobContacts.jobMatchId, matchId));
     if (rows.length > 0) await tx.insert(jobContacts).values(rows);
   });
-  return db.select().from(jobContacts).where(eq(jobContacts.jobMatchId, matchId));
+
+  const contacts = await db.select().from(jobContacts).where(eq(jobContacts.jobMatchId, matchId));
+
+  // Build a human-readable summary of what happened
+  const summary = buildDiscoverySummary({
+    contactCount: contacts.length,
+    postingEmailCount: postingEmails.length,
+    identifiedCount: people.length,
+    rejectedCount,
+    contactsWithEmail: contacts.filter((c) => c.email).length,
+  });
+
+  return { contacts, summary, checkedAt };
 }
 
+function buildDiscoverySummary(opts: {
+  contactCount: number;
+  postingEmailCount: number;
+  identifiedCount: number;
+  rejectedCount: number;
+  contactsWithEmail: number;
+}): string {
+  const { contactCount, postingEmailCount, identifiedCount, rejectedCount, contactsWithEmail } = opts;
+
+  if (contactCount === 0) {
+    if (identifiedCount === 0 && postingEmailCount === 0) {
+      return 'No currently-employed contact could be confirmed from public sources. The web search found no HR contact or hiring manager with verifiable evidence at this company.';
+    }
+    if (identifiedCount > 0 && rejectedCount === identifiedCount) {
+      return `${identifiedCount} person${identifiedCount > 1 ? 's were' : ' was'} identified but all were rejected because their evidence URLs could not be verified.`;
+    }
+    // postingEmails but no people — shouldn't reach here with 0 contacts, but guard it
+    return 'No currently-employed contact could be confirmed from public sources.';
+  }
+
+  const parts: string[] = [];
+  parts.push(`Found ${contactCount} contact${contactCount > 1 ? 's' : ''}.`);
+  if (contactsWithEmail > 0) {
+    parts.push(`${contactsWithEmail} with a work email address.`);
+  } else {
+    parts.push('No work email could be verified via Explorium — contacts identified by name and title only.');
+  }
+  return parts.join(' ');
+}
 export async function getContactsForJob(matchId: string): Promise<JobContact[]> {
   return db.select().from(jobContacts).where(eq(jobContacts.jobMatchId, matchId));
 }
