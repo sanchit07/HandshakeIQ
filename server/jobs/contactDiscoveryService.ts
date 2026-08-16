@@ -43,7 +43,7 @@ function parseJsonLoose(text: string): any {
   throw new Error('Could not parse JSON from contact identification response');
 }
 
-interface IdentifiedPerson {
+export interface IdentifiedPerson {
   contact_role: 'hr' | 'hiring_manager' | 'department_head';
   full_name: string;
   title: string;
@@ -52,15 +52,42 @@ interface IdentifiedPerson {
   evidence_note?: string | null;
 }
 
-/** Only allow safe, public https URLs to be stored/rendered (blocks javascript:, data:, http-to-intranet etc.). */
+/** Matches a bare IPv4 address (e.g. 192.168.1.1 or 1.2.3.4). */
+const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
+
+/**
+ * Only allow safe, public https/http URLs to be stored/rendered.
+ * Rejects: javascript:, data:, ftp: and other non-http schemes;
+ *           hostnames without a dot (localhost, intranet names);
+ *           raw IPv4 addresses (192.168.1.1, 1.2.3.4 — never a public profile);
+ *           raw IPv6 addresses (contain colons — e.g. [::1], [2001:db8::1]).
+ */
 export function sanitizeHttpUrl(url: string | null | undefined): string | null {
   if (!url) return null;
   try {
     const u = new URL(String(url));
     if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
-    if (!u.hostname.includes('.')) return null;
+    const host = u.hostname;
+    if (!host.includes('.')) return null;          // no TLD → localhost/intranet
+    if (IPV4_RE.test(host)) return null;           // bare IPv4 address
+    if (host.includes(':')) return null;           // bare IPv6 address
     return u.toString();
   } catch { return null; }
+}
+
+/**
+ * Applies sanitization-based evidence filtering to a list of AI-identified
+ * people.  Anyone whose evidence_url does not survive sanitizeHttpUrl is
+ * rejected — no evidence, no contact.
+ *
+ * Exported for unit testing; also called inline in discoverContactsForJob.
+ */
+export function filterByEvidenceUrl(people: IdentifiedPerson[]): IdentifiedPerson[] {
+  return people.filter((p) => {
+    const safe = sanitizeHttpUrl(p.evidence_url);
+    if (!safe) console.log(`[CONTACTS] Rejected (bad evidence URL): ${p.full_name}`);
+    return safe !== null;
+  });
 }
 
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
@@ -281,14 +308,10 @@ export async function discoverContactsForJob(matchId: string): Promise<JobContac
   const people = await identifyPeople(job);
 
   // 3. Verified email lookup for each identified person (sequential — small N)
-  for (const p of people) {
-    // Reject anyone whose evidence URL doesn't survive sanitization — no
-    // evidence, no contact (also blocks javascript:/data: link injection).
-    const evidenceUrl = sanitizeHttpUrl(p.evidence_url);
-    if (!evidenceUrl) {
-      console.log(`[CONTACTS] Rejected (bad evidence URL): ${p.full_name}`);
-      continue;
-    }
+  //    filterByEvidenceUrl rejects anyone whose evidence_url is missing, uses an
+  //    unsafe scheme (javascript:, data:), or resolves to a bare IP address.
+  for (const p of filterByEvidenceUrl(people)) {
+    const evidenceUrl = sanitizeHttpUrl(p.evidence_url)!; // guaranteed non-null after filter
     const linkedinUrl = sanitizeHttpUrl(p.linkedin_url);
     const lookup = await lookupEmail(p.full_name, job.company, linkedinUrl);
     rows.push({
