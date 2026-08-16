@@ -132,8 +132,9 @@ export const ALLOWED_JOB_BOARD_DOMAINS: readonly string[] = [
  *  1. Domain allowlist — only known job-board/ATS hostnames are probed.
  *  2. SSRF-safe DNS — the ssrfSafeLookup callback validates ALL resolved IPs
  *     at connection time (no TOCTOU gap between check and use).
- *  3. No redirect following — 3xx is treated as "live"; we never connect to
- *     a redirect destination.
+ *  3. Redirects followed up to 3 hops, each hop SSRF-guarded; explicit expiry
+ *     redirects (e.g. LinkedIn's trk=expired_jd_redirect) and redirects away
+ *     from an ID-bearing posting URL are treated as "dead".
  *  4. Shared 10-second deadline across HEAD and fallback GET.
  *
  * Conservative failure policy: only 404/410 → dead. 403/429/5xx and network
@@ -190,7 +191,72 @@ export async function probeUrlLive(url: string | null | undefined, opts?: { skip
   try {
     // GET with body capture: many boards (LinkedIn included) return HTTP 200
     // for expired jobs — only the page text reveals it's closed.
-    const { status, body } = await httpGetWithBody(parsedUrl, controller.signal);
+    //
+    // Redirect handling (max 3 hops, each hop SSRF-guarded like the entry URL):
+    // boards commonly signal "job expired" with a 301 to a listing/search page
+    // instead of a 404. LinkedIn is explicit about it — the Location carries
+    // `trk=expired_jd_redirect`. Following the chain also lets the closed-marker
+    // / staleness / AI checks run against the FINAL page instead of passing any
+    // 3xx as live sight-unseen (the previous behaviour, which shortlisted dead
+    // LinkedIn postings).
+    const MAX_HOPS = 3;
+    let currentUrl = parsedUrl;
+    let status = 0;
+    let body = '';
+    for (let hop = 0; ; hop++) {
+      const res = await httpGetWithBody(currentUrl, controller.signal);
+      status = res.status;
+      body = res.body;
+      if (!(status >= 300 && status < 400 && res.location)) break;
+
+      // Explicit expiry redirect (LinkedIn): dead, no need to fetch the target.
+      if (/expired_jd_redirect|expired[-_]?job/i.test(res.location)) {
+        console.log(`[LIVENESS] DEAD (expiry redirect → ${res.location.slice(0, 120)}): ${url}`);
+        return { live: false, body: null };
+      }
+
+      let nextUrl: URL;
+      try { nextUrl = new URL(res.location, currentUrl); } catch { break; }
+      if (nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:') break;
+      // SSRF guard per hop: reject private IP-literal redirect targets
+      // (hostname lookups are already covered by ssrfSafeLookup).
+      const nextBare = nextUrl.hostname.replace(/^\[|\]$/g, '');
+      if ((net.isIPv4(nextBare) || net.isIPv6(nextBare)) && isPrivateIp(nextBare)) {
+        console.log(`[LIVENESS] SSRF blocked (redirect to private IP): ${url}`);
+        return { live: false, body: null };
+      }
+      if (hop >= MAX_HOPS) {
+        // A 4th redirect after following 3 targets — chain never settled;
+        // unverifiable, reject (same policy as bot-blocks).
+        console.log(`[LIVENESS] REJECTED (redirect chain exceeded ${MAX_HOPS} hops): ${url}`);
+        return { live: false, body: null };
+      }
+      currentUrl = nextUrl;
+    }
+
+    // Redirected-away-from-posting check: job posting URLs carry a unique ID
+    // (LinkedIn /jobs/view/378…, Greenhouse /jobs/468…, Lever UUIDs). If the
+    // original URL had one but the settled URL lost it, the board may have
+    // bounced us to a listing/search/home page — the standard "job closed"
+    // redirect pattern. Some ATSes legitimately canonicalize numeric URLs to
+    // slug-only ones, so require corroboration before declaring dead: an
+    // explicit error query param, or a shallow (≤2-segment) ID-less path.
+    // Ambiguous cases fall through to the content checks below (fail open here;
+    // closed-marker/staleness/AI audit still gate the final page).
+    const POSTING_TOKEN = /\d{5,}|[0-9a-f]{8}-[0-9a-f]{4}/i; // numeric id or UUID prefix
+    if (
+      POSTING_TOKEN.test(parsedUrl.pathname) &&
+      currentUrl.href !== parsedUrl.href &&
+      !POSTING_TOKEN.test(currentUrl.pathname)
+    ) {
+      const segments = currentUrl.pathname.split('/').filter(Boolean);
+      const hasErrorParam = /(^|[?&])error=/i.test(currentUrl.search);
+      if (hasErrorParam || segments.length <= 2) {
+        console.log(`[LIVENESS] DEAD (redirected off posting → ${currentUrl.href.slice(0, 120)}): ${url}`);
+        return { live: false, body: null };
+      }
+      console.log(`[LIVENESS] Redirect lost posting ID but destination looks specific — deferring to content checks: ${currentUrl.href.slice(0, 120)}`);
+    }
 
     if (status === 404 || status === 410) {
       console.log(`[LIVENESS] DEAD (${status}): ${url}`);
@@ -1230,16 +1296,22 @@ const HAYS_TLD: Record<string, string> = {
 };
 
 export async function filterLiveJobs(jobs: any[]): Promise<any[]> {
-  // Stage 1 — deterministic probes in parallel (HTTP status, closed markers,
-  // structural markers, staleness). allSettled: one unexpected rejection in a
-  // liveness probe must drop only that job, never abort the entire batch.
-  const results = await Promise.allSettled(
-    jobs.map(async (job) => ({ job, probe: await probeUrlLive(job?.url) })),
-  );
-  const survivors = results
-    .filter((r): r is PromiseFulfilledResult<{ job: any; probe: { live: boolean; body: string | null } }> =>
-      r.status === 'fulfilled' && r.value.probe.live)
-    .map((r) => r.value);
+  // Stage 1 — deterministic probes with BOUNDED concurrency (HTTP status,
+  // closed markers, structural markers, staleness). Each probe can retain a
+  // body of up to MAX_BODY (1.5 MB), so unbounded parallelism over a large
+  // candidate batch would multiply peak memory; 5 concurrent probes caps it.
+  // Per-probe failures drop only that job, never the whole batch.
+  const PROBE_CONCURRENCY = 5;
+  const survivors: Array<{ job: any; probe: { live: boolean; body: string | null } }> = [];
+  for (let i = 0; i < jobs.length; i += PROBE_CONCURRENCY) {
+    const batch = jobs.slice(i, i + PROBE_CONCURRENCY);
+    const results = await Promise.allSettled(
+      batch.map(async (job) => ({ job, probe: await probeUrlLive(job?.url) })),
+    );
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value.probe.live) survivors.push(r.value);
+    }
+  }
 
   // Stage 2 — AI posting audit on the same fetched page. SEQUENTIAL on
   // purpose: parallel Anthropic calls silently hang on rate limits.
@@ -1522,15 +1594,22 @@ export function isPrivateIp(address: string): boolean {
     if (a === 169 && b === 254) return true;             // link-local / metadata (AWS, GCP, etc.)
     if (a === 0) return true;                            // this-network
     if (a >= 224) return true;                           // multicast + reserved
+    if (a === 100 && b >= 64 && b <= 127) return true;   // CGNAT (RFC 6598)
+    if (a === 192 && b === 0) return true;               // IETF protocol assignments (RFC 6890) incl. 192.0.0.0/24 + 192.0.2.0/24 TEST-NET
+    if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking (RFC 2544)
+    if (a === 198 && b === 51) return true;              // TEST-NET-2 (198.51.100.0/24 — block whole /16 slice conservatively)
+    if (a === 203 && b === 0) return true;               // TEST-NET-3 (203.0.113.0/24 slice)
     return false;
   }
 
   if (net.isIPv6(check)) {
     const lower = check.toLowerCase();
-    if (lower === '::1') return true;                              // loopback
+    if (lower === '::1' || lower === '::') return true;            // loopback + unspecified
     if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // ULA (RFC 4193)
     if (lower.startsWith('fe80')) return true;                    // link-local (RFC 3513)
     if (lower.startsWith('ff')) return true;                      // multicast
+    if (lower.startsWith('2001:db8')) return true;                // documentation (RFC 3849)
+    if (lower.startsWith('::ffff:') || lower.startsWith('64:ff9b')) return true; // v4-mapped/translated not caught above
     return false;
   }
 
@@ -1806,8 +1885,11 @@ export async function resolveCanaryFinalUrl(startUrl: string, maxHops = 3): Prom
   }
 }
 
-function httpGetWithBody(parsedUrl: URL, signal: AbortSignal): Promise<{ status: number; body: string }> {
-  const MAX_BODY = 400 * 1024;
+function httpGetWithBody(parsedUrl: URL, signal: AbortSignal): Promise<{ status: number; body: string; location: string | null }> {
+  // 1.5 MB: Lever pages front-load ~700 KB of CSS before the job content and
+  // apply button — a 400 KB cap made the AI audit see "only CSS" and falsely
+  // kill live postings. Bounded to keep memory per probe predictable.
+  const MAX_BODY = 1536 * 1024;
   return new Promise((resolve, reject) => {
     if (signal.aborted) { reject(new Error('AbortError')); return; }
     const isHttps = parsedUrl.protocol === 'https:';
@@ -1829,13 +1911,20 @@ function httpGetWithBody(parsedUrl: URL, signal: AbortSignal): Promise<{ status:
         let size = 0;
         const chunks: Buffer[] = [];
         res.on('data', (chunk: Buffer) => {
-          size += chunk.length;
-          chunks.push(chunk);
-          if (size >= MAX_BODY) res.destroy(); // enough to detect closed markers
+          const remaining = MAX_BODY - size;
+          if (remaining <= 0) { res.destroy(); return; }
+          const piece = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
+          size += piece.length;
+          chunks.push(piece);
+          if (size >= MAX_BODY) res.destroy(); // hard cap — enough to detect closed markers
         });
         const finish = () => {
           signal.removeEventListener('abort', onAbort);
-          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') });
+          resolve({
+            status: res.statusCode ?? 0,
+            body: Buffer.concat(chunks).toString('utf8'),
+            location: (res.headers?.location as string | undefined) ?? null,
+          });
         };
         res.on('end', finish);
         res.on('close', finish);

@@ -161,7 +161,7 @@ test('isPrivateIp: IPv6 ULA fc00::/7', () => {
 test('isPrivateIp: IPv6 link-local fe80::', () => assert.equal(isPrivateIp('fe80::1'), true));
 test('isPrivateIp: IPv4-mapped IPv6 ::ffff:192.168.1.1 is private', () => assert.equal(isPrivateIp('::ffff:192.168.1.1'), true));
 test('isPrivateIp: public IPv4 is not private', () => assert.equal(isPrivateIp('1.2.3.4'), false));
-test('isPrivateIp: public IPv6 is not private', () => assert.equal(isPrivateIp('2001:db8::1'), false));
+test('isPrivateIp: public IPv6 is not private', () => assert.equal(isPrivateIp('2600:1901::1'), false));
 
 // ── ssrfSafeLookup (integration: DNS resolution + IP validation in one step) ──
 
@@ -202,9 +202,9 @@ test('ssrfSafeLookup: mixed public IPv4 + private IPv6 → SSRF blocked', async 
 
 test('ssrfSafeLookup: AAAA-only resolution resolves to public IPv6', async () => {
   mock.method(dnsPromises, 'resolve4', async () => { throw new Error('ENODATA'); });
-  mock.method(dnsPromises, 'resolve6', async () => ['2001:db8::1']);
+  mock.method(dnsPromises, 'resolve6', async () => ['2600:1901::1']);
   const { address, family } = await lookup('ipv6only.example');
-  assert.equal(address, '2001:db8::1');
+  assert.equal(address, '2600:1901::1');
   assert.equal(family, 6);
 });
 
@@ -2060,4 +2060,115 @@ test('checkUrlLive: old datePosted without skipStalenessCheck → returns false 
   mockRequest(https, 200, staleBody);
   const live = await checkUrlLive('https://example-board.com/jobs/old-posting');
   assert.equal(live, false, 'Old datePosted without skipStalenessCheck should be treated as dead');
+});
+
+// ── Redirect-following tests ─────────────────────────────────────────────────
+
+/**
+ * Mocks https.request to return a scripted sequence of responses, one per
+ * request, each with { status, body, location }.
+ */
+function mockRequestSequence(seq: Array<{ status: number; body?: string; location?: string }>) {
+  let i = 0;
+  mock.method(https, 'request', (_opts: any, callback: (res: any) => void) => {
+    const step = seq[Math.min(i++, seq.length - 1)];
+    const fakeReq = {
+      end() {
+        Promise.resolve().then(() => {
+          const handlers: Record<string, Array<(...args: any[]) => void>> = {};
+          callback({
+            statusCode: step.status,
+            headers: step.location ? { location: step.location } : {},
+            destroy() {},
+            on(event: string, handler: (...args: any[]) => void) { (handlers[event] ||= []).push(handler); return this; },
+          });
+          Promise.resolve().then(() => {
+            (handlers['data'] || []).forEach((h) => h(Buffer.from(step.body ?? '<body>Apply now</body>')));
+            (handlers['end'] || []).forEach((h) => h());
+          });
+        });
+        return this;
+      },
+      on() { return this; },
+      destroy() {},
+    };
+    return fakeReq;
+  });
+}
+
+test('redirect: expired_jd_redirect Location → dead without fetching target', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequestSequence([{ status: 301, location: 'https://www.linkedin.com/jobs/acme-jobs?trk=expired_jd_redirect' }]);
+  assert.equal(await checkUrlLive('https://au.linkedin.com/jobs/view/12345678'), false);
+});
+
+test('redirect: ID-bearing URL → shallow ID-less page → dead (redirected off posting)', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequestSequence([
+    { status: 301, location: 'https://job-boards.greenhouse.io/acme?error=true' },
+    { status: 200, body: '<body>Open roles at Acme</body>' },
+  ]);
+  assert.equal(await checkUrlLive('https://job-boards.greenhouse.io/acme/jobs/4689369006'), false);
+});
+
+test('redirect: numeric → deep slug canonicalization keeps job live (content checks pass)', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequestSequence([
+    { status: 301, location: 'https://boards.example.com/careers/openings/senior-product-manager-sydney' },
+    { status: 200, body: '<body><h1>Senior Product Manager</h1>Apply now</body>' },
+  ]);
+  assert.equal(await checkUrlLive('https://boards.example.com/jobs/123456'), true);
+});
+
+test('redirect: chain of exactly 3 redirects ending 200 → live', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequestSequence([
+    { status: 301, location: 'https://a.example.com/jobs/123456' },
+    { status: 302, location: 'https://b.example.com/jobs/123456' },
+    { status: 307, location: 'https://c.example.com/jobs/123456' },
+    { status: 200, body: '<body>Apply now</body>' },
+  ]);
+  assert.equal(await checkUrlLive('https://start.example.com/jobs/123456'), true);
+});
+
+test('redirect: 4 redirects → rejected (chain never settled)', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequestSequence([
+    { status: 301, location: 'https://a.example.com/jobs/123456' },
+    { status: 301, location: 'https://b.example.com/jobs/123456' },
+    { status: 301, location: 'https://c.example.com/jobs/123456' },
+    { status: 301, location: 'https://d.example.com/jobs/123456' },
+  ]);
+  assert.equal(await checkUrlLive('https://start.example.com/jobs/123456'), false);
+});
+
+test('redirect: Location to private IP literal → dead (SSRF blocked)', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequestSequence([{ status: 301, location: 'http://169.254.169.254/latest/meta-data/' }]);
+  assert.equal(await checkUrlLive('https://boards.example.com/jobs/123456'), false);
+});
+
+test('redirect: relative Location is resolved against current URL', async () => {
+  mock.method(dnsPromises, 'resolve4', async () => ['1.2.3.4']);
+  mock.method(dnsPromises, 'resolve6', async () => { throw new Error('ENODATA'); });
+  mockRequestSequence([
+    { status: 302, location: '/jobs/123456?utm=x' },
+    { status: 200, body: '<body>Apply now</body>' },
+  ]);
+  assert.equal(await checkUrlLive('https://boards.example.com/jobs/123456'), true);
+});
+
+test('isPrivateIp: reserved ranges added for redirect following', () => {
+  assert.equal(isPrivateIp('100.64.0.1'), true);    // CGNAT
+  assert.equal(isPrivateIp('192.0.0.8'), true);     // IETF assignments
+  assert.equal(isPrivateIp('198.18.0.1'), true);    // benchmarking
+  assert.equal(isPrivateIp('::'), true);            // unspecified
+  assert.equal(isPrivateIp('8.8.8.8'), false);
+  assert.equal(isPrivateIp('2600::1'), false);
 });
