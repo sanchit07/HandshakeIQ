@@ -139,7 +139,7 @@ export const ALLOWED_JOB_BOARD_DOMAINS: readonly string[] = [
  * errors → live (bot-blocking boards and transient outages are not discarded).
  * SSRF-blocked URLs → dead (actively rejected).
  */
-export async function checkUrlLive(url: string | null | undefined): Promise<boolean> {
+export async function checkUrlLive(url: string | null | undefined, opts?: { skipStalenessCheck?: boolean }): Promise<boolean> {
   if (!url || !/^https?:\/\//.test(url)) return true; // no URL — keep
 
   let parsedUrl: URL;
@@ -181,6 +181,11 @@ export async function checkUrlLive(url: string | null | undefined): Promise<bool
       const marker = findClosedMarker(body);
       if (marker) {
         console.log(`[LIVENESS] DEAD (closed marker "${marker}"): ${url}`);
+        return false;
+      }
+      const stale = opts?.skipStalenessCheck ? null : findStaleness(body);
+      if (stale) {
+        console.log(`[LIVENESS] DEAD (${stale}): ${url}`);
         return false;
       }
     }
@@ -246,16 +251,27 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
 
     // History for dedup rules: past vacancies (never repeat) and recent companies (4-week cooldown)
     const pastVacancies = await db
-      .select({ title: jobMatches.title, company: jobMatches.company, url: jobMatches.url })
+      .select({ title: jobMatches.title, company: jobMatches.company, url: jobMatches.url, country: jobMatches.country })
       .from(jobMatches)
       .where(sql`${jobMatches.createdAt} > now() - interval '${sql.raw(String(VACANCY_DEDUP_DAYS))} days'`);
+    // Company cooldown is PER COUNTRY: shortlisting Atlassian for Australia
+    // must not block a relevant Atlassian role in Malaysia next week. The
+    // vacancy-level dedup above (URL + title::company) stays global, so the
+    // exact same posting can never reappear anywhere.
     const recentCompanies = Array.from(new Set((await db
       .select({ company: jobMatches.company })
       .from(jobMatches)
-      .where(sql`${jobMatches.createdAt} > now() - interval '${sql.raw(String(COMPANY_COOLDOWN_DAYS))} days'`))
+      .where(sql`${jobMatches.createdAt} > now() - interval '${sql.raw(String(COMPANY_COOLDOWN_DAYS))} days' AND ${jobMatches.country} = ${country}`))
       .map((r) => r.company)));
     const pastUrls = new Set(pastVacancies.map((v) => (v.url || '').toLowerCase()).filter(Boolean));
-    const pastTitleCompany = new Set(pastVacancies.map((v) => `${v.title}::${v.company}`.toLowerCase()));
+    // Keyed by title::company::country — the same role at the same company in
+    // a DIFFERENT country is a different vacancy and must remain eligible.
+    // URL dedup above stays global (same posting URL = same vacancy anywhere).
+    const pastTitleCompany = new Set(
+      pastVacancies
+        .filter((v) => (v.country || '') === country)
+        .map((v) => `${v.title}::${v.company}`.toLowerCase()),
+    );
     const cooldownCompanies = new Set(recentCompanies.map((c) => c.toLowerCase()));
 
     // Phase 1: derive suitable role titles from the profile (not restricted to examples)
@@ -297,8 +313,17 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
     // Sequential board search — parallel web-search calls trip Anthropic rate
     // limits and stall the whole run in silent SDK retries.
     const boardResultSets: Awaited<ReturnType<typeof searchSingleBoard>>[] = [];
+    const boardCrashAlerts: string[] = [];
     for (const board of boardConfigs) {
-      boardResultSets.push(await searchSingleBoard(client, board, country, roles, recentCompanies));
+      try {
+        boardResultSets.push(await searchSingleBoard(client, board, country, roles, recentCompanies));
+      } catch (e) {
+        // One board crashing must never kill the whole run — the remaining
+        // boards and the supplemental backfill rounds are the fallback.
+        console.error(`[JOB SEARCH] Board search crashed for ${board.name} (continuing with other boards):`, e);
+        boardCrashAlerts.push(`Board search crashed for ${board.name}: ${e instanceof Error ? e.message : String(e)}. Other boards and backfill rounds still ran.`);
+        boardResultSets.push([]);
+      }
     }
 
     // Log per-board yield and build structured finding pool
@@ -323,7 +348,7 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
 
     // Always update the cache for this run-date (including empty array) so a successful
     // rerun with no zero-result boards clears any stale alerts from a prior failed run.
-    boardAlertsCache.set(runDate, zeroBoardAlerts);
+    boardAlertsCache.set(runDate, [...boardCrashAlerts, ...zeroBoardAlerts]);
 
     let rows: any[] = [];
     if (allFindings.length === 0) {
@@ -582,16 +607,26 @@ export async function geminiDiscoverJobUrls(country: string, roles: string[]): P
     for (const c of chunks.slice(0, 25)) {
       const wrapped = c?.web?.uri;
       const title = String(c?.web?.title || '').slice(0, 200);
-      if (typeof wrapped !== 'string' || !/^https:\/\//.test(wrapped)) continue;
+      if (typeof wrapped !== 'string') continue;
+      // SSRF guard: only ever fetch Google's own grounding-redirect host over
+      // HTTPS — never an arbitrary URI from the API response.
+      let wrappedUrl: URL;
+      try { wrappedUrl = new URL(wrapped); } catch { continue; }
+      if (wrappedUrl.protocol !== 'https:' || wrappedUrl.hostname !== 'vertexaisearch.cloud.google.com') continue;
       try {
-        const r = await fetch(wrapped, { method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(8_000) });
-        const target = r.headers.get('location');
-        if (target && /^https?:\/\//.test(target) && !looksLikeListingPage(target)) {
-          found.push({ title, url: target });
+        const r = await fetch(wrappedUrl, { method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(8_000) });
+        const loc = r.headers.get('location');
+        if (!loc) continue;
+        let target: URL;
+        try { target = new URL(loc, wrappedUrl); } catch { continue; }
+        if ((target.protocol === 'http:' || target.protocol === 'https:') && !looksLikeListingPage(target.href)) {
+          found.push({ title, url: target.href });
         }
       } catch { /* skip unresolvable chunk */ }
     }
-    if (found.length > 0) googleDiscoveryStatus = null;
+    // The grounded search itself succeeded — discovery is healthy even if this
+    // particular query yielded no usable posting URLs.
+    googleDiscoveryStatus = null;
     const seen = new Set<string>();
     const deduped = found.filter((f) => { const k = f.url.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
     console.log(`[JOB SEARCH] Gemini grounded discovery: ${deduped.length} candidate URL(s)`);
@@ -887,7 +922,7 @@ CV CREATION RULES (mandatory):
 11. Certifications: include only credible, role-relevant ones. Drop generic workshop/masterclass items and certifications older than ~8 years unless directly required by the job description.
 12. Layout: left-align everything (no centered lines or padding spaces); format each role as "Job Title" then "Company | Location | Month YYYY - Month YYYY" on the next line. Copy contact details (email, phone, LinkedIn, GitHub) EXACTLY as written in the source CV — never shorten or rewrite URLs.
 13. ATS AUTOFILL COMPATIBILITY (systems like Workday parse this CV to autofill application forms — structure must be machine-readable):
-   - Line 1: "# <Full Name>" and nothing else. Line 2: contact details in one line: "<City, Country> | <phone with country code> | <email> | <LinkedIn URL>".
+   - Line 1: "# <Full Name>" and nothing else. Line 2: contact details in one line: "<City, Country> | <phone with country code> | <email> | <LinkedIn URL>". The city/country MUST be the candidate's real location copied from the source CV — NEVER change it to the job's city or country (that is a false claim of residence).
    - Section headings must be EXACTLY: "Professional Summary", "Work Experience", "Education", "Skills" (plus optionally "Certifications"). No creative heading names.
    - Dates always "Month YYYY - Month YYYY" or "Month YYYY - Present", using a plain hyphen (-), never en/em dashes, "to", or seasons.
    - Every role must have title, company, location AND dates — a missing date range breaks Workday's work-history autofill.
@@ -992,10 +1027,14 @@ const HAYS_TLD: Record<string, string> = {
 };
 
 export async function filterLiveJobs(jobs: any[]): Promise<any[]> {
-  const results = await Promise.all(
+  // allSettled + per-job catch: one unexpected rejection in a liveness probe
+  // must drop only that job, never abort the entire batch (and with it the run).
+  const results = await Promise.allSettled(
     jobs.map(async (job) => ({ job, live: await checkUrlLive(job?.url) })),
   );
-  return results.filter((r) => r.live).map((r) => r.job);
+  return results
+    .filter((r): r is PromiseFulfilledResult<{ job: any; live: boolean }> => r.status === 'fulfilled' && r.value.live)
+    .map((r) => r.value.job);
 }
 
 /**
@@ -1191,6 +1230,12 @@ export const CLOSED_JOB_MARKERS: string[] = [
   'job posting is no longer active',
   'this job ad has expired',
   'sorry, this job is no longer open',
+  // Aggregators (builtin.com et al.) — "Sorry, this job was removed at 03:38 p.m. (UTC) on ..."
+  'this job was removed',
+  'this job has been removed',
+  'this posting has been removed',
+  'this listing has been removed',
+  'sorry, this job has been filled',
   // NOTE: deliberately NOT included: broad phrases like "no longer active" or
   // "position has been filled" alone appear in nav/related-jobs widgets on
   // LIVE pages and cause false positives — keep markers job-ad specific.
@@ -1210,10 +1255,30 @@ export const CLOSED_JOB_MARKERS: string[] = [
   // French (Switzerland/Ireland)
   'cette offre a expiré',
   "offre n'est plus disponible",
+  // Malay (LinkedIn serves my.linkedin.com in Malay — "No longer accepting applications")
+  'tidak lagi menerima permohonan',
+  'jawatan ini telah diisi',
+  'iklan ini telah tamat',
+];
+
+/**
+ * Structural (language-independent) closed-job signals checked against the RAW
+ * HTML before tags are stripped. LinkedIn renders a `closed-job` CSS class on
+ * expired postings in every locale — catching the class avoids needing every
+ * translation of "no longer accepting applications".
+ */
+export const CLOSED_JOB_HTML_MARKERS: string[] = [
+  'class="closed-job',           // LinkedIn (all locales)
+  'closed-job__flavor--closed',  // LinkedIn banner caption
 ];
 
 /** Returns the first closed-job marker found in the page text, or null. Exported for unit tests. */
 export function findClosedMarker(html: string): string | null {
+  // Structural markers first — matched against raw HTML (locale-independent)
+  const rawLower = html.toLowerCase();
+  for (const marker of CLOSED_JOB_HTML_MARKERS) {
+    if (rawLower.includes(marker)) return marker;
+  }
   // Strip tags/scripts and collapse whitespace so markers split across inline tags still match
   const text = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -1224,6 +1289,36 @@ export function findClosedMarker(html: string): string | null {
     .toLowerCase();
   for (const marker of CLOSED_JOB_MARKERS) {
     if (text.includes(marker)) return marker;
+  }
+  return null;
+}
+
+/**
+ * Maximum age of a job posting before it is treated as stale even if the
+ * page still returns 200. Aggregators (builtin.com etc.) keep pages up for
+ * long-filled roles — a "live" URL is not the same as an open vacancy.
+ */
+export const MAX_POSTING_AGE_DAYS = 45;
+
+/**
+ * Detect stale postings from JSON-LD JobPosting structured data:
+ * - validThrough in the past → the posting has explicitly expired
+ * - datePosted older than MAX_POSTING_AGE_DAYS → almost certainly filled
+ * Fails open: pages without parseable structured data are not rejected.
+ */
+export function findStaleness(body: string): string | null {
+  const now = Date.now();
+  const vt = body.match(/"validThrough"\s*:\s*"([^"]+)"/);
+  if (vt) {
+    const t = Date.parse(vt[1]);
+    if (Number.isFinite(t) && t < now) return `expired validThrough ${vt[1]}`;
+  }
+  const dp = body.match(/"datePosted"\s*:\s*"([^"]+)"/);
+  if (dp) {
+    const t = Date.parse(dp[1]);
+    if (Number.isFinite(t) && now - t > MAX_POSTING_AGE_DAYS * 24 * 60 * 60 * 1000) {
+      return `posting too old, datePosted ${dp[1]}`;
+    }
   }
   return null;
 }
@@ -1644,7 +1739,9 @@ export const RANDSTAD_CANARY_URLS: Record<string, string> = {
 export async function verifyBoardPatterns(
   overrideBoards?: BoardConfig[],
   overrideCanaryUrls?: Record<string, string>,
-  liveCheckFn: (url: string) => Promise<boolean> = checkUrlLive,
+  // Canaries are intentionally old postings — check reachability/pattern only,
+  // never posting age (findStaleness would false-flag every canary).
+  liveCheckFn: (url: string) => Promise<boolean> = (u) => checkUrlLive(u, { skipStalenessCheck: true }),
   overrideRandstadCanaryUrls?: Record<string, string>,
   resolveFinalUrlFn: (url: string) => Promise<string> = async (url: string) => url,
 ): Promise<void> {

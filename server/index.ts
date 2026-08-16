@@ -60,14 +60,28 @@ const isProduction = process.env.NODE_ENV === 'production';
   });
 
   // Daily job search — every day at 7:00 AM Malaysia time
+  // Auto-retry wrapper: if the 7 AM run throws, retry after 30 minutes, up to
+  // 3 attempts total. runDailyJobSearch is idempotent (skips if the day exists)
+  // so retries are safe.
+  const RETRY_DELAY_MS = 30 * 60 * 1000;
+  const runDailyWithRetries = async (label: string, attempt = 1): Promise<void> => {
+    try {
+      const result = await runDailyJobSearch();
+      console.log(`[CRON] ${label} done (attempt ${attempt}): ${result.count} jobs for ${result.runDate}${result.skipped ? ' (already existed, skipped)' : ''}`);
+    } catch (err) {
+      console.error(`[CRON] ${label} failed (attempt ${attempt}/3):`, err);
+      if (attempt < 3) {
+        console.log(`[CRON] Retrying ${label} in 30 minutes`);
+        setTimeout(() => { void runDailyWithRetries(label, attempt + 1); }, RETRY_DELAY_MS);
+      } else {
+        console.error(`[CRON] ${label} exhausted all 3 attempts — will not retry until next scheduled run or restart`);
+      }
+    }
+  };
+
   cron.schedule('0 7 * * *', async () => {
     console.log('[CRON] Starting scheduled daily job search');
-    try {
-        const result = await runDailyJobSearch();
-      console.log(`[CRON] Daily job search done: ${result.count} jobs for ${result.runDate}${result.skipped ? ' (already existed, skipped)' : ''}`);
-    } catch (err) {
-      console.error('[CRON] Daily job search failed:', err);
-    }
+    await runDailyWithRetries('Daily job search');
   }, { timezone: 'Asia/Kuala_Lumpur' });
 
   // Catch-up: if the server was down at 7:00 AM, run the (idempotent) daily
@@ -76,10 +90,7 @@ const isProduction = process.env.NODE_ENV === 'production';
     try {
       const klHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour: 'numeric', hour12: false }).format(new Date()));
       if (klHour >= 7) {
-        const result = await runDailyJobSearch();
-        if (!result.skipped) {
-          console.log(`[CRON] Startup catch-up job search done: ${result.count} jobs for ${result.runDate}`);
-        }
+        await runDailyWithRetries('Startup catch-up job search');
       }
     } catch (err) {
       console.error('[CRON] Startup catch-up job search failed:', err);
