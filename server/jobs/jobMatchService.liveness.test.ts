@@ -34,6 +34,8 @@ import {
   RANDSTAD_CANARY_URLS,
   resolveCanaryFinalUrl,
   getBoardConfigs,
+  findStaleness,
+  MAX_POSTING_AGE_DAYS,
   type BoardConfig,
 } from './jobMatchService.js';
 
@@ -1947,4 +1949,115 @@ test('resolveCanaryFinalUrl SSRF: startUrl with ULA IPv6 [fc00::1] literal → r
   } finally {
     m.mock.restore();
   }
+});
+
+// ── findStaleness unit tests ──────────────────────────────────────────────────
+
+test('findStaleness: expired validThrough → returns stale reason', () => {
+  // validThrough is a date well in the past — the posting explicitly expired
+  const pastDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(); // 10 days ago
+  const body = `<script type="application/ld+json">{"@type":"JobPosting","validThrough":"${pastDate}"}</script>`;
+  const result = findStaleness(body);
+  assert.ok(result !== null, 'Should detect expired validThrough as stale');
+  assert.ok(result!.includes('validThrough'), `Reason should mention validThrough, got: ${result}`);
+});
+
+test('findStaleness: validThrough in the future → returns null (live)', () => {
+  // validThrough is tomorrow — the posting has not yet expired
+  const futureDate = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+  const body = `<script type="application/ld+json">{"@type":"JobPosting","validThrough":"${futureDate}"}</script>`;
+  const result = findStaleness(body);
+  assert.equal(result, null, 'Future validThrough should not be flagged as stale');
+});
+
+test(`findStaleness: datePosted older than ${MAX_POSTING_AGE_DAYS} days → returns stale reason`, () => {
+  const oldDate = new Date(Date.now() - (MAX_POSTING_AGE_DAYS + 5) * 24 * 60 * 60 * 1000).toISOString();
+  const body = `<script type="application/ld+json">{"@type":"JobPosting","datePosted":"${oldDate}"}</script>`;
+  const result = findStaleness(body);
+  assert.ok(result !== null, `datePosted ${MAX_POSTING_AGE_DAYS + 5} days old should be stale`);
+  assert.ok(result!.includes('datePosted'), `Reason should mention datePosted, got: ${result}`);
+});
+
+test(`findStaleness: datePosted exactly at the limit (${MAX_POSTING_AGE_DAYS} days) → returns null (not yet stale)`, () => {
+  // Exactly MAX_POSTING_AGE_DAYS ago — the check is strictly "older than", so the boundary is not stale
+  const borderDate = new Date(Date.now() - MAX_POSTING_AGE_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const body = `<script type="application/ld+json">{"@type":"JobPosting","datePosted":"${borderDate}"}</script>`;
+  const result = findStaleness(body);
+  // Whether exactly at the limit passes or fails depends on sub-second timing, so we only verify
+  // that a datePosted 1 ms newer than the limit is never stale (the strict inequality).
+  const freshDate = new Date(Date.now() - (MAX_POSTING_AGE_DAYS * 24 * 60 * 60 * 1000) + 60_000).toISOString();
+  const freshBody = `<script type="application/ld+json">{"@type":"JobPosting","datePosted":"${freshDate}"}</script>`;
+  assert.equal(findStaleness(freshBody), null, 'datePosted 1 min inside the window should not be stale');
+});
+
+test(`findStaleness: datePosted within ${MAX_POSTING_AGE_DAYS} days → returns null (live)`, () => {
+  const recentDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(); // 1 week ago
+  const body = `<script type="application/ld+json">{"@type":"JobPosting","datePosted":"${recentDate}"}</script>`;
+  const result = findStaleness(body);
+  assert.equal(result, null, 'Recent datePosted (1 week old) should not be stale');
+});
+
+test('findStaleness: malformed validThrough date string → fails open (returns null)', () => {
+  // Non-parseable date value must not throw and must not flag the posting as stale
+  const body = `<script type="application/ld+json">{"@type":"JobPosting","validThrough":"not-a-date"}</script>`;
+  const result = findStaleness(body);
+  assert.equal(result, null, 'Malformed validThrough should fail open, not flag as stale');
+});
+
+test('findStaleness: malformed datePosted date string → fails open (returns null)', () => {
+  const body = `<script type="application/ld+json">{"@type":"JobPosting","datePosted":"??/??/????"}</script>`;
+  const result = findStaleness(body);
+  assert.equal(result, null, 'Malformed datePosted should fail open, not flag as stale');
+});
+
+test('findStaleness: no structured data at all → fails open (returns null)', () => {
+  const body = '<html><body><h1>Senior Engineer</h1><p>Apply now!</p></body></html>';
+  const result = findStaleness(body);
+  assert.equal(result, null, 'Page without JSON-LD structured data should fail open');
+});
+
+test('findStaleness: JSON-LD present but no date fields → fails open (returns null)', () => {
+  const body = `<script type="application/ld+json">{"@type":"JobPosting","title":"Engineer","hiringOrganization":{"name":"Acme"}}</script>`;
+  const result = findStaleness(body);
+  assert.equal(result, null, 'Structured data without date fields should fail open');
+});
+
+test('findStaleness: empty string body → fails open (returns null)', () => {
+  assert.equal(findStaleness(''), null, 'Empty body should fail open');
+});
+
+// ── checkUrlLive + skipStalenessCheck integration tests ──────────────────────
+
+test('checkUrlLive: expired validThrough in response body → returns false (stale)', async () => {
+  const pastDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const staleBody = `<html><body><script type="application/ld+json">{"@type":"JobPosting","validThrough":"${pastDate}"}</script></body></html>`;
+  mockRequest(https, 200, staleBody);
+  const live = await checkUrlLive('https://example-board.com/jobs/123');
+  assert.equal(live, false, 'Posting with expired validThrough should be treated as dead');
+});
+
+test('checkUrlLive with skipStalenessCheck: expired validThrough in body → returns true (staleness bypassed)', async () => {
+  // The canary verifier passes skipStalenessCheck: true so old canary postings
+  // (whose validThrough has long since passed) are not false-flagged as dead.
+  const pastDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const staleBody = `<html><body><script type="application/ld+json">{"@type":"JobPosting","validThrough":"${pastDate}"}</script></body></html>`;
+  mockRequest(https, 200, staleBody);
+  const live = await checkUrlLive('https://example-board.com/jobs/canary-123', { skipStalenessCheck: true });
+  assert.equal(live, true, 'skipStalenessCheck should bypass expired validThrough check');
+});
+
+test('checkUrlLive with skipStalenessCheck: old datePosted in body → returns true (staleness bypassed)', async () => {
+  const oldDate = new Date(Date.now() - (MAX_POSTING_AGE_DAYS + 10) * 24 * 60 * 60 * 1000).toISOString();
+  const staleBody = `<html><body><script type="application/ld+json">{"@type":"JobPosting","datePosted":"${oldDate}"}</script></body></html>`;
+  mockRequest(https, 200, staleBody);
+  const live = await checkUrlLive('https://example-board.com/jobs/old-canary', { skipStalenessCheck: true });
+  assert.equal(live, true, 'skipStalenessCheck should bypass old datePosted check');
+});
+
+test('checkUrlLive: old datePosted without skipStalenessCheck → returns false (stale)', async () => {
+  const oldDate = new Date(Date.now() - (MAX_POSTING_AGE_DAYS + 10) * 24 * 60 * 60 * 1000).toISOString();
+  const staleBody = `<html><body><script type="application/ld+json">{"@type":"JobPosting","datePosted":"${oldDate}"}</script></body></html>`;
+  mockRequest(https, 200, staleBody);
+  const live = await checkUrlLive('https://example-board.com/jobs/old-posting');
+  assert.equal(live, false, 'Old datePosted without skipStalenessCheck should be treated as dead');
 });
