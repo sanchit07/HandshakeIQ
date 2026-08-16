@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { Suspense } from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import '@testing-library/jest-dom';
 import ErrorBoundary from './ErrorBoundary';
@@ -121,5 +121,33 @@ describe('ErrorBoundary', () => {
     // Child should render successfully now
     expect(screen.getByText('All good')).toBeInTheDocument();
     expect(screen.queryByText('Something went wrong')).not.toBeInTheDocument();
+  });
+
+  it('shows the error card when a React.lazy import promise rejects (Suspense + lazy pattern from App.tsx)', async () => {
+    // Silence React's error logging for this test
+    console.error = vi.fn();
+
+    // Simulate a lazy-loaded module whose dynamic import rejects.
+    // React.lazy throws the rejection as a render error once the promise settles,
+    // which the wrapping ErrorBoundary should catch.
+    const BrokenLazy = React.lazy(
+      () => Promise.reject(new Error('Failed to load chunk')) as never,
+    );
+
+    await act(async () => {
+      render(
+        <ErrorBoundary name="Broken Screen">
+          <Suspense fallback={<div>Loading…</div>}>
+            <BrokenLazy />
+          </Suspense>
+        </ErrorBoundary>,
+      );
+    });
+
+    // The boundary should have caught the lazy-load failure and shown the card.
+    await waitFor(() => {
+      expect(screen.getByText('Something went wrong')).toBeInTheDocument();
+    });
+    expect(screen.getByText(/"Broken Screen" failed to render\./i)).toBeInTheDocument();
   });
 });
