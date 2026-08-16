@@ -91,7 +91,71 @@ async function exploriumFetch(path: string, body: any): Promise<any> {
 interface EmailLookupResult {
   email: string | null;
   emailStatus: 'verified' | 'unverified' | 'not_found';
-  emailSource: 'explorium' | 'none';
+  emailSource: 'hunter' | 'explorium' | 'none';
+}
+
+/**
+ * Primary email lookup via Hunter.io email-finder + email-verifier.
+ * Status mapping: verifier "valid" → verified; "invalid"/"disposable" → discard;
+ * anything else (accept_all, unknown, risky) → unverified.
+ * Fails soft on API/key errors so the Explorium fallback can run.
+ */
+export async function lookupEmailViaHunter(
+  fullName: string,
+  companyName: string,
+): Promise<EmailLookupResult> {
+  const notFound: EmailLookupResult = { email: null, emailStatus: 'not_found', emailSource: 'none' };
+  const key = process.env.HUNTER_API_KEY;
+  if (!key) return notFound;
+  try {
+    const params = new URLSearchParams({ company: companyName, full_name: fullName, api_key: key });
+    const res = await fetch(`https://api.hunter.io/v2/email-finder?${params}`, { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.log(`[CONTACTS] Hunter email-finder failed (${res.status}): ${text.slice(0, 200)}`);
+      return notFound;
+    }
+    const data = (await res.json())?.data;
+    const email: string | null = data?.email ? String(data.email).toLowerCase() : null;
+    if (!email) return notFound;
+    const status: string = (data?.verification?.status ?? '').toString().toLowerCase();
+    if (status === 'invalid' || status === 'disposable') {
+      console.log(`[CONTACTS] Hunter: ${email} verification=${status} — discarding`);
+      return notFound;
+    }
+    return { email, emailStatus: status === 'valid' ? 'verified' : 'unverified', emailSource: 'hunter' };
+  } catch (err: any) {
+    console.log(`[CONTACTS] Hunter lookup failed for ${fullName} @ ${companyName}: ${err?.message}`);
+    return notFound;
+  }
+}
+
+/**
+ * Combined lookup: Hunter.io first; Explorium as fallback when Hunter finds
+ * nothing, and as a second opinion when Hunter's result is unverified
+ * (a verified Explorium email wins over an unverified Hunter one; agreement
+ * between the two providers upgrades the status to verified).
+ */
+export async function lookupEmail(
+  fullName: string,
+  companyName: string,
+  linkedinUrl?: string | null,
+): Promise<EmailLookupResult> {
+  const hunter = await lookupEmailViaHunter(fullName, companyName);
+  if (hunter.email && hunter.emailStatus === 'verified') return hunter;
+
+  const explorium = await lookupEmailViaExplorium(fullName, companyName, linkedinUrl);
+  if (!hunter.email) return explorium.email ? explorium : hunter;
+
+  // Hunter found an unverified email — use Explorium as a second opinion
+  if (explorium.email) {
+    if (explorium.email === hunter.email) {
+      // Two independent providers agree — treat as verified
+      return { email: hunter.email, emailStatus: 'verified', emailSource: 'hunter' };
+    }
+    if (explorium.emailStatus === 'verified') return explorium;
+  }
+  return hunter;
 }
 
 /**
@@ -226,7 +290,7 @@ export async function discoverContactsForJob(matchId: string): Promise<JobContac
       continue;
     }
     const linkedinUrl = sanitizeHttpUrl(p.linkedin_url);
-    const lookup = await lookupEmailViaExplorium(p.full_name, job.company, linkedinUrl);
+    const lookup = await lookupEmail(p.full_name, job.company, linkedinUrl);
     rows.push({
       jobMatchId: matchId,
       contactRole: p.contact_role,

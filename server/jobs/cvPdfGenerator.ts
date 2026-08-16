@@ -205,8 +205,11 @@ export function generateCvPdf(markdownCv: string, jobTitle: string, company: str
        */
       bufferPages: true,
       info: {
-        Title: `CV – ${jobTitle} at ${company}`,
-        Author: 'Auto-Apply System',
+        // Some parsers read PDF metadata: put the candidate name (first h1
+        // line of the CV) in Title/Author rather than tool branding.
+        Title: (markdownCv.match(/^#\s+(.+)$/m)?.[1] ?? `CV - ${jobTitle}`).trim(),
+        Author: (markdownCv.match(/^#\s+(.+)$/m)?.[1] ?? '').trim() || undefined,
+        Subject: `CV - ${jobTitle} at ${company}`,
       },
     });
 
@@ -236,7 +239,9 @@ export function generateCvPdf(markdownCv: string, jobTitle: string, company: str
             .font(FONTS.bold)
             .fontSize(22)
             .fillColor(COLOURS.name)
-            .text(line.text, lx, doc.y, { align: 'center', width: usableWidth });
+            // Left-aligned: ATS parsers read top-left first and some treat
+            // centered text blocks as decoration rather than the candidate name.
+            .text(line.text, lx, doc.y, { align: 'left', width: usableWidth });
           const ruleY = doc.y + 4;
           doc
             .moveTo(lx, ruleY)
@@ -385,7 +390,7 @@ export function generateCvPdf(markdownCv: string, jobTitle: string, company: str
             .fillColor(isMeta ? COLOURS.meta : COLOURS.body)
             .text(stripInline(line.text), lx, doc.y, {
               width: usableWidth,
-              align: isMeta ? 'center' : 'left',
+              align: 'left', // never center — centered contact lines break some ATS field mapping
               lineGap: 2,
             });
           break;

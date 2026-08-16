@@ -41,10 +41,12 @@ function setGoogleEnv() {
   process.env.GOOGLE_SEARCH_ENGINE_ID = 'test-cx';
 }
 
-/** Remove Google env vars. */
+/** Remove Google env vars (including GEMINI_API_KEY so the Gemini grounded
+ * fallback can't fire a live API call from unit tests). */
 function clearGoogleEnv() {
   delete process.env.GOOGLE_SEARCH_API_KEY;
   delete process.env.GOOGLE_SEARCH_ENGINE_ID;
+  delete process.env.GEMINI_API_KEY;
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

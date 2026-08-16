@@ -444,8 +444,12 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Se
     // run supplemental search rounds to backfill — the show must go on.
     let finalRows = rows;
     let round = 0;
-    while (finalRows.length < MIN_DAILY_JOBS && round < 3) {
+    let consecutiveEmptyRounds = 0;
+    // Up to 6 rounds, but stop early after 2 consecutive rounds that add
+    // nothing new — more rounds would just re-find excluded/dead postings.
+    while (finalRows.length < MIN_DAILY_JOBS && round < 6 && consecutiveEmptyRounds < 2) {
       round++;
+      const countBefore = finalRows.length;
       console.log(`[JOB SEARCH] Only ${finalRows.length}/${MIN_DAILY_JOBS} live jobs — supplemental round ${round}`);
       try {
         const excludeCompanies = [
@@ -487,9 +491,20 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Se
       } catch (e) {
         console.error(`[JOB SEARCH] Supplemental round ${round} failed (continuing):`, e);
       }
+      consecutiveEmptyRounds = finalRows.length > countBefore ? 0 : consecutiveEmptyRounds + 1;
     }
     if (finalRows.length < MIN_DAILY_JOBS) {
       console.warn(`[JOB SEARCH] Could not reach ${MIN_DAILY_JOBS} live jobs after ${round} extra rounds — saving ${finalRows.length}`);
+      // Surface the shortfall in the UI alerts panel, with the likely causes,
+      // instead of burying it in server logs.
+      const causes: string[] = [];
+      if (getGoogleDiscoveryStatus()) causes.push('Google discovery is unavailable (see the red banner)');
+      causes.push(`companies from the last ${COMPANY_COOLDOWN_DAYS} days are excluded by the no-repeat rule`);
+      const existing = boardAlertsCache.get(runDate) ?? [];
+      boardAlertsCache.set(runDate, [
+        ...existing,
+        `Shortfall: only ${finalRows.length} of ${MIN_DAILY_JOBS} live close-match jobs found for ${country} after ${round} extra search rounds. Likely causes: ${causes.join('; ')}. All ${finalRows.length} saved jobs are verified live.`,
+      ]);
     }
 
     if (finalRows.length === 0) {
@@ -533,13 +548,67 @@ const REGIONAL_SOURCES: Record<string, string[]> = {
  * boards and company career pages. Returns raw hint URLs (title + link) that
  * the supplemental Claude round verifies and structures. Fails soft.
  */
+/**
+ * Discovery via Gemini with Google Search grounding. Used because Google has
+ * restricted the Custom Search JSON API for newer accounts (persistent 403
+ * regardless of console configuration, confirmed Aug 2026). Grounding chunk
+ * URIs are Google redirect wrappers, so each is resolved to its real
+ * destination before being used as a hint.
+ */
+export async function geminiDiscoverJobUrls(country: string, roles: string[]): Promise<Array<{ title: string; url: string }>> {
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) return [];
+  const regional = (REGIONAL_SOURCES[country] || []).slice(0, 6).join(', ');
+  const roleQ = roles.slice(0, 3).join(', ');
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `Search Google for individual job posting pages (one specific vacancy per URL, not listing/search pages) currently open in ${country} for these roles: ${roleQ}. Prioritize these job boards: ${regional}, plus LinkedIn, company career pages, and ATS pages (greenhouse.io, lever.co, workable.com, smartrecruiters.com). List what you find with job title and company.` }] }],
+        tools: [{ google_search: {} }],
+      }),
+      signal: AbortSignal.timeout(45_000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      googleDiscoveryStatus = { error: `Gemini discovery HTTP ${res.status}: ${body.slice(0, 150)}`, timestamp: new Date().toISOString() };
+      return [];
+    }
+    const data: any = await res.json();
+    const chunks: any[] = data?.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+    // Resolve Google's grounding redirect wrappers to the real posting URLs
+    const found: Array<{ title: string; url: string }> = [];
+    for (const c of chunks.slice(0, 25)) {
+      const wrapped = c?.web?.uri;
+      const title = String(c?.web?.title || '').slice(0, 200);
+      if (typeof wrapped !== 'string' || !/^https:\/\//.test(wrapped)) continue;
+      try {
+        const r = await fetch(wrapped, { method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(8_000) });
+        const target = r.headers.get('location');
+        if (target && /^https?:\/\//.test(target) && !looksLikeListingPage(target)) {
+          found.push({ title, url: target });
+        }
+      } catch { /* skip unresolvable chunk */ }
+    }
+    if (found.length > 0) googleDiscoveryStatus = null;
+    const seen = new Set<string>();
+    const deduped = found.filter((f) => { const k = f.url.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+    console.log(`[JOB SEARCH] Gemini grounded discovery: ${deduped.length} candidate URL(s)`);
+    return deduped;
+  } catch (e) {
+    googleDiscoveryStatus = { error: `Gemini discovery: ${e instanceof Error ? e.message : String(e)}`, timestamp: new Date().toISOString() };
+    return [];
+  }
+}
+
 export async function googleDiscoverJobUrls(country: string, roles: string[]): Promise<Array<{ title: string; url: string }>> {
   const key = process.env.GOOGLE_SEARCH_API_KEY;
   const cx = process.env.GOOGLE_SEARCH_ENGINE_ID;
   if (!key || !cx) {
     const missing = [!key && 'GOOGLE_SEARCH_API_KEY', !cx && 'GOOGLE_SEARCH_ENGINE_ID'].filter(Boolean).join(', ');
     googleDiscoveryStatus = { error: `Missing configuration: ${missing}`, timestamp: new Date().toISOString() };
-    return [];
+    return geminiDiscoverJobUrls(country, roles);
   }
   const regional = REGIONAL_SOURCES[country] || [];
   const roleQ = roles.slice(0, 2).join(' OR ');
@@ -577,6 +646,11 @@ export async function googleDiscoverJobUrls(country: string, roles: string[]): P
   if (atLeastOneSuccess) {
     // At least one query worked — clear any stale error
     googleDiscoveryStatus = null;
+  } else {
+    // Custom Search is fully unavailable (e.g. Google's new-account API
+    // restriction) — fall back to Gemini grounded search.
+    console.log('[JOB SEARCH] Custom Search unavailable — falling back to Gemini grounded discovery');
+    return geminiDiscoverJobUrls(country, roles);
   }
   const seen = new Set<string>();
   const deduped = found.filter((f) => { const k = f.url.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
@@ -811,7 +885,14 @@ CV CREATION RULES (mandatory):
 9. NO DUPLICATION: do not include a separate "Key Achievements" section that repeats experience bullets. Each achievement appears exactly once, inside the role where it happened.
 10. Doctoral/ongoing research: at most 2 lines under Education (degree, institution, one-line thesis topic). No research-question lists.
 11. Certifications: include only credible, role-relevant ones. Drop generic workshop/masterclass items and certifications older than ~8 years unless directly required by the job description.
-12. Layout: left-align everything (no centered lines or padding spaces); format each role as "Job Title" then "Company — Location | Start – End" on the next line. Copy contact details (email, phone, LinkedIn, GitHub) EXACTLY as written in the source CV — never shorten or rewrite URLs.
+12. Layout: left-align everything (no centered lines or padding spaces); format each role as "Job Title" then "Company | Location | Month YYYY - Month YYYY" on the next line. Copy contact details (email, phone, LinkedIn, GitHub) EXACTLY as written in the source CV — never shorten or rewrite URLs.
+13. ATS AUTOFILL COMPATIBILITY (systems like Workday parse this CV to autofill application forms — structure must be machine-readable):
+   - Line 1: "# <Full Name>" and nothing else. Line 2: contact details in one line: "<City, Country> | <phone with country code> | <email> | <LinkedIn URL>".
+   - Section headings must be EXACTLY: "Professional Summary", "Work Experience", "Education", "Skills" (plus optionally "Certifications"). No creative heading names.
+   - Dates always "Month YYYY - Month YYYY" or "Month YYYY - Present", using a plain hyphen (-), never en/em dashes, "to", or seasons.
+   - Every role must have title, company, location AND dates — a missing date range breaks Workday's work-history autofill.
+   - Education entries: "Degree, Field | Institution | YYYY - YYYY" one per line.
+   - No text in headers/footers, no abbreviations for months, no symbols/icons in contact details (write "Phone:" style plain text only if needed).
 
 Produce the complete tailored CV in clean Markdown (headings, bullet points), ready to copy into a document. Lead with a professional summary rewritten for this specific role, reorder core competencies to match the job's priorities, and emphasize the most relevant achievements in each role.
 
