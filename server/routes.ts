@@ -210,6 +210,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post('/api/jobs/:id/find-contacts', requireAdmin, tailorRateLimit, async (req: any, res) => {
+    try {
+      const { discoverContactsForJob } = await import('./jobs/contactDiscoveryService');
+      const contacts = await discoverContactsForJob(req.params.id);
+      res.json(contacts);
+    } catch (error: any) {
+      console.error('[CONTACTS] Discovery failed:', error);
+      res.status(500).json({ message: error?.message || 'Contact discovery failed' });
+    }
+  });
+
+  app.get('/api/jobs/:id/contacts', requireAdmin, async (req: any, res) => {
+    try {
+      const { getContactsForJob } = await import('./jobs/contactDiscoveryService');
+      res.json(await getContactsForJob(req.params.id));
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to load contacts' });
+    }
+  });
+
   app.get('/api/jobs/:id/cv.pdf', requireAdmin, async (req: any, res) => {
     try {
       const { getJobById } = await import('./jobs/jobMatchService');

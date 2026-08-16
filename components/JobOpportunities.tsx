@@ -19,6 +19,34 @@ interface JobMatch {
     status?: string | null;
 }
 
+interface JobContact {
+    id: string;
+    jobMatchId: string;
+    contactRole: 'hr' | 'hiring_manager' | 'department_head';
+    fullName: string;
+    title: string | null;
+    linkedinUrl: string | null;
+    evidenceUrl: string | null;
+    evidenceNote: string | null;
+    email: string | null;
+    emailSource: string | null;
+    emailStatus: 'verified' | 'unverified' | 'listed_in_posting' | 'not_found';
+    checkedAt: string | null;
+}
+
+const CONTACT_ROLE_LABEL: Record<JobContact['contactRole'], string> = {
+    hr: 'HR / Recruiter',
+    hiring_manager: 'Hiring Manager',
+    department_head: 'Department Head',
+};
+
+const EMAIL_STATUS_BADGE: Record<JobContact['emailStatus'], { label: string; cls: string }> = {
+    verified: { label: 'Verified email', cls: 'bg-green-900/40 text-green-300 border-green-500/30' },
+    listed_in_posting: { label: 'From job posting', cls: 'bg-green-900/40 text-green-300 border-green-500/30' },
+    unverified: { label: 'Unverified — use with caution', cls: 'bg-yellow-900/40 text-yellow-300 border-yellow-500/30' },
+    not_found: { label: 'No email found', cls: 'bg-gray-800 text-gray-400 border-gray-600/40' },
+};
+
 interface JobQuestion {
     id: string;
     jobMatchId: string;
@@ -42,6 +70,33 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
     const [boardAlerts, setBoardAlerts] = useState<string[]>([]);
     const [googleDiscoveryError, setGoogleDiscoveryError] = useState<{ error: string; timestamp: string } | null>(null);
     const [questions, setQuestions] = useState<Record<string, JobQuestion[]>>({});
+    const [contacts, setContacts] = useState<Record<string, JobContact[]>>({});
+    const [findingContactsId, setFindingContactsId] = useState<string | null>(null);
+
+    const loadContacts = useCallback(async (jobIds: string[]) => {
+        const entries = await Promise.all(jobIds.map(async (id) => {
+            try {
+                const res = await fetch(`/api/jobs/${id}/contacts`);
+                return [id, res.ok ? await res.json() : []] as const;
+            } catch { return [id, []] as const; }
+        }));
+        setContacts(Object.fromEntries(entries));
+    }, []);
+
+    const handleFindContacts = async (job: JobMatch) => {
+        setFindingContactsId(job.id);
+        setError(null);
+        try {
+            const res = await fetch(`/api/jobs/${job.id}/find-contacts`, { method: 'POST' });
+            const data = await res.json().catch(() => ([]));
+            if (!res.ok) throw new Error((data as any).message || 'Contact discovery failed');
+            setContacts((prev) => ({ ...prev, [job.id]: data }));
+        } catch (e: any) {
+            setError(e.message || 'Contact discovery failed');
+        } finally {
+            setFindingContactsId(null);
+        }
+    };
     const [answerDrafts, setAnswerDrafts] = useState<Record<string, string>>({});
 
     const loadQuestions = useCallback(async (jobIds: string[]) => {
@@ -126,7 +181,7 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
 
     useEffect(() => { loadDates(); loadGoogleStatus(); }, [loadDates, loadGoogleStatus]);
     useEffect(() => { if (selectedDate) loadJobs(selectedDate); }, [selectedDate, loadJobs]);
-    useEffect(() => { if (jobs.length) loadQuestions(jobs.map((j) => j.id)); }, [jobs, loadQuestions]);
+    useEffect(() => { if (jobs.length) { loadQuestions(jobs.map((j) => j.id)); loadContacts(jobs.map((j) => j.id)); } }, [jobs, loadQuestions, loadContacts]);
 
     const handleRunNow = async () => {
         setRunning(true);
@@ -338,6 +393,23 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                         ))}
                                     </div>
                                 </div>
+                                {(contacts[job.id] || []).length > 0 && (
+                                    <div className="mt-3 p-3 bg-gray-900/70 border border-purple-500/20 rounded-lg space-y-2">
+                                        <p className="text-xs font-bold text-purple-300 uppercase tracking-wide">Contacts</p>
+                                        {(contacts[job.id] || []).map((c) => (
+                                            <div key={c.id} className="flex flex-wrap items-center gap-2 text-xs">
+                                                <span className="px-2 py-0.5 bg-purple-900/40 text-purple-300 border border-purple-500/30 rounded-full">{CONTACT_ROLE_LABEL[c.contactRole] || c.contactRole}</span>
+                                                <span className="text-white font-semibold">{c.fullName}</span>
+                                                {c.title && <span className="text-gray-400">— {c.title}</span>}
+                                                {c.email ? <span className="text-cyan-300 select-all">{c.email}</span> : null}
+                                                <span className={`px-2 py-0.5 border rounded-full ${EMAIL_STATUS_BADGE[c.emailStatus]?.cls || ''}`}>{EMAIL_STATUS_BADGE[c.emailStatus]?.label || c.emailStatus}</span>
+                                                {c.linkedinUrl && <a href={c.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">LinkedIn</a>}
+                                                {c.evidenceUrl && <a href={c.evidenceUrl} target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:underline">Source</a>}
+                                                {c.evidenceNote && <span className="w-full text-gray-500 italic">{c.evidenceNote}</span>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                                 <div className="flex flex-wrap gap-2 mt-3">
                                     {job.url && (
                                         <a href={job.url} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 text-xs text-cyan-300 border border-cyan-400/50 rounded-full hover:bg-cyan-900/50 transition-colors">
@@ -350,6 +422,13 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                         className="px-3 py-1.5 text-xs font-bold text-slate-900 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 rounded-full transition-colors"
                                     >
                                         {tailoringId === job.id ? 'Preparing CV...' : job.tailoredCv ? 'View Tailored CV' : 'Prepare Tailored CV'}
+                                    </button>
+                                    <button
+                                        onClick={() => handleFindContacts(job)}
+                                        disabled={findingContactsId === job.id}
+                                        className="px-3 py-1.5 text-xs font-bold text-slate-900 bg-purple-400 hover:bg-purple-300 disabled:opacity-50 rounded-full transition-colors"
+                                    >
+                                        {findingContactsId === job.id ? 'Finding contacts... (1-2 min)' : (contacts[job.id] || []).length > 0 ? 'Refresh Contacts' : 'Find HR & Hiring Manager'}
                                     </button>
                                 </div>
                             </div>

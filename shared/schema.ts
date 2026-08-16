@@ -127,6 +127,29 @@ export const jobQuestions = pgTable("job_questions", {
 
 export type JobQuestion = typeof jobQuestions.$inferSelect;
 
+// Discovered HR / hiring-manager contacts for a job match. Every row carries
+// its provenance (source URL confirming the person currently holds the role)
+// and an email verification status — unverified data is stored but clearly
+// labeled, never silently presented as fact.
+export const jobContacts = pgTable("job_contacts", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobMatchId: varchar("job_match_id").notNull().references(() => jobMatches.id, { onDelete: "cascade" }),
+  contactRole: varchar("contact_role").notNull(), // hr | hiring_manager | department_head
+  fullName: varchar("full_name").notNull(),
+  title: varchar("title"),
+  linkedinUrl: text("linkedin_url"),
+  evidenceUrl: text("evidence_url"), // public source confirming current role
+  evidenceNote: text("evidence_note"),
+  email: varchar("email"),
+  emailSource: varchar("email_source"), // job_posting | explorium | none
+  emailStatus: varchar("email_status").notNull().default("not_found"), // verified | unverified | listed_in_posting | not_found
+  checkedAt: timestamp("checked_at").defaultNow(),
+}, (table) => [
+  index("idx_job_contacts_match").on(table.jobMatchId),
+]);
+
+export type JobContact = typeof jobContacts.$inferSelect;
+
 export type UpsertUser = typeof users.$inferInsert;
 export type User = typeof users.$inferSelect;
 export type Dossier = typeof dossiers.$inferSelect;
