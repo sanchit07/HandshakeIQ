@@ -442,6 +442,35 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
       allFindings.push(...results);
     });
 
+    // Aggregator discovery (Adzuna + Google Jobs) — recovers SEEK/Indeed/Glassdoor
+    // coverage lost to bot-blocking. Same failure policy as boards: crashes and
+    // zero-result days are alerted, never silently swallowed.
+    const aggregatorSources: Array<{ name: string; run: () => Promise<AggregatorResult> }> = [
+      { name: 'Adzuna', run: () => adzunaDiscoverJobs(country, roles) },
+      { name: 'Google Jobs', run: () => googleJobsDiscoverJobs(country, roles) },
+    ];
+    const aggregatorsWithFindings: string[] = [];
+    for (const src of aggregatorSources) {
+      try {
+        const { configured, findings } = await src.run();
+        if (!configured) continue; // already logged; keys not set up yet
+        findingsByBoard.set(src.name, findings);
+        if (findings.length === 0) {
+          const msg = `${src.name} returned 0 usable direct posting URLs for ${country}`;
+          console.warn(`[JOB SEARCH] WARN: ${msg}`);
+          zeroBoardAlerts.push(msg);
+        } else {
+          console.log(`[JOB SEARCH] ${src.name}: ${findings.length} usable posting(s) found`);
+          aggregatorsWithFindings.push(src.name);
+          allFindings.push(...findings);
+        }
+      } catch (e) {
+        // An aggregator crashing must never kill the run — boards and backfill remain.
+        console.error(`[JOB SEARCH] Aggregator search failed for ${src.name} (continuing):`, e);
+        boardCrashAlerts.push(`Aggregator search failed for ${src.name}: ${e instanceof Error ? e.message : String(e)}. Boards and backfill rounds still ran.`);
+      }
+    }
+
     // Always update the cache for this run-date (including empty array) so a successful
     // rerun with no zero-result boards clears any stale alerts from a prior failed run.
     boardAlertsCache.set(runDate, [...boardCrashAlerts, ...zeroBoardAlerts]);
@@ -452,14 +481,17 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
       console.warn('[JOB SEARCH] No direct postings from any board — falling back to supplemental search');
     } else {
 
-    // Format findings for Phase 3 ranking
-    const findingsText = boardConfigs.map((board, i) => {
-      const results = boardResultSets[i];
-      if (results.length === 0) return `=== ${board.name}: No direct postings found ===`;
-      return `=== ${board.name} (${results.length} postings) ===\n${results.map((j) =>
+    // Format findings for Phase 3 ranking (boards + aggregator sources)
+    const formatSection = (name: string, results: BoardFinding[]): string => {
+      if (results.length === 0) return `=== ${name}: No direct postings found ===`;
+      return `=== ${name} (${results.length} postings) ===\n${results.map((j) =>
         `- ${j.title} at ${j.company} (${j.location})\n  URL: ${j.url}\n  ${j.description}`,
       ).join('\n')}`;
-    }).join('\n\n');
+    };
+    const findingsText = [
+      ...boardConfigs.map((board, i) => formatSection(board.name, boardResultSets[i])),
+      ...aggregatorsWithFindings.map((name) => formatSection(name, findingsByBoard.get(name) ?? [])),
+    ].join('\n\n');
 
     // Phase 3: rank and shortlist top 10 against the profile
     const rankResponse = await client.messages.create({
@@ -491,7 +523,7 @@ EXCLUSION RULES (hard):
 Discard anything without a real company name and a plausible direct URL to an individual job ad.
 
 Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Set "source" to the board name exactly as shown in the section header above:
-[{"title": "...", "company": "...", "location": "city", "country": "...", "source": "LinkedIn|Indeed|JobStreet|Randstad|Hays|Other", "url": "https://...", "description": "1-3 sentence summary of the role and key requirements", "matchScore": <0-100>, "matchReason": "1-2 sentences on why this fits the candidate"}]`,
+[{"title": "...", "company": "...", "location": "city", "country": "...", "source": "LinkedIn|Indeed|JobStreet|Randstad|Hays|Adzuna|Google Jobs|Other", "url": "https://...", "description": "1-3 sentence summary of the role and key requirements", "matchScore": <0-100>, "matchReason": "1-2 sentences on why this fits the candidate"}]`,
       }],
     });
 
@@ -499,11 +531,16 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Se
     if (!Array.isArray(ranked) || ranked.length === 0) throw new Error('Ranking step returned no results');
 
     // Re-derive 'source' from the URL hostname — do not trust the ranker's self-reported label,
-    // which can be wrong (e.g. a ranker labelling an ATS URL as "Hays").
-    const rankedWithSource = ranked.map((j: any) => ({
-      ...j,
-      source: deriveSourceFromUrl(typeof j.url === 'string' ? j.url : null, boardConfigs),
-    }));
+    // which can be wrong (e.g. a ranker labelling an ATS URL as "Hays"). Aggregator
+    // findings usually carry employer/ATS URLs that match no board domain, so fall
+    // back to the source recorded at discovery time (keyed by URL) before 'Other'.
+    const findingSourceByUrl = new Map(allFindings.map((f) => [f.url.toLowerCase(), f.source]));
+    const rankedWithSource = ranked.map((j: any) => {
+      const url = typeof j.url === 'string' ? j.url : null;
+      const derived = deriveSourceFromUrl(url, boardConfigs);
+      const source = derived !== 'Other' ? derived : (url ? findingSourceByUrl.get(url.toLowerCase()) ?? 'Other' : 'Other');
+      return { ...j, source };
+    });
 
     // Hard dedup enforcement (in case the model ignores exclusion rules),
     // including same-batch dedup by URL and company, plus a generic
@@ -534,8 +571,12 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Se
     if (liveJobs.length === 0) {
       console.warn('[JOB SEARCH] All board jobs failed liveness check — relying on supplemental rounds');
     } else {
-      // Board-slot enforcement: every board that yielded ≥1 finding must appear in the final list.
-      const boardsWithFindings = boardConfigs.filter((_, i) => boardResultSets[i].length > 0).map((b) => b.name);
+      // Board-slot enforcement: every source (board or aggregator) that yielded
+      // ≥1 finding must appear in the final list.
+      const boardsWithFindings = [
+        ...boardConfigs.filter((_, i) => boardResultSets[i].length > 0).map((b) => b.name),
+        ...aggregatorsWithFindings,
+      ];
       const dedupedRows = await enforceSlotCoverage(
         liveJobs,
         boardsWithFindings,
@@ -792,6 +833,235 @@ export async function googleDiscoverJobUrls(country: string, roles: string[]): P
   const deduped = found.filter((f) => { const k = f.url.toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
   console.log(`[JOB SEARCH] Google discovery: ${deduped.length} candidate URL(s) from regional sources`);
   return deduped;
+}
+
+// ---------------------------------------------------------------------------
+// Aggregator discovery (Adzuna + Google Jobs via JSearch)
+//
+// SEEK, Indeed, and Glassdoor bot-block all server-side reads (403), so under
+// the fail-closed verification policy their postings can never be shortlisted
+// directly. Aggregator APIs legally expose largely the same postings and often
+// carry the direct employer/ATS apply link, which the liveness gate CAN verify.
+// All aggregator findings flow through the exact same pipeline as board
+// findings (ranking → dedup → probeUrlLive → AI audit) — nothing is bypassed.
+// ---------------------------------------------------------------------------
+
+/**
+ * Boards that deterministically bot-block server-side reads. A posting whose
+ * only URL lives on one of these domains is unverifiable from this environment
+ * and must be rejected up front (same policy as BOT_BLOCKED_STATUSES, applied
+ * earlier so aggregator results don't waste probe/audit calls).
+ */
+export const BLOCKED_BOARD_DOMAINS: readonly string[] = [
+  'seek.com.au', 'seek.co.nz', 'seek.com', 'indeed.com', 'glassdoor.com',
+];
+
+/** True when the URL's hostname belongs to a bot-blocked board (see above). */
+export function isBlockedBoardUrl(url: string): boolean {
+  try {
+    return hostnameMatchesBoardDomain(new URL(url).hostname, [...BLOCKED_BOARD_DOMAINS]);
+  } catch {
+    return true; // unparseable — treat as unusable
+  }
+}
+
+/** ATS domains preferred when an aggregator offers several apply links. */
+const DIRECT_ATS_DOMAINS: readonly string[] = [
+  'greenhouse.io', 'lever.co', 'ashbyhq.com', 'workable.com',
+  'myworkdayjobs.com', 'smartrecruiters.com', 'icims.com', 'bamboohr.com',
+  'jobvite.com', 'taleo.net', 'successfactors.com',
+];
+
+// Adzuna country coverage (subset relevant to this pipeline). Countries not
+// listed here (Malaysia, Ireland) have no Adzuna market — skipped with a log.
+const ADZUNA_COUNTRY_CODE: Record<string, string> = {
+  Australia: 'au',
+  'New Zealand': 'nz',
+  Switzerland: 'ch',
+  Sweden: 'se',
+  Poland: 'pl',
+};
+
+// JSearch (Google Jobs) country filter codes.
+const JSEARCH_COUNTRY_CODE: Record<string, string> = {
+  Malaysia: 'my',
+  Australia: 'au',
+  'New Zealand': 'nz',
+  Ireland: 'ie',
+  Switzerland: 'ch',
+  Sweden: 'se',
+  Poland: 'pl',
+};
+
+export interface AggregatorFinding {
+  title: string; company: string; location: string; url: string; description: string; source: string;
+}
+export interface AggregatorResult {
+  /** false when the API keys for this source are not configured (logged + alerted, never silent) */
+  configured: boolean;
+  findings: AggregatorFinding[];
+}
+
+/**
+ * Adzuna job search. Free API key, strong AU/NZ coverage — the main recovery
+ * path for SEEK-dominated markets. Adzuna returns its own redirect-wrapper
+ * URLs, so each is resolved to the real posting URL before the blocked-board
+ * and listing-page filters run. Hard API failures THROW so the caller reports
+ * them like board-search crashes — never silently swallowed.
+ */
+export async function adzunaDiscoverJobs(
+  country: string,
+  roles: string[],
+  fetchFn: typeof fetch = fetch,
+  resolveFinalUrlFn: (url: string) => Promise<string> = resolveCanaryFinalUrl,
+): Promise<AggregatorResult> {
+  const appId = process.env.ADZUNA_APP_ID;
+  const appKey = process.env.ADZUNA_APP_KEY;
+  if (!appId || !appKey) {
+    console.warn('[AGGREGATOR] Adzuna not configured (missing ADZUNA_APP_ID/ADZUNA_APP_KEY) — skipping');
+    return { configured: false, findings: [] };
+  }
+  const cc = ADZUNA_COUNTRY_CODE[country];
+  if (!cc) {
+    console.log(`[AGGREGATOR] Adzuna has no market for ${country} — skipping`);
+    return { configured: true, findings: [] };
+  }
+
+  const raw: any[] = [];
+  for (const role of roles.slice(0, 3)) {
+    const params = new URLSearchParams({
+      app_id: appId,
+      app_key: appKey,
+      what: role,
+      results_per_page: '10',
+      max_days_old: '21',
+      'content-type': 'application/json',
+    });
+    const res = await fetchFn(`https://api.adzuna.com/v1/api/jobs/${cc}/search/1?${params}`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Adzuna HTTP ${res.status}: ${body.slice(0, 150)}`);
+    }
+    const data: any = await res.json();
+    if (Array.isArray(data?.results)) raw.push(...data.results);
+  }
+
+  const findings: AggregatorFinding[] = [];
+  const seen = new Set<string>();
+  for (const j of raw) {
+    if (typeof j?.redirect_url !== 'string' || !j?.title || !j?.company?.display_name) continue;
+    // Resolve Adzuna's redirect wrapper to the real posting URL (SSRF-safe HEAD
+    // chain). On failure keep the wrapper — probeUrlLive follows redirects too.
+    let url = j.redirect_url;
+    try { url = await resolveFinalUrlFn(j.redirect_url); } catch { /* keep wrapper */ }
+    if (isBlockedBoardUrl(url)) {
+      console.log(`[AGGREGATOR] Adzuna: rejected blocked-board URL (unverifiable): ${url}`);
+      continue;
+    }
+    if (looksLikeListingPage(url)) {
+      console.log(`[AGGREGATOR] Adzuna: rejected listing-page URL: ${url}`);
+      continue;
+    }
+    const key = url.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    findings.push({
+      title: String(j.title).replace(/<[^>]+>/g, '').slice(0, 250),
+      company: String(j.company.display_name).slice(0, 250),
+      location: j.location?.display_name ? String(j.location.display_name).slice(0, 250) : '',
+      url,
+      description: j.description ? String(j.description).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300) : '',
+      source: 'Adzuna',
+    });
+  }
+  console.log(`[AGGREGATOR] Adzuna: ${findings.length} usable posting(s) for ${country}`);
+  return { configured: true, findings };
+}
+
+/**
+ * Picks the best apply URL from a JSearch (Google Jobs) job record.
+ * Preference order: direct ATS link → non-board URL (employer career page) →
+ * any remaining verifiable board URL. Returns null when every offered link is
+ * on a bot-blocked board or a listing page (posting is unverifiable).
+ * Exported for unit tests.
+ */
+export function pickJSearchApplyUrl(job: any): string | null {
+  const candidates: string[] = [];
+  if (Array.isArray(job?.apply_options)) {
+    for (const o of job.apply_options) {
+      if (typeof o?.apply_link === 'string') candidates.push(o.apply_link);
+    }
+  }
+  if (typeof job?.job_apply_link === 'string') candidates.push(job.job_apply_link);
+
+  const usable = candidates.filter((u) => /^https?:\/\//.test(u) && !isBlockedBoardUrl(u) && !looksLikeListingPage(u));
+  if (usable.length === 0) return null;
+
+  const hostOf = (u: string): string => { try { return new URL(u).hostname; } catch { return ''; } };
+  const ats = usable.find((u) => hostnameMatchesBoardDomain(hostOf(u), [...DIRECT_ATS_DOMAINS]));
+  if (ats) return ats;
+  // Employer career pages: hostnames that are not any known job board
+  const nonBoard = usable.find((u) => { const h = hostOf(u); return h !== '' && !isAllowedJobBoardDomain(h); });
+  return nonBoard ?? usable[0];
+}
+
+/**
+ * Google Jobs discovery via the JSearch API (RapidAPI). Optional source —
+ * skipped (configured: false) when JSEARCH_API_KEY is absent. Hard API
+ * failures THROW so the caller reports them like board-search crashes.
+ */
+export async function googleJobsDiscoverJobs(
+  country: string,
+  roles: string[],
+  fetchFn: typeof fetch = fetch,
+): Promise<AggregatorResult> {
+  const key = process.env.JSEARCH_API_KEY;
+  if (!key) {
+    console.warn('[AGGREGATOR] Google Jobs (JSearch) not configured (missing JSEARCH_API_KEY) — skipping');
+    return { configured: false, findings: [] };
+  }
+  const raw: any[] = [];
+  for (const role of roles.slice(0, 2)) {
+    const params = new URLSearchParams({ query: `${role} in ${country}`, num_pages: '1', date_posted: 'month' });
+    const cc = JSEARCH_COUNTRY_CODE[country];
+    if (cc) params.set('country', cc);
+    const res = await fetchFn(`https://jsearch.p.rapidapi.com/search?${params}`, {
+      headers: { 'x-rapidapi-key': key, 'x-rapidapi-host': 'jsearch.p.rapidapi.com' },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`JSearch HTTP ${res.status}: ${body.slice(0, 150)}`);
+    }
+    const data: any = await res.json();
+    if (Array.isArray(data?.data)) raw.push(...data.data);
+  }
+
+  const findings: AggregatorFinding[] = [];
+  const seen = new Set<string>();
+  for (const j of raw) {
+    if (!j?.job_title || !j?.employer_name) continue;
+    const url = pickJSearchApplyUrl(j);
+    if (!url) {
+      console.log(`[AGGREGATOR] Google Jobs: rejected "${j.job_title}" at ${j.employer_name} — only blocked-board/listing URLs offered`);
+      continue;
+    }
+    const dedupKey = url.toLowerCase();
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+    findings.push({
+      title: String(j.job_title).slice(0, 250),
+      company: String(j.employer_name).slice(0, 250),
+      location: [j.job_city, j.job_country].filter(Boolean).join(', ').slice(0, 250),
+      url,
+      description: j.job_description ? String(j.job_description).replace(/\s+/g, ' ').trim().slice(0, 300) : '',
+      source: 'Google Jobs',
+    });
+  }
+  console.log(`[AGGREGATOR] Google Jobs: ${findings.length} usable posting(s) for ${country}`);
+  return { configured: true, findings };
 }
 
 // Supplemental search round used when the day's live-job count is below minimum
