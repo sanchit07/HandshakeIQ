@@ -1,7 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import cron from "node-cron";
 import { registerRoutes } from "./routes";
-import { runDailyJobSearch, recheckRecentShortlist, verifyBoardPatterns, resolveCanaryFinalUrl } from "./jobs/jobMatchService";
+import { runDailyJobSearch, recheckRecentShortlist, recheckContactEvidence, verifyBoardPatterns, resolveCanaryFinalUrl } from "./jobs/jobMatchService";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -93,6 +93,15 @@ const isProduction = process.env.NODE_ENV === 'production';
       );
     } catch (err) {
       console.error('[CRON] Recheck of recent shortlist failed (non-fatal):', err);
+    }
+    // Re-verify contact evidence pages (LinkedIn profiles, press pages) from
+    // the same window; contacts whose evidence has gone 404 are marked stale
+    // (never deleted) and surfaced in the alerts panel.
+    try {
+      const ev = await recheckContactEvidence();
+      console.log(`[CRON] Contact evidence recheck done: ${ev.checked} checked, ${ev.markedStale} marked stale`);
+    } catch (err) {
+      console.error('[CRON] Contact evidence recheck failed (non-fatal):', err);
     }
   }, { timezone: 'Asia/Kuala_Lumpur' });
 

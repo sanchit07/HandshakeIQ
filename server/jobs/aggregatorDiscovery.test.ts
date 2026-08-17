@@ -164,33 +164,33 @@ describe('googleJobsDiscoverJobs', () => {
 
   test('returns configured:false when key is missing', async () => {
     delete process.env.JSEARCH_API_KEY;
-    const res = await googleJobsDiscoverJobs('Australia', ['Product Manager'], mockFetchOk({ data: [] }));
+    const res = await googleJobsDiscoverJobs('Malaysia', ['Product Manager'], mockFetchOk({ data: [] }));
     assert.equal(res.configured, false);
   });
 
-  test('maps jobs preferring direct links; drops blocked-board-only jobs', async () => {
+  test('maps SerpAPI jobs_results preferring direct links; drops blocked-board-only jobs', async () => {
     const payload = {
-      data: [
+      jobs_results: [
         {
-          job_title: 'Head of Product',
-          employer_name: 'Acme Corp',
-          job_city: 'Auckland',
-          job_country: 'NZ',
-          job_description: 'Lead the product org.',
-          job_apply_link: 'https://www.seek.co.nz/job/12345678',
+          title: 'Head of Product',
+          company_name: 'Acme Corp',
+          location: 'Auckland, NZ',
+          description: 'Lead the product org.',
           apply_options: [
-            { apply_link: 'https://www.seek.co.nz/job/12345678' },
-            { apply_link: 'https://jobs.lever.co/acme/9f1c2345-aaaa-bbbb-cccc-121212121212' },
+            { title: 'SEEK', link: 'https://www.seek.co.nz/job/12345678' },
+            { title: 'Lever', link: 'https://jobs.lever.co/acme/9f1c2345-aaaa-bbbb-cccc-121212121212' },
           ],
         },
         {
-          job_title: 'Product Owner',
-          employer_name: 'BlockedCo',
-          job_apply_link: 'https://www.glassdoor.com/job-listing/x-JV_IC123.htm',
+          title: 'Product Owner',
+          company_name: 'BlockedCo',
+          apply_options: [
+            { title: 'Glassdoor', link: 'https://www.glassdoor.com/job-listing/x-JV_IC123.htm' },
+          ],
         },
       ],
     };
-    const res = await googleJobsDiscoverJobs('New Zealand', ['Product Manager'], mockFetchOk(payload));
+    const res = await googleJobsDiscoverJobs('Malaysia', ['Product Manager'], mockFetchOk(payload));
     assert.equal(res.configured, true);
     assert.equal(res.findings.length, 1);
     assert.equal(res.findings[0].url, 'https://jobs.lever.co/acme/9f1c2345-aaaa-bbbb-cccc-121212121212');
@@ -198,11 +198,71 @@ describe('googleJobsDiscoverJobs', () => {
     assert.equal(res.findings[0].location, 'Auckland, NZ');
   });
 
+  test('still accepts legacy JSearch-shaped records (apply_link fields)', async () => {
+    const payload = {
+      jobs_results: [
+        {
+          job_title: 'Head of Product',
+          employer_name: 'Acme Corp',
+          job_city: 'Auckland',
+          job_country: 'NZ',
+          apply_options: [{ apply_link: 'https://jobs.lever.co/acme/9f1c2345-aaaa-bbbb-cccc-121212121212' }],
+        },
+      ],
+    };
+    const res = await googleJobsDiscoverJobs('Malaysia', ['Product Manager'], mockFetchOk(payload));
+    assert.equal(res.findings.length, 1);
+    assert.equal(res.findings[0].company, 'Acme Corp');
+    assert.equal(res.findings[0].location, 'Auckland, NZ');
+  });
+
   test('throws on HTTP failure so the caller can alert', async () => {
     const fetchFn = (async () => ({ ok: false, status: 429, text: async () => 'rate limited', json: async () => ({}) })) as unknown as typeof fetch;
     await assert.rejects(
-      () => googleJobsDiscoverJobs('Australia', ['Product Manager'], fetchFn),
-      /JSearch HTTP 429/,
+      () => googleJobsDiscoverJobs('Malaysia', ['Product Manager'], fetchFn),
+      /Google Jobs \(SerpAPI\) HTTP 429/,
     );
+  });
+
+  test('throws on SerpAPI 200-with-error payload (e.g. quota exhausted)', async () => {
+    const res = await assert.rejects(
+      () => googleJobsDiscoverJobs('Malaysia', ['Product Manager'], mockFetchOk({ error: 'Your account has run out of searches.' })),
+      /SerpAPI\) error/,
+    );
+  });
+
+  test('benign "no results" error payload returns zero findings without throwing', async () => {
+    const res = await googleJobsDiscoverJobs('Malaysia', ['Product Manager'], mockFetchOk({ error: "Google Jobs hasn't returned any results for this query." }));
+    assert.equal(res.configured, true);
+    assert.equal(res.findings.length, 0);
+  });
+});
+
+describe('intentional country skips are not zero-result failures', () => {
+  test('Adzuna no-market country returns skipped:true', async () => {
+    process.env.ADZUNA_APP_ID = 'x'; process.env.ADZUNA_APP_KEY = 'y';
+    const res = await adzunaDiscoverJobs('Malaysia', ['Product Manager'], mockFetchOk({ results: [] }));
+    assert.equal(res.skipped, true);
+    delete process.env.ADZUNA_APP_ID; delete process.env.ADZUNA_APP_KEY;
+  });
+
+  test('Google Jobs unsupported country returns skipped:true without fetching', async () => {
+    process.env.JSEARCH_API_KEY = 'x';
+    let called = false;
+    const fetchFn = (async () => { called = true; throw new Error('should not fetch'); }) as unknown as typeof fetch;
+    const res = await googleJobsDiscoverJobs('Australia', ['Product Manager'], fetchFn);
+    assert.equal(res.configured, true);
+    assert.equal(res.skipped, true);
+    assert.equal(res.findings.length, 0);
+    assert.equal(called, false);
+    delete process.env.JSEARCH_API_KEY;
+  });
+
+  test('Google Jobs supported country with zero findings is NOT skipped (real zero-result)', async () => {
+    process.env.JSEARCH_API_KEY = 'x';
+    const res = await googleJobsDiscoverJobs('Malaysia', ['Product Manager'], mockFetchOk({ jobs_results: [] }));
+    assert.equal(res.skipped ?? false, false);
+    assert.equal(res.findings.length, 0);
+    delete process.env.JSEARCH_API_KEY;
   });
 });

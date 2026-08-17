@@ -31,6 +31,7 @@ interface JobContact {
     email: string | null;
     emailSource: string | null;
     emailStatus: 'verified' | 'unverified' | 'listed_in_posting' | 'not_found';
+    evidenceStatus?: 'ok' | 'stale';
     checkedAt: string | null;
 }
 
@@ -417,6 +418,7 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                                 <span className={`px-2 py-0.5 border rounded-full ${EMAIL_STATUS_BADGE[c.emailStatus]?.cls || ''}`}>{EMAIL_STATUS_BADGE[c.emailStatus]?.label || c.emailStatus}</span>
                                                 {c.linkedinUrl && <a href={c.linkedinUrl} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">LinkedIn</a>}
                                                 {c.evidenceUrl && <a href={c.evidenceUrl} target="_blank" rel="noopener noreferrer" className="text-gray-400 hover:underline">Source</a>}
+                                                {c.evidenceStatus === 'stale' && <span className="px-2 py-0.5 bg-amber-900/40 text-amber-300 border border-amber-500/30 rounded-full">Evidence page gone — verify manually</span>}
                                                 {c.evidenceNote && <span className="w-full text-gray-500 italic">{c.evidenceNote}</span>}
                                             </div>
                                         ))}

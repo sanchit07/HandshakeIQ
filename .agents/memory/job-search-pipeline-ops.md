@@ -15,3 +15,10 @@ description: Operational lessons for the autonomous daily job-hunt pipeline (Ant
 - Google Custom Search JSON API is hard-blocked by Google for newer accounts/orgs (persistent 403 "project does not have access" regardless of console setup — confirmed Aug 2026, widespread reports). Discovery uses Gemini google_search grounding instead; grounding chunk URIs are redirect wrappers (vertexaisearch...) that must be resolved via a manual-redirect fetch to get the real posting URL.
 - CV generation can leak Claude's reasoning preamble into the delivered document: the "BASE CV:" sentinel line may appear mid-response, so strip everything up to AND including it (never anchor the strip to line 1). Check stored CVs for leak markers after any prompt change.
 - Detached shell processes (`setsid nohup`) get killed between agent shell sessions in this environment; trigger long runs through the running backend workflow via the API instead, then poll the DB/logs.
+
+## Aggregator source quirks (verified live 2026-08)
+- Google Jobs no longer exists in Australia, NZ, or EU markets (Ireland/CH/SE/PL) — SerpAPI google_jobs returns "no results" there; only Malaysia (of our countries) works. Adzuna covers AU/NZ/CH/SE/PL.
+- SerpAPI google_jobs: the `location` and `gl`/`hl` params do NOT geo-target reliably (US results come back regardless). Embed the country in the query string ("<role> jobs in <country>") instead.
+- SerpAPI returns HTTP 200 with an `error` field for quota exhaustion — must be checked explicitly; only "hasn't returned any results" is benign.
+- The JSEARCH_API_KEY secret holds a SerpAPI key (name predates the switch).
+- Intentional country skips must return skipped:true, or the pipeline mislabels them as zero-result coverage failures in the alerts panel.

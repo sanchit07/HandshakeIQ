@@ -7,7 +7,7 @@ import http from 'node:http';
 import fs from 'fs';
 import path from 'path';
 import { db } from '../db';
-import { jobMatches, jobQuestions, type JobMatch, type JobQuestion } from '../../shared/schema.js';
+import { jobMatches, jobQuestions, jobContacts, type JobMatch, type JobQuestion } from '../../shared/schema.js';
 import { eq, desc, sql } from 'drizzle-orm';
 import { discoverContactsForJob } from './contactDiscoveryService.js';
 
@@ -452,8 +452,9 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
     const aggregatorsWithFindings: string[] = [];
     for (const src of aggregatorSources) {
       try {
-        const { configured, findings } = await src.run();
+        const { configured, skipped, findings } = await src.run();
         if (!configured) continue; // already logged; keys not set up yet
+        if (skipped) continue;     // intentional no-coverage for this country — not a zero-result failure
         findingsByBoard.set(src.name, findings);
         if (findings.length === 0) {
           const msg = `${src.name} returned 0 usable direct posting URLs for ${country}`;
@@ -882,16 +883,14 @@ const ADZUNA_COUNTRY_CODE: Record<string, string> = {
   Poland: 'pl',
 };
 
-// JSearch (Google Jobs) country filter codes.
-const JSEARCH_COUNTRY_CODE: Record<string, string> = {
-  Malaysia: 'my',
-  Australia: 'au',
-  'New Zealand': 'nz',
-  Ireland: 'ie',
-  Switzerland: 'ch',
-  Sweden: 'se',
-  Poland: 'pl',
-};
+// Countries where Google Jobs still exists (verified live 2026-08). Google
+// discontinued the Jobs search experience in Australia, New Zealand, and the
+// EU/EEA markets (Ireland, Switzerland, Sweden, Poland) — SerpAPI returns
+// "no results" for those, so they are skipped. Adzuna covers AU/NZ/CH/SE/PL.
+// NOTE: SerpAPI's `location` parameter does NOT geo-target google_jobs
+// reliably (returns US results regardless — verified live); the country must
+// be embedded in the query string instead.
+const GOOGLE_JOBS_SUPPORTED_COUNTRIES: readonly string[] = ['Malaysia'];
 
 export interface AggregatorFinding {
   title: string; company: string; location: string; url: string; description: string; source: string;
@@ -899,6 +898,8 @@ export interface AggregatorFinding {
 export interface AggregatorResult {
   /** false when the API keys for this source are not configured (logged + alerted, never silent) */
   configured: boolean;
+  /** true when the source intentionally has no coverage for the country (no market / Google discontinued) — must NOT count as a zero-result warning */
+  skipped?: boolean;
   findings: AggregatorFinding[];
 }
 
@@ -924,7 +925,7 @@ export async function adzunaDiscoverJobs(
   const cc = ADZUNA_COUNTRY_CODE[country];
   if (!cc) {
     console.log(`[AGGREGATOR] Adzuna has no market for ${country} — skipping`);
-    return { configured: true, findings: [] };
+    return { configured: true, skipped: true, findings: [] };
   }
 
   const raw: any[] = [];
@@ -991,7 +992,9 @@ export function pickJSearchApplyUrl(job: any): string | null {
   const candidates: string[] = [];
   if (Array.isArray(job?.apply_options)) {
     for (const o of job.apply_options) {
+      // JSearch uses apply_link; SerpAPI uses link
       if (typeof o?.apply_link === 'string') candidates.push(o.apply_link);
+      else if (typeof o?.link === 'string') candidates.push(o.link);
     }
   }
   if (typeof job?.job_apply_link === 'string') candidates.push(job.job_apply_link);
@@ -1008,9 +1011,10 @@ export function pickJSearchApplyUrl(job: any): string | null {
 }
 
 /**
- * Google Jobs discovery via the JSearch API (RapidAPI). Optional source —
- * skipped (configured: false) when JSEARCH_API_KEY is absent. Hard API
- * failures THROW so the caller reports them like board-search crashes.
+ * Google Jobs discovery via SerpAPI (google_jobs engine). Optional source —
+ * skipped (configured: false) when JSEARCH_API_KEY is absent (the secret name
+ * predates the SerpAPI switch; it holds a SerpAPI key). Hard API failures
+ * THROW so the caller reports them like board-search crashes.
  */
 export async function googleJobsDiscoverJobs(
   country: string,
@@ -1019,44 +1023,62 @@ export async function googleJobsDiscoverJobs(
 ): Promise<AggregatorResult> {
   const key = process.env.JSEARCH_API_KEY;
   if (!key) {
-    console.warn('[AGGREGATOR] Google Jobs (JSearch) not configured (missing JSEARCH_API_KEY) — skipping');
+    console.warn('[AGGREGATOR] Google Jobs (SerpAPI) not configured (missing JSEARCH_API_KEY) — skipping');
     return { configured: false, findings: [] };
+  }
+  if (!GOOGLE_JOBS_SUPPORTED_COUNTRIES.includes(country)) {
+    console.log(`[AGGREGATOR] Google Jobs is unavailable in ${country} (Google discontinued it there) — skipping`);
+    return { configured: true, skipped: true, findings: [] };
   }
   const raw: any[] = [];
   for (const role of roles.slice(0, 2)) {
-    const params = new URLSearchParams({ query: `${role} in ${country}`, num_pages: '1', date_posted: 'month' });
-    const cc = JSEARCH_COUNTRY_CODE[country];
-    if (cc) params.set('country', cc);
-    const res = await fetchFn(`https://jsearch.p.rapidapi.com/search?${params}`, {
-      headers: { 'x-rapidapi-key': key, 'x-rapidapi-host': 'jsearch.p.rapidapi.com' },
+    const params = new URLSearchParams({
+      engine: 'google_jobs',
+      q: `${role} jobs in ${country}`,
+      api_key: key,
+    });
+    const res = await fetchFn(`https://serpapi.com/search.json?${params}`, {
       signal: AbortSignal.timeout(20_000),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => '');
-      throw new Error(`JSearch HTTP ${res.status}: ${body.slice(0, 150)}`);
+      throw new Error(`Google Jobs (SerpAPI) HTTP ${res.status}: ${body.slice(0, 150)}`);
     }
     const data: any = await res.json();
-    if (Array.isArray(data?.data)) raw.push(...data.data);
+    if (data?.error && !Array.isArray(data?.jobs_results)) {
+      // SerpAPI returns 200 with an error field for e.g. quota exhaustion,
+      // but also for benign "no results" — only throw on real errors.
+      if (!/hasn't returned any results/i.test(String(data.error))) {
+        throw new Error(`Google Jobs (SerpAPI) error: ${String(data.error).slice(0, 150)}`);
+      }
+    }
+    if (Array.isArray(data?.jobs_results)) raw.push(...data.jobs_results);
   }
 
   const findings: AggregatorFinding[] = [];
   const seen = new Set<string>();
   for (const j of raw) {
-    if (!j?.job_title || !j?.employer_name) continue;
+    const title = j?.title ?? j?.job_title;
+    const company = j?.company_name ?? j?.employer_name;
+    if (!title || !company) continue;
     const url = pickJSearchApplyUrl(j);
     if (!url) {
-      console.log(`[AGGREGATOR] Google Jobs: rejected "${j.job_title}" at ${j.employer_name} — only blocked-board/listing URLs offered`);
+      console.log(`[AGGREGATOR] Google Jobs: rejected "${title}" at ${company} — only blocked-board/listing URLs offered`);
       continue;
     }
     const dedupKey = url.toLowerCase();
     if (seen.has(dedupKey)) continue;
     seen.add(dedupKey);
     findings.push({
-      title: String(j.job_title).slice(0, 250),
-      company: String(j.employer_name).slice(0, 250),
-      location: [j.job_city, j.job_country].filter(Boolean).join(', ').slice(0, 250),
+      title: String(title).slice(0, 250),
+      company: String(company).slice(0, 250),
+      location: j.location
+        ? String(j.location).slice(0, 250)
+        : [j.job_city, j.job_country].filter(Boolean).join(', ').slice(0, 250),
       url,
-      description: j.job_description ? String(j.job_description).replace(/\s+/g, ' ').trim().slice(0, 300) : '',
+      description: (j.description ?? j.job_description)
+        ? String(j.description ?? j.job_description).replace(/\s+/g, ' ').trim().slice(0, 300)
+        : '',
       source: 'Google Jobs',
     });
   }
@@ -1167,9 +1189,11 @@ export async function autoGenerateCvsForDate(runDate: string): Promise<{ generat
   const jobs = await db.select().from(jobMatches)
     .where(sql`${jobMatches.runDate} = ${runDate} AND ${jobMatches.tailoredCv} IS NULL`)
     .orderBy(jobMatches.rank);
-  let generated = 0, failed = 0;
+  let generated = 0;
+  const stillFailed: Array<{ id: string; rank: number | null; company: string; lastError: string }> = [];
   for (const job of jobs) {
     let done = false;
+    let lastError = '';
     for (let attempt = 1; attempt <= MAX_CV_ATTEMPTS && !done; attempt++) {
       try {
         await tailorCvForJob(job.id);
@@ -1178,14 +1202,47 @@ export async function autoGenerateCvsForDate(runDate: string): Promise<{ generat
         generated++;
         done = true;
       } catch (e) {
+        lastError = e instanceof Error ? e.message : String(e);
         console.error(`[CV AUTO] rank ${job.rank} (${job.company}): attempt ${attempt} failed:`, e);
-        if (attempt === MAX_CV_ATTEMPTS) {
-          await db.update(jobMatches).set({ status: 'cv_failed' }).where(eq(jobMatches.id, job.id)).catch(() => {});
-          failed++;
-        }
       }
     }
+    if (!done) stillFailed.push({ id: job.id, rank: job.rank, company: job.company, lastError });
   }
+
+  // Salvage round: one extra attempt for each job that failed both tries.
+  // CV parse-check failures are often transient AI-output problems, so a
+  // later retry (after other jobs' calls have spaced things out) frequently
+  // succeeds — this used to require a manual re-trigger.
+  const permanentFailures: typeof stillFailed = [];
+  for (const job of stillFailed) {
+    try {
+      console.log(`[CV AUTO] salvage attempt for rank ${job.rank} (${job.company})`);
+      await tailorCvForJob(job.id);
+      await db.update(jobMatches).set({ status: 'cv_ready' }).where(eq(jobMatches.id, job.id));
+      console.log(`[CV AUTO] rank ${job.rank} (${job.company}): CV generated (salvage attempt)`);
+      generated++;
+    } catch (e) {
+      const lastError = e instanceof Error ? e.message : String(e);
+      console.error(`[CV AUTO] rank ${job.rank} (${job.company}): salvage attempt failed:`, e);
+      await db.update(jobMatches).set({ status: 'cv_failed' }).where(eq(jobMatches.id, job.id)).catch(() => {});
+      permanentFailures.push({ ...job, lastError });
+    }
+  }
+
+  // Surface permanent failures in the UI alerts panel — a CV that failed every
+  // retry must never be discoverable only by reading server logs.
+  if (permanentFailures.length > 0) {
+    const existing = boardAlertsCache.get(runDate) ?? [];
+    const detail = permanentFailures
+      .map((f) => `${f.company} (rank ${f.rank}): ${f.lastError.slice(0, 140)}`)
+      .join(' | ');
+    boardAlertsCache.set(runDate, [
+      ...existing,
+      `CV generation failed after all retries for ${permanentFailures.length} job(s) — use "Tailor CV" on the job card to retry manually. ${detail}`,
+    ]);
+  }
+
+  const failed = permanentFailures.length;
   console.log(`[CV AUTO] Done for ${runDate}: ${generated} generated, ${failed} failed`);
   return { generated, failed };
 }
@@ -1335,6 +1392,108 @@ export async function recheckRecentShortlist(
   }
 
   return { checked: recentJobs.length, removed };
+}
+
+/**
+ * LENIENT liveness check for contact-evidence pages (LinkedIn profiles, press
+ * pages, team pages). Unlike job postings, these pages are routinely
+ * bot-blocked (LinkedIn 999/403), so the fail-closed posting policy would mark
+ * nearly every contact stale. Policy here: stale ONLY on definitive death
+ * signals — HTTP 404/410 on the settled URL. Bot-blocks, network errors, and
+ * anything ambiguous keep the evidence (fail open).
+ */
+export async function checkEvidenceUrlAlive(
+  url: string | null | undefined,
+  httpGetFn: (parsedUrl: URL, signal: AbortSignal) => Promise<{ status: number; body: string; location: string | null }> = httpGetWithBody,
+): Promise<boolean> {
+  if (!url || !/^https?:\/\//.test(url)) return true;
+  let parsedUrl: URL;
+  try { parsedUrl = new URL(url); } catch { return true; }
+  const bareHost = parsedUrl.hostname.replace(/^\[|\]$/g, '');
+  if ((net.isIPv4(bareHost) || net.isIPv6(bareHost)) && isPrivateIp(bareHost)) return false;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10_000);
+  try {
+    let currentUrl = parsedUrl;
+    let status = 0;
+    for (let hop = 0; ; hop++) {
+      const res = await httpGetFn(currentUrl, controller.signal);
+      status = res.status;
+      if (!(status >= 300 && status < 400 && res.location)) break;
+      let nextUrl: URL;
+      try { nextUrl = new URL(res.location, currentUrl); } catch { return true; }
+      if (nextUrl.protocol !== 'http:' && nextUrl.protocol !== 'https:') return true;
+      const nextBare = nextUrl.hostname.replace(/^\[|\]$/g, '');
+      if ((net.isIPv4(nextBare) || net.isIPv6(nextBare)) && isPrivateIp(nextBare)) return false;
+      if (hop >= 3) return true; // never settled — ambiguous, keep
+      currentUrl = nextUrl;
+    }
+    return !(status === 404 || status === 410);
+  } catch {
+    return true; // network error / SSRF-blocked lookup — ambiguous, keep
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Re-verifies the evidence pages behind stored contacts from the last
+ * `lookbackDays` days (today included — evidence can predate the run).
+ * Contacts whose evidence page has definitively gone (404/410) are marked
+ * evidence_status='stale' — never deleted, so the user can still see who was
+ * found and judge for themselves. Stale markings surface in the alerts panel.
+ */
+export async function recheckContactEvidence(
+  lookbackDays = RECHECK_LOOKBACK_DAYS,
+  aliveFn: (url: string | null | undefined) => Promise<boolean> = checkEvidenceUrlAlive,
+  queryFn?: () => Promise<Array<{ id: string; fullName: string; company: string; evidenceUrl: string | null }>>,
+  markStaleFn?: (id: string) => Promise<void>,
+): Promise<{ checked: number; markedStale: number }> {
+  const runDate = todayKL();
+  const defaultQuery = async () =>
+    db.select({
+      id: jobContacts.id,
+      fullName: jobContacts.fullName,
+      company: jobMatches.company,
+      evidenceUrl: jobContacts.evidenceUrl,
+    })
+      .from(jobContacts)
+      .innerJoin(jobMatches, eq(jobContacts.jobMatchId, jobMatches.id))
+      .where(sql`${jobMatches.runDate} >= (${runDate}::date - (${String(lookbackDays)} || ' days')::interval)::date
+                 AND ${jobContacts.evidenceStatus} != 'stale'
+                 AND ${jobContacts.evidenceUrl} IS NOT NULL`);
+  const defaultMark = async (id: string) => {
+    await db.update(jobContacts).set({ evidenceStatus: 'stale' }).where(eq(jobContacts.id, id));
+  };
+  const contacts = await (queryFn ?? defaultQuery)();
+  if (contacts.length === 0) {
+    console.log('[EVIDENCE RECHECK] No contact evidence to re-verify');
+    return { checked: 0, markedStale: 0 };
+  }
+  console.log(`[EVIDENCE RECHECK] Re-verifying ${contacts.length} contact evidence page(s)`);
+  const staleNames: string[] = [];
+  for (const c of contacts) {
+    try {
+      const alive = await aliveFn(c.evidenceUrl);
+      if (!alive) {
+        await (markStaleFn ?? defaultMark)(c.id);
+        staleNames.push(`${c.fullName} (${c.company})`);
+        console.log(`[EVIDENCE RECHECK] Marked stale: ${c.fullName} at ${c.company} — evidence gone: ${c.evidenceUrl}`);
+      }
+    } catch (e) {
+      console.log(`[EVIDENCE RECHECK] Error checking ${c.evidenceUrl} — keeping: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (staleNames.length > 0) {
+    const existing = boardAlertsCache.get(runDate) ?? [];
+    boardAlertsCache.set(runDate, [
+      ...existing,
+      `Evidence pages for ${staleNames.length} contact(s) are no longer reachable — treat these contacts with caution: ${staleNames.join('; ')}.`,
+    ]);
+  }
+  console.log(`[EVIDENCE RECHECK] Done: ${contacts.length} checked, ${staleNames.length} marked stale`);
+  return { checked: contacts.length, markedStale: staleNames.length };
 }
 
 // Clears a stored CV so tailorCvForJob regenerates it (used with answered questions)

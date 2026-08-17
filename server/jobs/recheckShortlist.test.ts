@@ -220,3 +220,75 @@ test('removed jobs carry the correct title, company, url, and reason fields', as
   assert.equal(r.url, 'https://seek.com.au/job/12345678');
   assert.ok(typeof r.reason === 'string' && r.reason.length > 0);
 });
+
+// ── Contact evidence recheck ─────────────────────────────────────────────────
+
+import { recheckContactEvidence, checkEvidenceUrlAlive } from './jobMatchService.js';
+
+const makeContact = (overrides: Partial<{ id: string; fullName: string; company: string; evidenceUrl: string | null }> = {}) => ({
+  id: 'c-1',
+  fullName: 'Jane Doe',
+  company: 'Acme Corp',
+  evidenceUrl: 'https://example.com/team/jane',
+  ...overrides,
+});
+
+test('recheckContactEvidence marks contacts stale when evidence is gone', async () => {
+  const marked: string[] = [];
+  const result = await recheckContactEvidence(
+    7,
+    async (url) => url !== 'https://gone.example.com/x',
+    async () => [
+      makeContact({ id: 'c-live' }),
+      makeContact({ id: 'c-dead', evidenceUrl: 'https://gone.example.com/x' }),
+    ],
+    async (id) => { marked.push(id); },
+  );
+  assert.equal(result.checked, 2);
+  assert.equal(result.markedStale, 1);
+  assert.deepEqual(marked, ['c-dead']);
+});
+
+test('recheckContactEvidence keeps contacts on checker errors (fail open)', async () => {
+  const marked: string[] = [];
+  const result = await recheckContactEvidence(
+    7,
+    async () => { throw new Error('network blip'); },
+    async () => [makeContact()],
+    async (id) => { marked.push(id); },
+  );
+  assert.equal(result.markedStale, 0);
+  assert.equal(marked.length, 0);
+});
+
+test('recheckContactEvidence with no contacts is a no-op', async () => {
+  const result = await recheckContactEvidence(7, async () => true, async () => [], async () => {});
+  assert.equal(result.checked, 0);
+});
+
+test('checkEvidenceUrlAlive: 404 → stale, bot-block 999 → keep, 200 → keep', async () => {
+  const mk = (status: number) => async () => ({ status, body: '', location: null });
+  assert.equal(await checkEvidenceUrlAlive('https://example.com/p', mk(404)), false);
+  assert.equal(await checkEvidenceUrlAlive('https://example.com/p', mk(410)), false);
+  assert.equal(await checkEvidenceUrlAlive('https://linkedin.com/in/x', mk(999)), true);
+  assert.equal(await checkEvidenceUrlAlive('https://example.com/p', mk(403)), true);
+  assert.equal(await checkEvidenceUrlAlive('https://example.com/p', mk(200)), true);
+});
+
+test('checkEvidenceUrlAlive: follows redirect to a 404 → stale', async () => {
+  let call = 0;
+  const fn = async () => (call++ === 0
+    ? { status: 301, body: '', location: 'https://example.com/moved' }
+    : { status: 404, body: '', location: null });
+  assert.equal(await checkEvidenceUrlAlive('https://example.com/old', fn), false);
+});
+
+test('checkEvidenceUrlAlive: private-IP redirect target → stale (SSRF)', async () => {
+  const fn = async () => ({ status: 301, body: '', location: 'http://169.254.169.254/x' });
+  assert.equal(await checkEvidenceUrlAlive('https://example.com/old', fn), false);
+});
+
+test('checkEvidenceUrlAlive: missing or non-http URL → keep', async () => {
+  assert.equal(await checkEvidenceUrlAlive(null), true);
+  assert.equal(await checkEvidenceUrlAlive('not a url'), true);
+});

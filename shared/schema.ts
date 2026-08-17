@@ -143,6 +143,7 @@ export const jobContacts = pgTable("job_contacts", {
   email: varchar("email"),
   emailSource: varchar("email_source"), // job_posting | explorium | none
   emailStatus: varchar("email_status").notNull().default("not_found"), // verified | unverified | listed_in_posting | not_found
+  evidenceStatus: varchar("evidence_status").notNull().default("ok"), // ok | stale (evidence page no longer reachable)
   checkedAt: timestamp("checked_at").defaultNow(),
 }, (table) => [
   index("idx_job_contacts_match").on(table.jobMatchId),
