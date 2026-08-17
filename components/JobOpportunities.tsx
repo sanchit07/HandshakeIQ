@@ -55,6 +55,40 @@ interface JobQuestion {
     answer: string | null;
 }
 
+interface Application {
+    id: string;
+    jobMatchId: string;
+    channel: 'email' | 'assisted' | string;
+    state: 'queued' | 'route_resolved' | 'ready_for_review' | 'approved' | 'submitting' | 'submitted' | 'needs_user' | 'failed' | string;
+    applyUrl: string | null;
+    atsType: string | null;
+    routeSource: 'official' | 'source_fallback' | null;
+    routeConfidence: string | null;
+    emailTo: string | null;
+    emailToStatus: string | null;
+    emailSubject: string | null;
+    emailBody: string | null;
+    packet: { applyUrl: string; answers: { label: string; value: string }[]; coverNote: string | null; missing: string[] } | null;
+    needsUserReason: string | null;
+    errorReason: string | null;
+    submittedAt: string | null;
+}
+
+interface ApplySummary {
+    total: number; submitted: number; awaitingReview: number; needsUser: number; failed: number; inProgress: number; notStarted: number;
+}
+
+const APP_STATE_BADGE: Record<string, { label: string; cls: string }> = {
+    queued: { label: 'Apply: queued', cls: 'bg-gray-800 text-gray-300 border-gray-600/40' },
+    route_resolved: { label: 'Apply: route found', cls: 'bg-cyan-900/40 text-cyan-300 border-cyan-500/30' },
+    ready_for_review: { label: 'Apply: awaiting your review', cls: 'bg-amber-900/40 text-amber-300 border-amber-500/30' },
+    approved: { label: 'Apply: approved', cls: 'bg-cyan-900/40 text-cyan-300 border-cyan-500/30' },
+    submitting: { label: 'Apply: submitting…', cls: 'bg-cyan-900/40 text-cyan-300 border-cyan-500/30' },
+    submitted: { label: 'Applied ✓', cls: 'bg-green-900/40 text-green-300 border-green-500/30' },
+    needs_user: { label: 'Apply: needs your input', cls: 'bg-red-900/40 text-red-300 border-red-500/30' },
+    failed: { label: 'Apply: failed', cls: 'bg-red-900/40 text-red-300 border-red-500/30' },
+};
+
 interface JobOpportunitiesProps {
     onBack: () => void;
 }
@@ -74,6 +108,61 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
     const [contacts, setContacts] = useState<Record<string, JobContact[]>>({});
     const [contactRunResults, setContactRunResults] = useState<Record<string, { summary: string; checkedAt: string }>>({});
     const [findingContactsId, setFindingContactsId] = useState<string | null>(null);
+
+    const [apps, setApps] = useState<Record<string, Application[]>>({});
+    const [applySummary, setApplySummary] = useState<ApplySummary | null>(null);
+    const [preparingId, setPreparingId] = useState<string | null>(null);
+    const [approvingId, setApprovingId] = useState<string | null>(null);
+    const [reviewingApp, setReviewingApp] = useState<Application | null>(null);
+    const [emailEdits, setEmailEdits] = useState<{ subject: string; body: string }>({ subject: '', body: '' });
+
+    const loadApplications = useCallback(async (jobIds: string[], date: string) => {
+        try {
+            const [appsRes, sumRes] = await Promise.all([
+                fetch('/api/applications/for-jobs', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ jobIds }),
+                }),
+                date ? fetch(`/api/applications/summary?date=${encodeURIComponent(date)}`) : Promise.resolve(null as any),
+            ]);
+            if (appsRes.ok) setApps(await appsRes.json());
+            if (sumRes && sumRes.ok) setApplySummary(await sumRes.json());
+        } catch { /* noop */ }
+    }, []);
+
+    const handlePrepareApply = async (job: JobMatch) => {
+        setPreparingId(job.id);
+        setError(null);
+        try {
+            const res = await fetch(`/api/jobs/${job.id}/apply/prepare`, { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.message || 'Application preparation failed');
+            setApps((prev) => ({ ...prev, [job.id]: [data, ...(prev[job.id] || []).filter((a) => a.id !== data.id)] }));
+        } catch (e: any) {
+            setError(e.message || 'Application preparation failed');
+        } finally {
+            setPreparingId(null);
+        }
+    };
+
+    const handleApprove = async (application: Application, edits?: { emailSubject?: string; emailBody?: string }) => {
+        setApprovingId(application.id);
+        setError(null);
+        try {
+            const res = await fetch(`/api/applications/${application.id}/approve`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(edits || {}),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.message || 'Approval failed');
+            setApps((prev) => ({ ...prev, [application.jobMatchId]: (prev[application.jobMatchId] || []).map((a) => (a.id === data.id ? data : a)) }));
+            setReviewingApp(null);
+        } catch (e: any) {
+            setError(e.message || 'Approval failed');
+        } finally {
+            setApprovingId(null);
+        }
+    };
 
     const loadContacts = useCallback(async (jobIds: string[]) => {
         const entries = await Promise.all(jobIds.map(async (id) => {
@@ -191,7 +280,7 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
 
     useEffect(() => { loadDates(); loadGoogleStatus(); }, [loadDates, loadGoogleStatus]);
     useEffect(() => { if (selectedDate) loadJobs(selectedDate); }, [selectedDate, loadJobs]);
-    useEffect(() => { if (jobs.length) { loadQuestions(jobs.map((j) => j.id)); loadContacts(jobs.map((j) => j.id)); } }, [jobs, loadQuestions, loadContacts]);
+    useEffect(() => { if (jobs.length) { loadQuestions(jobs.map((j) => j.id)); loadContacts(jobs.map((j) => j.id)); loadApplications(jobs.map((j) => j.id), selectedDate); } }, [jobs, selectedDate, loadQuestions, loadContacts, loadApplications]);
 
     const handleRunNow = async () => {
         setRunning(true);
@@ -347,6 +436,17 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
 
                 {error && <p className="text-sm text-red-400 bg-red-900/20 border border-red-500/30 rounded-lg p-3">{error}</p>}
 
+                {applySummary && applySummary.total > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 text-xs bg-gray-900/50 border border-cyan-600/20 rounded-lg p-3">
+                        <span className="font-bold text-cyan-300 uppercase tracking-wide">Applications:</span>
+                        <span className="px-2 py-0.5 bg-green-900/40 text-green-300 border border-green-500/30 rounded-full">{applySummary.submitted} submitted</span>
+                        <span className="px-2 py-0.5 bg-amber-900/40 text-amber-300 border border-amber-500/30 rounded-full">{applySummary.awaitingReview} awaiting review</span>
+                        <span className="px-2 py-0.5 bg-red-900/40 text-red-300 border border-red-500/30 rounded-full">{applySummary.needsUser} need input</span>
+                        {applySummary.failed > 0 && <span className="px-2 py-0.5 bg-red-900/40 text-red-300 border border-red-500/30 rounded-full">{applySummary.failed} failed</span>}
+                        <span className="px-2 py-0.5 bg-gray-800 text-gray-400 border border-gray-600/40 rounded-full">{applySummary.notStarted + applySummary.inProgress} not prepared yet</span>
+                    </div>
+                )}
+
                 {loading ? (
                     <p className="text-gray-400 text-center py-10">Loading shortlist...</p>
                 ) : jobs.length === 0 ? (
@@ -430,7 +530,66 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                         <p className="text-xs text-gray-600 mt-1">Checked {new Date(contactRunResults[job.id].checkedAt).toLocaleString()}</p>
                                     </div>
                                 ) : null}
+                                {(apps[job.id] || []).slice(0, 1).map((a) => (
+                                    <div key={a.id} className="mt-3 p-3 bg-gray-900/70 border border-cyan-500/20 rounded-lg space-y-2">
+                                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                                            <span className="font-bold text-cyan-300 uppercase tracking-wide">Application</span>
+                                            <span className={`px-2 py-0.5 border rounded-full ${APP_STATE_BADGE[a.state]?.cls || 'bg-gray-800 text-gray-400 border-gray-600/40'}`}>{APP_STATE_BADGE[a.state]?.label || a.state}</span>
+                                            {a.channel && <span className="px-2 py-0.5 bg-gray-800 text-gray-300 border border-gray-600/40 rounded-full">{a.channel === 'email' ? 'Email apply' : 'Assisted apply'}</span>}
+                                            {a.atsType && a.atsType !== 'unknown' && <span className="px-2 py-0.5 bg-purple-900/40 text-purple-300 border border-purple-500/30 rounded-full">ATS: {a.atsType}</span>}
+                                            {a.routeSource && <span className="px-2 py-0.5 bg-gray-800 text-gray-400 border border-gray-600/40 rounded-full">{a.routeSource === 'official' ? 'Official careers page' : 'Original posting URL'}</span>}
+                                        </div>
+                                        {a.applyUrl && (
+                                            <p className="text-xs text-gray-400 break-all">Apply at: <a href={a.applyUrl} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline">{a.applyUrl}</a></p>
+                                        )}
+                                        {a.state === 'needs_user' && a.needsUserReason && (
+                                            <p className="text-xs text-red-300 bg-red-900/20 border border-red-500/30 rounded p-2">{a.needsUserReason}</p>
+                                        )}
+                                        {a.state === 'failed' && a.errorReason && (
+                                            <p className="text-xs text-red-300 bg-red-900/20 border border-red-500/30 rounded p-2">Failed: {a.errorReason}</p>
+                                        )}
+                                        {a.state === 'submitted' && a.submittedAt && (
+                                            <p className="text-xs text-green-400">Submitted {new Date(a.submittedAt).toLocaleString()}{a.channel === 'email' && a.emailTo ? ` — email sent to ${a.emailTo}` : ''}</p>
+                                        )}
+                                        <div className="flex flex-wrap gap-2">
+                                            {a.state === 'ready_for_review' && a.channel === 'email' && (
+                                                <button
+                                                    onClick={() => { setReviewingApp(a); setEmailEdits({ subject: a.emailSubject || '', body: a.emailBody || '' }); }}
+                                                    className="px-3 py-1.5 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-full transition-colors"
+                                                >
+                                                    Review Email &amp; Send
+                                                </button>
+                                            )}
+                                            {a.state === 'ready_for_review' && a.channel === 'assisted' && (
+                                                <button
+                                                    onClick={() => setReviewingApp(a)}
+                                                    className="px-3 py-1.5 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-full transition-colors"
+                                                >
+                                                    Open Apply Packet
+                                                </button>
+                                            )}
+                                            {(a.state === 'needs_user' || a.state === 'failed') && (
+                                                <button
+                                                    onClick={() => handlePrepareApply(job)}
+                                                    disabled={preparingId === job.id}
+                                                    className="px-3 py-1.5 text-xs font-bold text-slate-900 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 rounded-full transition-colors"
+                                                >
+                                                    {preparingId === job.id ? 'Retrying…' : 'Retry Preparation'}
+                                                </button>
+                                            )}
+                                        </div>
+                                    </div>
+                                ))}
                                 <div className="flex flex-wrap gap-2 mt-3">
+                                    {(apps[job.id] || []).length === 0 && (
+                                        <button
+                                            onClick={() => handlePrepareApply(job)}
+                                            disabled={preparingId === job.id}
+                                            className="px-3 py-1.5 text-xs font-bold text-slate-900 bg-green-400 hover:bg-green-300 disabled:opacity-50 rounded-full transition-colors"
+                                        >
+                                            {preparingId === job.id ? 'Preparing application… (1-2 min)' : 'Prepare Application'}
+                                        </button>
+                                    )}
                                     {job.url && (
                                         <a href={job.url} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 text-xs text-cyan-300 border border-cyan-400/50 rounded-full hover:bg-cyan-900/50 transition-colors">
                                             View Posting
@@ -456,6 +615,87 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                     </div>
                 )}
             </div>
+
+            {reviewingApp && (
+                <div className="fixed inset-0 z-[110] bg-black/70 flex items-center justify-center p-4" onClick={() => setReviewingApp(null)}>
+                    <div className="w-full max-w-2xl max-h-[85vh] overflow-y-auto bg-slate-950 border border-cyan-500/40 rounded-lg p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+                        {reviewingApp.channel === 'email' ? (
+                            <>
+                                <h3 className="font-exo text-xl text-white">Review Application Email</h3>
+                                <p className="text-xs text-gray-400">To: <span className="text-cyan-300">{reviewingApp.emailTo}</span>{reviewingApp.emailToStatus ? ` (${reviewingApp.emailToStatus.replace(/_/g, ' ')})` : ''} — your tailored CV PDF will be attached. Nothing is sent until you approve.</p>
+                                <div>
+                                    <label className="block text-xs text-cyan-300 mb-1">Subject</label>
+                                    <input
+                                        className="w-full px-3 py-2 bg-gray-900/70 border border-cyan-500/30 rounded-lg text-white text-sm focus:outline-none focus:border-cyan-400"
+                                        value={emailEdits.subject}
+                                        onChange={(e) => setEmailEdits((p) => ({ ...p, subject: e.target.value }))}
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs text-cyan-300 mb-1">Email body (editable)</label>
+                                    <textarea
+                                        rows={12}
+                                        className="w-full px-3 py-2 bg-gray-900/70 border border-cyan-500/30 rounded-lg text-white text-sm focus:outline-none focus:border-cyan-400 font-sans"
+                                        value={emailEdits.body}
+                                        onChange={(e) => setEmailEdits((p) => ({ ...p, body: e.target.value }))}
+                                    />
+                                </div>
+                                <div className="flex flex-wrap gap-3 justify-end">
+                                    <button onClick={() => setReviewingApp(null)} className="px-4 py-2 text-sm text-gray-300 border border-gray-500/40 rounded-lg hover:bg-gray-800 transition-colors">Cancel</button>
+                                    <button
+                                        onClick={() => handleApprove(reviewingApp, { emailSubject: emailEdits.subject, emailBody: emailEdits.body })}
+                                        disabled={approvingId === reviewingApp.id || !emailEdits.subject.trim() || !emailEdits.body.trim()}
+                                        className="px-4 py-2 text-sm font-bold text-slate-900 bg-green-400 hover:bg-green-300 disabled:opacity-50 rounded-lg transition-colors font-exo"
+                                    >
+                                        {approvingId === reviewingApp.id ? 'Sending…' : 'Approve & Send Email'}
+                                    </button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <h3 className="font-exo text-xl text-white">Assisted Apply Packet</h3>
+                                <p className="text-xs text-gray-400">Open the apply page, then copy-paste these answers. When you've submitted the application, mark it as applied below.</p>
+                                {reviewingApp.packet?.applyUrl && (
+                                    <a href={reviewingApp.packet.applyUrl} target="_blank" rel="noopener noreferrer" className="inline-block px-4 py-2 text-sm font-bold text-slate-900 bg-cyan-500 hover:bg-cyan-400 rounded-lg transition-colors">
+                                        Open Apply Page ↗
+                                    </a>
+                                )}
+                                {(reviewingApp.packet?.missing || []).length > 0 && (
+                                    <div className="bg-red-900/20 border border-red-500/30 rounded p-3 space-y-1">
+                                        <p className="text-xs font-bold text-red-300">Missing from your Profile Vault (never guessed):</p>
+                                        {(reviewingApp.packet?.missing || []).map((m, i) => <p key={i} className="text-xs text-red-300">• {m}</p>)}
+                                    </div>
+                                )}
+                                <div className="space-y-1">
+                                    {(reviewingApp.packet?.answers || []).map((ans, i) => (
+                                        <div key={i} className="flex items-start gap-2 text-sm p-2 bg-gray-900/60 border border-cyan-600/20 rounded">
+                                            <span className="text-cyan-300 min-w-[40%] text-xs pt-0.5">{ans.label}</span>
+                                            <span className="text-white select-all flex-1">{ans.value}</span>
+                                            <button onClick={() => navigator.clipboard?.writeText(ans.value)} className="text-xs text-gray-400 hover:text-cyan-300" title="Copy">⧉</button>
+                                        </div>
+                                    ))}
+                                </div>
+                                {reviewingApp.packet?.coverNote && (
+                                    <div>
+                                        <p className="text-xs font-bold text-cyan-300 mb-1">Cover note (copy-paste ready)</p>
+                                        <pre className="whitespace-pre-wrap font-sans text-xs text-gray-200 bg-gray-900/60 border border-cyan-600/20 rounded p-3 select-all">{reviewingApp.packet.coverNote}</pre>
+                                    </div>
+                                )}
+                                <div className="flex flex-wrap gap-3 justify-end">
+                                    <button onClick={() => setReviewingApp(null)} className="px-4 py-2 text-sm text-gray-300 border border-gray-500/40 rounded-lg hover:bg-gray-800 transition-colors">Close</button>
+                                    <button
+                                        onClick={() => handleApprove(reviewingApp)}
+                                        disabled={approvingId === reviewingApp.id}
+                                        className="px-4 py-2 text-sm font-bold text-slate-900 bg-green-400 hover:bg-green-300 disabled:opacity-50 rounded-lg transition-colors font-exo"
+                                    >
+                                        {approvingId === reviewingApp.id ? 'Saving…' : "I've Applied — Mark as Submitted"}
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

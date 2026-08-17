@@ -265,6 +265,103 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── Auto-apply engine ──────────────────────────────────────────────────────
+
+  app.get('/api/profile', requireAdmin, async (_req, res) => {
+    try {
+      const { getProfile } = await import('./jobs/applyService');
+      res.json(await getProfile());
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to load profile' });
+    }
+  });
+
+  app.put('/api/profile', requireAdmin, async (req: any, res) => {
+    try {
+      const { saveProfile } = await import('./jobs/applyService');
+      res.json(await saveProfile(req.body || {}));
+    } catch (error: any) {
+      console.error('[PROFILE] Save failed:', error);
+      res.status(500).json({ message: error?.message || 'Failed to save profile' });
+    }
+  });
+
+  app.post('/api/profile/seed', requireAdmin, async (_req, res) => {
+    try {
+      const { seedProfileFromResume } = await import('./jobs/applyService');
+      res.json(await seedProfileFromResume());
+    } catch (error: any) {
+      console.error('[PROFILE] Seed failed:', error);
+      res.status(500).json({ message: error?.message || 'Failed to seed profile' });
+    }
+  });
+
+  const applyRateLimit = rateLimit(20, 10 * 60 * 1000); // 20 apply preps / 10 min
+
+  // Prepare (or retry) the application for one job: route → draft/packet → ready_for_review
+  app.post('/api/jobs/:id/apply/prepare', requireAdmin, applyRateLimit, async (req: any, res) => {
+    try {
+      const { prepareApplication } = await import('./jobs/applyService');
+      res.json(await prepareApplication(req.params.id));
+    } catch (error: any) {
+      console.error('[APPLY] Prepare failed:', error);
+      res.status(500).json({ message: error?.message || 'Application preparation failed' });
+    }
+  });
+
+  // Applications for a batch of jobs (UI list view)
+  app.post('/api/applications/for-jobs', requireAdmin, async (req: any, res) => {
+    try {
+      const jobIds = Array.isArray(req.body?.jobIds) ? req.body.jobIds.map(String).slice(0, 100) : [];
+      const { getApplicationsForJobs } = await import('./jobs/applyService');
+      res.json(await getApplicationsForJobs(jobIds));
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to load applications' });
+    }
+  });
+
+  // Approve a reviewed application (email: sends via Gmail; assisted: marks submitted)
+  app.post('/api/applications/:id/approve', requireAdmin, applyRateLimit, async (req: any, res) => {
+    try {
+      const { approveApplication } = await import('./jobs/applyService');
+      const edits = {
+        emailSubject: typeof req.body?.emailSubject === 'string' ? req.body.emailSubject : undefined,
+        emailBody: typeof req.body?.emailBody === 'string' ? req.body.emailBody : undefined,
+      };
+      res.json(await approveApplication(req.params.id, edits));
+    } catch (error: any) {
+      console.error('[APPLY] Approve failed:', error);
+      res.status(500).json({ message: error?.message || 'Approval failed' });
+    }
+  });
+
+  // Day-level apply summary for the dashboard / daily report
+  app.get('/api/applications/summary', requireAdmin, async (req: any, res) => {
+    try {
+      const date = String(req.query.date || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ message: 'date=YYYY-MM-DD required' });
+      const { getApplySummary } = await import('./jobs/applyService');
+      res.json(await getApplySummary(date));
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to load summary' });
+    }
+  });
+
+  // Batch-prepare applications for a run date (also runs from the daily cron)
+  const applyBatchRateLimit = rateLimit(3, 10 * 60 * 1000);
+  app.post('/api/applications/prepare-batch', requireAdmin, applyBatchRateLimit, async (req: any, res) => {
+    try {
+      const date = String(req.body?.date || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ message: 'date=YYYY-MM-DD required' });
+      const { prepareApplicationsForDate } = await import('./jobs/applyService');
+      // Long-running (sequential AI calls) — respond immediately, run in background
+      res.json({ started: true, date });
+      prepareApplicationsForDate(date).catch((e) => console.error('[APPLY] Batch preparation crashed:', e));
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Batch preparation failed' });
+    }
+  });
+
   // Change own password (requires login; verifies current password)
   app.post('/api/auth/change-password', authRateLimit, attachSessionIfPresent, async (req: any, res) => {
     try {

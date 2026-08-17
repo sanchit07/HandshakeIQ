@@ -13,6 +13,7 @@ const CardScanner      = React.lazy(() => import('./components/CardScanner'));
 const SideMenu         = React.lazy(() => import('./components/SideMenu'));
 const UpcomingMeetings = React.lazy(() => import('./components/UpcomingMeetings'));
 const JobOpportunities = React.lazy(() => import('./components/JobOpportunities'));
+const ProfileVault      = React.lazy(() => import('./components/ProfileVault'));
 import { Person, CalendarAttendee, Dossier, IntelligenceReport, GroundingChunk, SocialMediaLink } from './types';
 import { MOCK_PEOPLE, MOCK_MEETINGS } from './constants';
 import { MovingWallsLogo, HandshakeIQLogo } from './components/icons/Logos';
@@ -26,7 +27,7 @@ const App: React.FC = () => {
   const [currentDossierId, setCurrentDossierId] = useState<string | undefined>(undefined);
   const [currentReport, setCurrentReport] = useState<IntelligenceReport | undefined>(undefined);
   const [currentSources, setCurrentSources] = useState<GroundingChunk[]>([]);
-  const [view, setView] = useState<'dashboard' | 'profile' | 'settings' | 'scanner' | 'login' | 'upcoming-meetings' | 'job-opportunities'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'profile' | 'settings' | 'scanner' | 'login' | 'upcoming-meetings' | 'job-opportunities' | 'profile-vault'>('dashboard');
   const [scannedSearchTerm, setScannedSearchTerm] = useState<string>('');
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
   const [searchHistory, setSearchHistory] = useState<Person[]>([]);
@@ -116,6 +117,11 @@ const App: React.FC = () => {
     setView('job-opportunities');
     setIsMenuOpen(false);
   }, []);
+
+  const handleGoToProfileVault = useCallback(() => {
+    setView('profile-vault');
+    setIsMenuOpen(false);
+  }, []);
   
   const handleSelectAttendee = useCallback((attendee: CalendarAttendee) => {
     // Convert CalendarAttendee to Person for profile view
@@ -142,6 +148,7 @@ const App: React.FC = () => {
   const isSettingsVisible = view === 'settings';
   const isUpcomingMeetingsVisible = view === 'upcoming-meetings';
   const isJobOpportunitiesVisible = view === 'job-opportunities';
+  const isProfileVaultVisible = view === 'profile-vault';
   const isLoginVisible = view === 'login';
   
   // Show app content if authenticated OR in guest mode
@@ -222,7 +229,7 @@ const App: React.FC = () => {
             <ErrorBoundary name="App">
             <Suspense fallback={null}>
             <div className="relative w-full h-full">
-               <div className={`transition-all duration-500 ease-in-out ${isProfileVisible || isSettingsVisible || isUpcomingMeetingsVisible || isJobOpportunitiesVisible ? 'transform -translate-x-full opacity-0 scale-95' : 'transform translate-x-0 opacity-100 scale-100'}`}>
+               <div className={`transition-all duration-500 ease-in-out ${isProfileVisible || isSettingsVisible || isUpcomingMeetingsVisible || isJobOpportunitiesVisible || isProfileVaultVisible ? 'transform -translate-x-full opacity-0 scale-95' : 'transform translate-x-0 opacity-100 scale-100'}`}>
                 <Dashboard
                   meetings={MOCK_MEETINGS}
                   people={MOCK_PEOPLE}
@@ -264,6 +271,15 @@ const App: React.FC = () => {
                   <JobOpportunities onBack={handleBackToDashboard} />
                 </div>
               )}
+              {isAdmin && (
+                <div
+                  className={`absolute top-0 left-0 w-full h-full transition-all duration-500 ease-in-out ${
+                    isProfileVaultVisible ? 'transform translate-x-0 opacity-100 scale-100' : 'transform translate-x-full opacity-0 scale-95'
+                  }`}
+                >
+                  <ProfileVault onBack={handleBackToDashboard} />
+                </div>
+              )}
             </div>
             </Suspense>
             </ErrorBoundary>
@@ -289,6 +305,7 @@ const App: React.FC = () => {
                 onGoToSettings={handleGoToSettings}
                 onGoToUpcomingMeetings={handleGoToUpcomingMeetings}
                 onGoToJobOpportunities={isAdmin ? handleGoToJobOpportunities : undefined}
+                onGoToProfileVault={isAdmin ? handleGoToProfileVault : undefined}
                 onLogout={handleLogout}
               />
             </Suspense>

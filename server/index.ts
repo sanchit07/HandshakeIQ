@@ -103,6 +103,18 @@ const isProduction = process.env.NODE_ENV === 'production';
     } catch (err) {
       console.error('[CRON] Contact evidence recheck failed (non-fatal):', err);
     }
+    // Prepare applications for today's shortlist: resolve official apply routes,
+    // draft application emails / assisted packets, and queue everything for the
+    // user's review. Sequential AI calls; failures are per-job and non-fatal.
+    try {
+      const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+      const { prepareApplicationsForDate, getApplySummary } = await import('./jobs/applyService');
+      const prep = await prepareApplicationsForDate(today);
+      const summary = await getApplySummary(today);
+      console.log(`[CRON] Apply preparation done: ${prep.prepared} prepared, ${prep.failed} failed — ${summary.awaitingReview} awaiting review, ${summary.needsUser} need input`);
+    } catch (err) {
+      console.error('[CRON] Apply preparation failed (non-fatal):', err);
+    }
   }, { timezone: 'Asia/Kuala_Lumpur' });
 
   // Catch-up: if the server was down at 7:00 AM, run the (idempotent) daily
@@ -112,6 +124,16 @@ const isProduction = process.env.NODE_ENV === 'production';
       const klHour = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kuala_Lumpur', hour: 'numeric', hour12: false }).format(new Date()));
       if (klHour >= 7) {
         await runDailyWithRetries('Startup catch-up job search');
+        // Also catch up on apply preparation — a post-7AM restart must not
+        // silently leave the day's applications unprepared.
+        try {
+          const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
+          const { prepareApplicationsForDate } = await import('./jobs/applyService');
+          const prep = await prepareApplicationsForDate(today);
+          console.log(`[CRON] Startup apply-prep catch-up: ${prep.prepared} prepared, ${prep.failed} failed`);
+        } catch (err) {
+          console.error('[CRON] Startup apply-prep catch-up failed (non-fatal):', err);
+        }
       }
     } catch (err) {
       console.error('[CRON] Startup catch-up job search failed:', err);

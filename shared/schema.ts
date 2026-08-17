@@ -151,6 +151,98 @@ export const jobContacts = pgTable("job_contacts", {
 
 export type JobContact = typeof jobContacts.$inferSelect;
 
+// ── Auto-apply engine ────────────────────────────────────────────────────────
+
+/**
+ * Candidate profile vault — single-row table (single-user app) holding every
+ * answer an application form can ask for. Sensitive answers (visa/sponsorship,
+ * EEO) are EXPLICITLY user-entered: the apply engine refuses to answer any
+ * sensitive question not present here — it pauses (needs_user) instead of guessing.
+ */
+export const candidateProfile = pgTable("candidate_profile", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  fullName: varchar("full_name"),
+  email: varchar("email"),
+  phone: varchar("phone"),
+  addressLine: varchar("address_line"),
+  city: varchar("city"),
+  country: varchar("country"),
+  linkedinUrl: text("linkedin_url"),
+  githubUrl: text("github_url"),
+  portfolioUrl: text("portfolio_url"),
+  noticePeriod: varchar("notice_period"),
+  languages: text("languages"), // comma-separated, e.g. "English (fluent), Hindi (native)"
+  // Per-country work-authorization records, user-entered only:
+  // [{ country, rightToWork: 'citizen'|'permanent_resident'|'work_visa'|'needs_sponsorship'|'none',
+  //    visaDetails, needsSponsorship: boolean, salaryExpectation, relocationWilling: boolean, notes }]
+  countryAuth: jsonb("country_auth").$type<CountryAuthRecord[]>().default([]),
+  // EEO / demographic answers (user-entered; empty = engine must not answer)
+  eeoAnswers: jsonb("eeo_answers").$type<Record<string, string>>().default({}),
+  // Standard screening Q&A: [{ question, answer }]
+  screeningAnswers: jsonb("screening_answers").$type<{ question: string; answer: string }[]>().default([]),
+  // Per-channel submit mode: { email: 'review'|'auto' } — default review-before-submit
+  channelModes: jsonb("channel_modes").$type<Record<string, 'review' | 'auto'>>().default({}),
+  seededFromResume: boolean("seeded_from_resume").default(false),
+  confirmedAt: timestamp("confirmed_at"), // user confirmed seeded basics
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export interface CountryAuthRecord {
+  country: string;
+  rightToWork: 'citizen' | 'permanent_resident' | 'work_visa' | 'needs_sponsorship' | 'none';
+  visaDetails?: string;
+  needsSponsorship: boolean;
+  salaryExpectation?: string;
+  relocationWilling?: boolean;
+  notes?: string;
+}
+
+export type CandidateProfile = typeof candidateProfile.$inferSelect;
+export type UpsertCandidateProfile = typeof candidateProfile.$inferInsert;
+
+/**
+ * Application attempts — one row per apply attempt per channel, with a strict
+ * state machine and a per-step JSON log. Nothing fails silently: failed and
+ * needs_user states carry a reason and surface in the UI.
+ *
+ * States: queued → route_resolved → ready_for_review → approved → submitting
+ *         → submitted | needs_user | failed
+ */
+export const applications = pgTable("applications", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobMatchId: varchar("job_match_id").notNull().references(() => jobMatches.id, { onDelete: "cascade" }),
+  channel: varchar("channel").notNull(), // email | assisted | ats_auto (phase 2+)
+  state: varchar("state").notNull().default("queued"),
+  // Resolved apply route
+  applyUrl: text("apply_url"),
+  atsType: varchar("ats_type"), // greenhouse | lever | ashby | smartrecruiters | workday | icims | taleo | successfactors | workable | bamboohr | jobvite | email | unknown
+  routeSource: varchar("route_source"), // official | source_fallback
+  routeConfidence: varchar("route_confidence"), // high | medium | low
+  // Email channel fields
+  emailTo: varchar("email_to"),
+  emailToStatus: varchar("email_to_status"), // verified | listed_in_posting | unverified
+  emailSubject: text("email_subject"),
+  emailBody: text("email_body"),
+  // Assisted-apply packet: { applyUrl, answers: [{label, value, source}], coverNote }
+  packet: jsonb("packet"),
+  stepLog: jsonb("step_log").$type<{ ts: string; step: string; detail?: string }[]>().default([]),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  errorReason: text("error_reason"),
+  needsUserReason: text("needs_user_reason"),
+  submittedAt: timestamp("submitted_at"),
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+}, (table) => [
+  index("idx_applications_match").on(table.jobMatchId),
+  index("idx_applications_state").on(table.state),
+  // One ACTIVE application per job: prevents concurrent prepare requests from
+  // creating duplicate in-flight rows (submitted rows are history and exempt).
+  uniqueIndex("uq_applications_active_per_job").on(table.jobMatchId).where(sql`state != 'submitted'`),
+]);
+
+export type Application = typeof applications.$inferSelect;
+export type UpsertApplication = typeof applications.$inferInsert;
+
 export type UpsertUser = typeof users.$inferInsert;
 export type User = typeof users.$inferSelect;
 export type Dossier = typeof dossiers.$inferSelect;
