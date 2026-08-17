@@ -78,6 +78,95 @@ interface ApplySummary {
     total: number; submitted: number; unconfirmed: number; awaitingReview: number; needsUser: number; failed: number; inProgress: number; notStarted: number;
 }
 
+interface HandoffMeta { id: string; applicationId: string; reason: string; expiresAt: number }
+
+/** Live remote view for a CAPTCHA hand-off: frame polling + input forwarding. */
+const HandoffViewer: React.FC<{ handoff: HandoffMeta; onClose: () => void }> = ({ handoff, onClose }) => {
+    const [frameTs, setFrameTs] = useState(Date.now());
+    const [typed, setTyped] = useState('');
+    const [gone, setGone] = useState(false);
+    const imgRef = React.useRef<HTMLImageElement>(null);
+    const errCount = React.useRef(0);
+
+    useEffect(() => {
+        const t = setInterval(() => setFrameTs(Date.now()), 1500);
+        return () => clearInterval(t);
+    }, []);
+
+    const sendInput = async (input: any) => {
+        try {
+            await fetch(`/api/handoffs/${handoff.id}/input`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input),
+            });
+            setFrameTs(Date.now());
+        } catch { /* noop */ }
+    };
+
+    const handleClick = (e: React.MouseEvent<HTMLImageElement>) => {
+        const img = imgRef.current;
+        if (!img) return;
+        const rect = img.getBoundingClientRect();
+        // Browser viewport is 1366x900 (see launchHardenedSession)
+        const x = Math.round(((e.clientX - rect.left) / rect.width) * 1366);
+        const y = Math.round(((e.clientY - rect.top) / rect.height) * 900);
+        sendInput({ type: 'click', x, y });
+    };
+
+    const resolve = async (resolution: 'solved' | 'aborted') => {
+        try {
+            await fetch(`/api/handoffs/${handoff.id}/resolve`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ resolution }),
+            });
+        } catch { /* noop */ }
+        onClose();
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4" onClick={onClose}>
+            <div className="bg-gray-950 border border-amber-500/40 rounded-lg max-w-4xl w-full max-h-[92vh] overflow-y-auto p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+                <div className="flex items-center justify-between">
+                    <h3 className="font-exo text-lg text-amber-300">Live browser — solve the puzzle</h3>
+                    <button onClick={onClose} className="text-gray-400 hover:text-white">✕</button>
+                </div>
+                <p className="text-xs text-gray-400">{handoff.reason} Click directly on the page below; keys and typed text are forwarded to the real browser session.</p>
+                {gone ? (
+                    <p className="text-sm text-amber-300 p-4">This hand-off session has ended (solved, cancelled, or timed out).</p>
+                ) : (
+                    <img
+                        ref={imgRef}
+                        src={`/api/handoffs/${handoff.id}/frame?t=${frameTs}`}
+                        onError={() => { errCount.current += 1; if (errCount.current >= 3) setGone(true); }}
+                        onLoad={() => { errCount.current = 0; }}
+                        onClick={handleClick}
+                        alt="Live browser session"
+                        className="w-full border border-amber-500/30 rounded cursor-crosshair select-none"
+                        draggable={false}
+                    />
+                )}
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <input
+                        value={typed}
+                        onChange={(e) => setTyped(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter' && typed) { sendInput({ type: 'type', text: typed }); setTyped(''); } }}
+                        placeholder="Type text, press Enter to send it to the page"
+                        className="flex-1 min-w-[200px] px-3 py-2 bg-gray-900/70 border border-amber-500/30 rounded text-white focus:outline-none focus:border-amber-400"
+                    />
+                    {['Enter', 'Tab', 'Escape'].map((k) => (
+                        <button key={k} onClick={() => sendInput({ type: 'press', key: k })} className="px-2 py-1 border border-gray-600 rounded text-gray-300 hover:text-white">{k}</button>
+                    ))}
+                    <button onClick={() => sendInput({ type: 'scroll', deltaY: 400 })} className="px-2 py-1 border border-gray-600 rounded text-gray-300 hover:text-white">Scroll ↓</button>
+                    <button onClick={() => sendInput({ type: 'scroll', deltaY: -400 })} className="px-2 py-1 border border-gray-600 rounded text-gray-300 hover:text-white">Scroll ↑</button>
+                </div>
+                <div className="flex items-center gap-3 pt-2">
+                    <button onClick={() => resolve('solved')} className="px-4 py-2 text-sm font-bold text-slate-900 bg-green-400 hover:bg-green-300 rounded-lg font-exo">I solved it — continue automation</button>
+                    <button onClick={() => resolve('aborted')} className="px-4 py-2 text-sm text-red-300 border border-red-500/40 rounded-lg hover:bg-red-900/30">Cancel this run</button>
+                    <span className="ml-auto text-[10px] text-gray-500">Expires {new Date(handoff.expiresAt).toLocaleTimeString()}</span>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 const APP_STATE_BADGE: Record<string, { label: string; cls: string }> = {
     queued: { label: 'Apply: queued', cls: 'bg-gray-800 text-gray-300 border-gray-600/40' },
     route_resolved: { label: 'Apply: route found', cls: 'bg-cyan-900/40 text-cyan-300 border-cyan-500/30' },
@@ -118,6 +207,46 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
     const [emailEdits, setEmailEdits] = useState<{ subject: string; body: string }>({ subject: '', body: '' });
     const [screenshots, setScreenshots] = useState<Record<string, { id: string; kind: string; createdAt: string | null }[]>>({});
     const [viewingShot, setViewingShot] = useState<{ appId: string; shotId: string; kind: string } | null>(null);
+    const [handoffs, setHandoffs] = useState<HandoffMeta[]>([]);
+    const [viewingHandoff, setViewingHandoff] = useState<HandoffMeta | null>(null);
+    const [verifyLinks, setVerifyLinks] = useState<Record<string, string>>({});
+    const [savingLinkId, setSavingLinkId] = useState<string | null>(null);
+
+    // Poll for live CAPTCHA hand-off sessions (cheap; only while page is open)
+    useEffect(() => {
+        let stop = false;
+        const poll = async () => {
+            try {
+                const res = await fetch('/api/handoffs');
+                if (res.ok && !stop) setHandoffs(await res.json());
+            } catch { /* noop */ }
+        };
+        poll();
+        const t = setInterval(poll, 8000);
+        return () => { stop = true; clearInterval(t); };
+    }, []);
+
+    const handleSaveVerifyLink = async (app: Application) => {
+        const link = (verifyLinks[app.id] || '').trim();
+        if (!link) return;
+        setSavingLinkId(app.id);
+        setError(null);
+        try {
+            const res = await fetch(`/api/applications/${app.id}/verification-link`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ link }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.message || 'Failed to save link');
+            setVerifyLinks((prev) => ({ ...prev, [app.id]: '' }));
+            // Immediately retry preparation with the pasted link
+            const job = jobs.find((j) => j.id === app.jobMatchId);
+            if (job) await handlePrepareApply(job);
+        } catch (e: any) {
+            setError(e.message || 'Failed to save verification link');
+        } finally {
+            setSavingLinkId(null);
+        }
+    };
 
     // Load screenshot metadata for headless-apply applications (once per app id)
     useEffect(() => {
@@ -569,6 +698,30 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                         {a.state === 'needs_user' && a.needsUserReason && (
                                             <p className="text-xs text-red-300 bg-red-900/20 border border-red-500/30 rounded p-2">{a.needsUserReason}</p>
                                         )}
+                                        {a.state === 'needs_user' && /verification (e-?mail|link)/i.test(a.needsUserReason || '') && (
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <input
+                                                    value={verifyLinks[a.id] || ''}
+                                                    onChange={(e) => setVerifyLinks((prev) => ({ ...prev, [a.id]: e.target.value }))}
+                                                    placeholder="Paste the verification link from the email here"
+                                                    className="flex-1 min-w-[240px] px-3 py-1.5 text-xs bg-gray-900/70 border border-cyan-500/30 rounded text-white focus:outline-none focus:border-cyan-400"
+                                                />
+                                                <button
+                                                    onClick={() => handleSaveVerifyLink(a)}
+                                                    disabled={savingLinkId === a.id || !(verifyLinks[a.id] || '').trim()}
+                                                    className="px-3 py-1.5 text-xs font-bold text-slate-900 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 rounded-full transition-colors"
+                                                >
+                                                    {savingLinkId === a.id ? 'Verifying…' : 'Save Link & Continue'}
+                                                </button>
+                                            </div>
+                                        )}
+                                        {handoffs.filter((h) => h.applicationId === a.id).map((h) => (
+                                            <div key={h.id} className="flex flex-wrap items-center gap-2 text-xs text-amber-300 bg-amber-900/20 border border-amber-500/40 rounded p-2">
+                                                <span className="font-bold">⚠ Human verification needed right now.</span>
+                                                <span className="text-amber-200/80">{h.reason}</span>
+                                                <button onClick={() => setViewingHandoff(h)} className="ml-auto px-3 py-1 font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-full">Open Live View</button>
+                                            </div>
+                                        ))}
                                         {a.state === 'failed' && a.errorReason && (
                                             <p className="text-xs text-red-300 bg-red-900/20 border border-red-500/30 rounded p-2">Failed: {a.errorReason}</p>
                                         )}
@@ -765,6 +918,10 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                         )}
                     </div>
                 </div>
+            )}
+
+            {viewingHandoff && (
+                <HandoffViewer handoff={viewingHandoff} onClose={() => { setViewingHandoff(null); setHandoffs((prev) => prev.filter((h) => h.id !== viewingHandoff.id)); }} />
             )}
 
             {viewingShot && (

@@ -299,3 +299,22 @@ export function computeAnswersHash(applyUrl: string, answers: { label: string; v
 
 /** Hard daily cap on autonomous ATS submissions. */
 export const DAILY_ATS_SUBMIT_CAP = 25;
+
+export type ApplyChannelChoice = 'ats_supported' | 'ats_login_walled' | 'email' | 'ats_generic' | 'assisted';
+
+/**
+ * Channel selection order for a prepared application. A recognized ATS route
+ * (supported OR login-walled) is the official channel and always wins over an
+ * available contact email — emailing a recruiter is a fallback, not a
+ * substitute for the employer's own apply flow.
+ */
+export function chooseApplyChannel(
+  atsType: string | null | undefined,
+  hasEmailTarget: boolean,
+): ApplyChannelChoice {
+  if (atsType && SUPPORTED_ATS.has(atsType)) return 'ats_supported';
+  if (atsType && LOGIN_WALLED_ATS.has(atsType)) return 'ats_login_walled';
+  if (hasEmailTarget) return 'email';
+  if (atsType) return 'ats_generic';
+  return 'assisted';
+}

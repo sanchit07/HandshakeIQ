@@ -357,6 +357,107 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ── ATS credential vault (per-company accounts, encrypted at rest) ──
+  app.get('/api/vault/credentials', requireAdmin, async (_req, res) => {
+    try {
+      const { listCredentials } = await import('./jobs/atsSubmitter/credentialVault.js');
+      res.json(await listCredentials());
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to load credentials' });
+    }
+  });
+  app.post('/api/vault/credentials/:id/reveal', requireAdmin, async (req: any, res) => {
+    try {
+      const { revealCredential } = await import('./jobs/atsSubmitter/credentialVault.js');
+      const out = await revealCredential(req.params.id);
+      if (!out) return res.status(404).json({ message: 'Credential not found' });
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(out);
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to reveal credential' });
+    }
+  });
+  app.delete('/api/vault/credentials/:id', requireAdmin, async (req: any, res) => {
+    try {
+      const { deleteCredential } = await import('./jobs/atsSubmitter/credentialVault.js');
+      res.json({ deleted: await deleteCredential(req.params.id) });
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to delete credential' });
+    }
+  });
+
+  // ── Domain guard-rails (cooldowns / downgrades, user-visible + resettable) ──
+  app.get('/api/vault/domain-controls', requireAdmin, async (_req, res) => {
+    try {
+      const { listDomainControls } = await import('./jobs/atsSubmitter/guardrails.js');
+      res.json(await listDomainControls());
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to load domain controls' });
+    }
+  });
+  app.post('/api/vault/domain-controls/:domain/reset', requireAdmin, async (req: any, res) => {
+    try {
+      const { resetDomainControl } = await import('./jobs/atsSubmitter/guardrails.js');
+      await resetDomainControl(String(req.params.domain));
+      res.json({ reset: true });
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to reset domain' });
+    }
+  });
+
+  // ── Live CAPTCHA hand-off (remote view + input forwarding) ──
+  app.get('/api/handoffs', requireAdmin, async (_req, res) => {
+    try {
+      const { listHandoffs } = await import('./jobs/atsSubmitter/handoff.js');
+      res.json(await listHandoffs());
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to list hand-offs' });
+    }
+  });
+  app.get('/api/handoffs/:id/frame', requireAdmin, async (req: any, res) => {
+    try {
+      const { handoffFrame } = await import('./jobs/atsSubmitter/handoff.js');
+      const frame = await handoffFrame(req.params.id);
+      if (!frame) return res.status(404).json({ message: 'Hand-off not found or frame unavailable' });
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'no-store');
+      res.send(frame);
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to capture frame' });
+    }
+  });
+  app.post('/api/handoffs/:id/input', requireAdmin, async (req: any, res) => {
+    try {
+      const { handoffInput } = await import('./jobs/atsSubmitter/handoff.js');
+      const ok = await handoffInput(req.params.id, req.body);
+      res.json({ ok });
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Input failed' });
+    }
+  });
+  app.post('/api/handoffs/:id/resolve', requireAdmin, async (req: any, res) => {
+    try {
+      const { finishHandoff } = await import('./jobs/atsSubmitter/handoff.js');
+      const resolution = req.body?.resolution === 'aborted' ? 'aborted' : 'solved';
+      res.json({ ok: await finishHandoff(req.params.id, resolution) });
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to resolve hand-off' });
+    }
+  });
+
+  // ── Email-verification link (manual paste fallback for portal signups) ──
+  app.post('/api/applications/:id/verification-link', requireAdmin, async (req: any, res) => {
+    try {
+      const link = String(req.body?.link || '').trim();
+      if (!link) return res.status(400).json({ message: 'link required' });
+      const { setVerificationLink } = await import('./jobs/atsSubmitter/loginWalled.js');
+      await setVerificationLink(req.params.id, link);
+      res.json({ saved: true });
+    } catch (error: any) {
+      res.status(400).json({ message: error?.message || 'Failed to save verification link' });
+    }
+  });
+
   // Day-level apply summary for the dashboard / daily report
   app.get('/api/applications/summary', requireAdmin, async (req: any, res) => {
     try {

@@ -92,7 +92,7 @@ export async function countTodaysAtsSubmissions(): Promise<number> {
 
 // ── Screenshot persistence ───────────────────────────────────────────────────
 
-async function saveScreenshot(appId: string, page: Page, kind: 'pre_submit' | 'confirmation' | 'failure'): Promise<string | null> {
+export async function saveScreenshot(appId: string, page: Page, kind: 'pre_submit' | 'confirmation' | 'failure'): Promise<string | null> {
   try {
     const buf = await page.screenshot({ type: 'jpeg', quality: 55, fullPage: true, timeout: 15000 });
     const [row] = await db.insert(applicationScreenshots).values({
@@ -166,13 +166,31 @@ export async function fillForm(page: Page, app: Application, job: JobMatch, prof
     return { status: 'needs_user', reason: 'No fillable application form was found on the page — the posting may use an unsupported flow. Apply manually via the apply link.', answers: [], page };
   }
 
+  const res = await fillFieldsInScope(page, formSelector, fields, app, job, profile);
+  if (res.status === 'needs_user') {
+    return { status: 'needs_user', reason: res.reason, answers: res.answers, page };
+  }
+
+  if (await detectCaptcha(page)) {
+    return { status: 'captcha', reason: 'A CAPTCHA appeared after filling the form. Complete this application manually via the apply link — your answers are saved below.', answers: res.answers, page };
+  }
+  return { status: 'filled', answers: res.answers, page, formSelector };
+}
+
+/**
+ * Shared per-page fill engine (single-page forms AND each page of a
+ * login-walled multi-page wizard). Every fill operation is located from the
+ * resolved FORM, never from the document — a decoy form sharing field names
+ * (email, first_name, …) must never receive candidate PII.
+ */
+export async function fillFieldsInScope(
+  page: Page, formSelector: string, fields: DomField[],
+  app: Application, job: JobMatch, profile: CandidateProfile,
+): Promise<{ status: 'filled' | 'needs_user'; reason?: string; answers: PacketAnswer[] }> {
   const canon = buildCanonicalValues(profile, job);
   const answers: PacketAnswer[] = [];
   let cvFile: string | null = null;
   const radioGroups = new Set<string>();
-  // Every fill operation is located from the resolved FORM, never from the
-  // document — a decoy form sharing field names (email, first_name, …) must
-  // never receive candidate PII.
   const form = page.locator(formSelector);
 
   try {
@@ -188,7 +206,7 @@ export async function fillForm(page: Page, app: Application, job: JobMatch, prof
         if (cls.key === 'coverLetter') continue; // optional; skip uploads for cover letters
         // Resume upload (also default for an unlabeled single file input)
         if (!job.tailoredCv) {
-          return { status: 'needs_user', reason: 'This form requires a resume upload but no tailored CV exists yet. Generate the CV first ("Prepare Tailored CV"), then retry.', answers, page };
+          return { status: 'needs_user', reason: 'This form requires a resume upload but no tailored CV exists yet. Generate the CV first ("Prepare Tailored CV"), then retry.', answers };
         }
         cvFile = cvFile ?? await generateCvFile(job);
         await form.locator(field.selector).first().setInputFiles(cvFile);
@@ -199,7 +217,7 @@ export async function fillForm(page: Page, app: Application, job: JobMatch, prof
 
       const res = resolveField(field, canon);
       if (res.blockReason) {
-        return { status: 'needs_user', reason: res.blockReason, answers, page };
+        return { status: 'needs_user', reason: res.blockReason, answers };
       }
       if (res.value === null) {
         // Cover-letter textarea: use the drafted cover note when we have one
@@ -218,7 +236,7 @@ export async function fillForm(page: Page, app: Application, job: JobMatch, prof
         const opt = bestOption(field.options ?? [], res.value);
         if (!opt) {
           if (field.required) {
-            return { status: 'needs_user', reason: `The form's options for "${field.label}" don't match your saved answer ("${res.value}"). Answer this one manually via the apply link, or adjust your Profile Vault wording.`, answers, page };
+            return { status: 'needs_user', reason: `The form's options for "${field.label}" don't match your saved answer ("${res.value}"). Answer this one manually via the apply link, or adjust your Profile Vault wording.`, answers };
           }
           continue;
         }
@@ -235,7 +253,7 @@ export async function fillForm(page: Page, app: Application, job: JobMatch, prof
         const opt = bestOption(groupLabels, res.value);
         if (!opt) {
           if (field.required) {
-            return { status: 'needs_user', reason: `No option for "${field.label}" matches your saved answer ("${res.value}"). Answer it manually via the apply link.`, answers, page };
+            return { status: 'needs_user', reason: `No option for "${field.label}" matches your saved answer ("${res.value}"). Answer it manually via the apply link.`, answers };
           }
           continue;
         }
@@ -254,10 +272,7 @@ export async function fillForm(page: Page, app: Application, job: JobMatch, prof
     if (cvFile) { try { fs.unlinkSync(cvFile); } catch {} }
   }
 
-  if (await detectCaptcha(page)) {
-    return { status: 'captcha', reason: 'A CAPTCHA appeared after filling the form. Complete this application manually via the apply link — your answers are saved below.', answers, page };
-  }
-  return { status: 'filled', answers, page, formSelector };
+  return { status: 'filled', answers };
 }
 
 // ── Retry wrapper ────────────────────────────────────────────────────────────
@@ -294,6 +309,41 @@ export async function submitAtsApplication(appId: string): Promise<Application> 
   return enqueueBrowserRun(() => runAtsPhase(appId, 'submit'));
 }
 
+/**
+ * Shared submit-boundary CAPTCHA guard: when a puzzle blocks the page, record
+ * the domain block and run the live hand-off; returns true when the page is
+ * clear (no puzzle, or the user solved it), false when the hand-off expired
+ * or the puzzle persists. Dependencies are injectable for tests.
+ */
+export async function submitCaptchaGuard(
+  appId: string,
+  applyUrl: string,
+  page: import('playwright-core').Page,
+  context: string,
+  deps?: {
+    detect?: (page: any) => Promise<boolean>;
+    block?: (url: string, why: string) => Promise<unknown>;
+    handoff?: (appId: string, page: any, reason: string) => Promise<'solved' | 'aborted' | 'timeout'>;
+  },
+): Promise<boolean> {
+  const detect = deps?.detect ?? detectCaptcha;
+  if (!(await detect(page))) return true;
+  const block = deps?.block ?? (async (url: string, why: string) => {
+    const { recordDomainBlock } = await import('./guardrails.js');
+    return recordDomainBlock(url, why);
+  });
+  const handoff = deps?.handoff ?? (async (id: string, p: any, reason: string) => {
+    const { openHandoff } = await import('./handoff.js');
+    return (await openHandoff(id, p, reason)).done;
+  });
+  await block(applyUrl, `captcha:${context}`);
+  const resolution = await handoff(appId, page,
+    `A human-verification puzzle appeared while ${context}. Open the live view and solve it to let the run continue.`);
+  if (resolution !== 'solved') return false;
+  await sleep(1500);
+  return !(await detect(page));
+}
+
 async function runAtsPhase(appId: string, phase: 'fill' | 'submit'): Promise<Application> {
   const [app] = await db.select().from(applications).where(eq(applications.id, appId));
   if (!app) throw new Error('Application not found');
@@ -307,6 +357,17 @@ async function runAtsPhase(appId: string, phase: 'fill' | 'submit'): Promise<App
   const gap = workAuthBlockReason(profile, job.country);
   if (gap) {
     return transitionApplication(appId, 'needs_user', gap.step, undefined, { needsUserReason: gap.reason });
+  }
+
+  // Ban-risk guard-rails: per-domain cooldowns and automatic downgrade to
+  // assisted mode after repeated blocks.
+  const { checkDomainAllowed, recordDomainRun } = await import('./guardrails.js');
+  // The submit phase is a permitted continuation of the fill run the user
+  // just reviewed — bypass only the inter-run gap (fill recorded lastRunAt
+  // minutes ago); CAPTCHA block cooldowns and downgrades still apply.
+  const gate = await checkDomainAllowed(app.applyUrl, { ignoreRunGap: phase === 'submit' });
+  if (!gate.allowed) {
+    return transitionApplication(appId, 'needs_user', 'guardrail_block', gate.reason?.slice(0, 200), { needsUserReason: gate.reason });
   }
 
   if (phase === 'submit') {
@@ -324,7 +385,25 @@ async function runAtsPhase(appId: string, phase: 'fill' | 'submit'): Promise<App
     const result = await withRetries(`${phase} ${appId.slice(0, 8)}`, async () => {
       if (session) { await session.close(); session = null; }
       session = await launchHardenedSession(app.applyUrl!);
-      const outcome = await fillForm(session.page, app, job, profile);
+      await recordDomainRun(app.applyUrl!);
+      let outcome = await fillForm(session.page, app, job, profile);
+
+      // Live CAPTCHA hand-off: keep the session alive, let the user solve the
+      // puzzle through the remote view, then retry the fill in this session
+      // (the solved-captcha state persists in the browser context).
+      if (outcome.status === 'captcha') {
+        const { openHandoff } = await import('./handoff.js');
+        const { recordDomainBlock } = await import('./guardrails.js');
+        await recordDomainBlock(app.applyUrl!, 'captcha:ats_form');
+        const handoff = await openHandoff(appId, outcome.page,
+          'A human-verification puzzle blocked this application. Open the live view and solve it to let the run continue.');
+        const resolution = await handoff.done;
+        if (resolution === 'solved') {
+          outcome = await fillForm(session.page, app, job, profile);
+        } else {
+          outcome = { ...outcome, reason: 'A human-verification puzzle blocked this application and the live hand-off window expired. Retry to get a new hand-off, or apply manually via the apply link.' };
+        }
+      }
 
       if (outcome.status !== 'filled') {
         const shotId = await saveScreenshot(appId, outcome.page, 'failure');
@@ -366,14 +445,28 @@ async function runAtsPhase(appId: string, phase: 'fill' | 'submit'): Promise<App
         return { kind: 'needs_user' as const, reason: 'The submit button could not be found after filling the form. Complete the submission manually via the apply link.', answers: outcome.answers, shotId };
       }
       await sleep(jitterMs(800, 2200));
+
+      // CAPTCHA boundary guard immediately BEFORE the submit click: a puzzle
+      // here gets the live hand-off; nothing has been clicked yet, so a
+      // failed hand-off pauses cleanly with no duplicate-submission risk.
+      const preClear = await submitCaptchaGuard(appId, app.applyUrl!, session.page, 'submitting the application');
+      if (!preClear) {
+        const shotId = await saveScreenshot(appId, session.page, 'failure');
+        return { kind: 'needs_user' as const, reason: 'A human-verification puzzle appeared at submission and the live hand-off window expired. Nothing was submitted — retry to get a new hand-off, or complete the submission manually via the apply link.', answers: outcome.answers, shotId };
+      }
+
       await submitBtn.click();
       // Wait for the page to settle, then look for confirmation
       await session.page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
       await sleep(jitterMs(2000, 4000));
 
-      if (await detectCaptcha(session.page)) {
+      // CAPTCHA boundary guard AFTER the click: solve-and-resume in the same
+      // session, then fall through to confirmation classification — the
+      // submit button is never clicked a second time.
+      const postClear = await submitCaptchaGuard(appId, app.applyUrl!, session.page, 'confirming the submission');
+      if (!postClear) {
         const shotId = await saveScreenshot(appId, session.page, 'failure');
-        return { kind: 'needs_user' as const, reason: 'A CAPTCHA appeared at submission. Complete this application manually via the apply link.', answers: outcome.answers, shotId };
+        return { kind: 'needs_user' as const, reason: 'A human-verification puzzle appeared after the submit click and the live hand-off window expired. Verify on the ATS whether the application went through before retrying — do not submit twice.', answers: outcome.answers, shotId };
       }
 
       const text = await visiblePageText(session.page);

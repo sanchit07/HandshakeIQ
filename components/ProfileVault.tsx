@@ -51,6 +51,93 @@ const RIGHT_TO_WORK_OPTIONS: Array<{ value: CountryAuthRecord['rightToWork']; la
 const inputCls = 'w-full px-3 py-2 bg-gray-900/70 border border-cyan-500/30 rounded-lg text-white text-sm focus:outline-none focus:border-cyan-400';
 const labelCls = 'block text-xs text-cyan-300 mb-1';
 
+interface AtsCredMeta {
+    id: string; company: string; atsType: string; portalDomain: string; portalUrl: string;
+    email: string; status: string; notes: string | null; createdAt: string | null; lastUsedAt: string | null;
+}
+interface DomainControl {
+    domain: string; blockCount: number; cooldownUntil: string | null; downgraded: boolean;
+}
+
+const AtsAccountsSection: React.FC = () => {
+    const [creds, setCreds] = useState<AtsCredMeta[]>([]);
+    const [controls, setControls] = useState<DomainControl[]>([]);
+    const [revealed, setRevealed] = useState<Record<string, string>>({});
+    const [err, setErr] = useState<string | null>(null);
+
+    const load = useCallback(async () => {
+        try {
+            const [cr, dc] = await Promise.all([
+                fetch('/api/vault/credentials').then((r) => r.ok ? r.json() : []),
+                fetch('/api/vault/domain-controls').then((r) => r.ok ? r.json() : []),
+            ]);
+            setCreds(cr); setControls(dc);
+        } catch { /* noop */ }
+    }, []);
+    useEffect(() => { load(); }, [load]);
+
+    const reveal = async (id: string) => {
+        if (revealed[id]) { setRevealed((r) => { const n = { ...r }; delete n[id]; return n; }); return; }
+        setErr(null);
+        try {
+            const res = await fetch(`/api/vault/credentials/${id}/reveal`, { method: 'POST' });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.message || 'Reveal failed');
+            setRevealed((r) => ({ ...r, [id]: data.password }));
+        } catch (e: any) { setErr(e.message); }
+    };
+    const remove = async (id: string) => {
+        if (!window.confirm('Delete this saved portal account? You will lose the stored password.')) return;
+        await fetch(`/api/vault/credentials/${id}`, { method: 'DELETE' });
+        load();
+    };
+    const resetDomain = async (domain: string) => {
+        await fetch(`/api/vault/domain-controls/${encodeURIComponent(domain)}/reset`, { method: 'POST' });
+        load();
+    };
+
+    const flagged = controls.filter((c) => c.downgraded || (c.cooldownUntil && new Date(c.cooldownUntil) > new Date()) || c.blockCount > 0);
+
+    return (
+        <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg space-y-3">
+            <h3 className="font-exo text-lg text-cyan-300">ATS Portal Accounts</h3>
+            <p className="text-xs text-gray-500">Accounts the apply engine creates on employer portals (Workday, iCIMS, Taleo…). The password is saved here <span className="text-cyan-300">before</span> any signup form is submitted, so you can always log in yourself.</p>
+            {err && <p className="text-xs text-red-400">{err}</p>}
+            {creds.length === 0 && <p className="text-xs text-gray-500 italic">No portal accounts yet — one is created automatically the first time a Workday-style application runs.</p>}
+            {creds.map((c) => (
+                <div key={c.id} className="p-3 bg-gray-900/70 border border-purple-500/20 rounded-lg text-xs text-gray-300 space-y-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-white">{c.company}</span>
+                        <span className="px-2 py-0.5 bg-cyan-900/40 text-cyan-300 border border-cyan-500/30 rounded-full uppercase text-[10px]">{c.atsType}</span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] border ${c.status === 'login_failed' ? 'bg-red-900/40 text-red-300 border-red-500/30' : 'bg-green-900/30 text-green-300 border-green-500/30'}`}>{c.status.replace('_', ' ')}</span>
+                        <button onClick={() => remove(c.id)} className="ml-auto text-red-400 hover:text-red-300">Delete</button>
+                    </div>
+                    <div><a href={c.portalUrl} target="_blank" rel="noreferrer" className="text-cyan-400 hover:underline break-all">{c.portalDomain}</a></div>
+                    <div>Login email: <span className="text-white">{c.email}</span></div>
+                    <div className="flex items-center gap-2">
+                        Password: <span className="font-mono text-white">{revealed[c.id] ?? '••••••••••••'}</span>
+                        <button onClick={() => reveal(c.id)} className="text-cyan-300 hover:text-white border border-cyan-400/40 rounded-full px-2 py-0.5">{revealed[c.id] ? 'Hide' : 'Show'}</button>
+                    </div>
+                </div>
+            ))}
+            {flagged.length > 0 && (
+                <div className="space-y-2">
+                    <h4 className="text-sm text-cyan-300 font-exo">Automation guard-rails</h4>
+                    {flagged.map((c) => (
+                        <div key={c.domain} className="flex flex-wrap items-center gap-2 text-xs text-gray-300 p-2 bg-gray-900/70 border border-amber-500/20 rounded">
+                            <span className="text-white">{c.domain}</span>
+                            <span>{c.blockCount} block(s)</span>
+                            {c.downgraded && <span className="px-2 py-0.5 bg-amber-900/40 text-amber-300 border border-amber-500/30 rounded-full text-[10px]">Assisted mode only</span>}
+                            {!c.downgraded && c.cooldownUntil && new Date(c.cooldownUntil) > new Date() && <span className="text-amber-300">cooling down until {new Date(c.cooldownUntil).toLocaleTimeString()}</span>}
+                            <button onClick={() => resetDomain(c.domain)} className="ml-auto text-cyan-300 hover:text-white border border-cyan-400/40 rounded-full px-2 py-0.5">Reset</button>
+                        </div>
+                    ))}
+                </div>
+            )}
+        </section>
+    );
+};
+
 const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     const [profile, setProfile] = useState<Profile>(EMPTY);
     const [loading, setLoading] = useState(true);
@@ -220,6 +307,9 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                         + Add EEO answer
                     </button>
                 </section>
+
+                {/* ATS portal accounts (credential vault) */}
+                <AtsAccountsSection />
 
                 {/* Submission mode */}
                 <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg space-y-2">

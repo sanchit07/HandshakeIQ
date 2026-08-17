@@ -125,6 +125,19 @@ const ATS_PATTERNS: Array<[RegExp, string]> = [
 ];
 
 /** True only for a parseable http:// or https:// URL — anything else can't be liveness-probed and must never become an apply route. */
+/**
+ * Carry user-supplied continuation state from a prior packet into a freshly
+ * rebuilt one. A pasted verification link must survive the rebuild that
+ * prepareApplication performs on every retry, or the login-walled signup flow
+ * can never complete (and the run-gap bypass never triggers). Mutates and
+ * returns `next`.
+ */
+export function preserveContinuation(prior: unknown, next: Record<string, any>): Record<string, any> {
+  const link = (prior as any)?.verificationLink;
+  if (typeof link === 'string' && link) next.verificationLink = link;
+  return next;
+}
+
 export function isValidHttpUrl(url: string | null | undefined): boolean {
   if (!url) return false;
   try { return ['http:', 'https:'].includes(new URL(url).protocol); } catch { return false; }
@@ -534,40 +547,48 @@ export async function prepareApplication(jobId: string): Promise<Application> {
         workAuthGap.step, { needsUserReason: workAuthGap.reason });
     }
 
-    // 4. Channel pick: headless ATS submission for supported ATSs; else email
-    //    if a trustworthy address exists; else best-effort generic headless
-    //    fill for non-login-walled unknown ATSs; else assisted packet.
-    const { SUPPORTED_ATS, LOGIN_WALLED_ATS, prepareAtsApplication } = await import('./atsSubmitter/index.js');
-    if (route.atsType && SUPPORTED_ATS.has(route.atsType)) {
+    // 4. Channel pick — the ordering lives in the pure, unit-tested
+    //    chooseApplyChannel (see below for preserveContinuation).
+    //    chooseApplyChannel: supported ATS → login-walled ATS → email →
+    //    generic ATS → assisted. A recognized ATS route always beats an
+    //    available contact email.
+    const { SUPPORTED_ATS, LOGIN_WALLED_ATS, chooseApplyChannel } = await import('./atsSubmitter/core.js');
+    const { prepareAtsApplication } = await import('./atsSubmitter/index.js');
+    const atsRecognized = !!(route.atsType && (SUPPORTED_ATS.has(route.atsType) || LOGIN_WALLED_ATS.has(route.atsType)));
+    // Email lookup is only needed when no recognized ATS route exists.
+    const emailTarget = atsRecognized ? null : await findApplicationEmail(jobId);
+    const choice = chooseApplyChannel(route.atsType, !!emailTarget);
+
+    if (choice === 'ats_supported' || choice === 'ats_login_walled' || choice === 'ats_generic') {
       // Build a cover note up-front so the browser layer can fill cover-letter
       // textareas; the fill-only run then pauses at ready_for_review with a
-      // pre-submit screenshot + every answer for approval.
+      // pre-submit screenshot + every answer for approval. Login-walled ATSs
+      // (Workday, iCIMS, Taleo, SuccessFactors) additionally handle account
+      // creation (credentials vaulted BEFORE signup), email verification, and
+      // the multi-page wizard; blocked situations degrade to assisted.
       const packet = await buildAssistedPacket(job, route.applyUrl);
+      // Preserve continuation state from any prior attempt: a user-pasted
+      // verification link must survive the packet rebuild or the signup flow
+      // can never complete (and the run-gap bypass never triggers).
+      const [fresh] = await db.select({ packet: applications.packet }).from(applications).where(eq(applications.id, app.id));
+      preserveContinuation(fresh?.packet, packet);
       await db.update(applications)
         .set({ channel: 'ats_auto', packet, updatedAt: new Date() })
         .where(eq(applications.id, app.id));
+      if (choice === 'ats_login_walled') {
+        const { prepareLoginWalledApplication } = await import('./atsSubmitter/loginWalled.js');
+        return await prepareLoginWalledApplication(app.id);
+      }
       return await prepareAtsApplication(app.id);
     }
 
-    const emailTarget = await findApplicationEmail(jobId);
-    if (emailTarget) {
+    if (choice === 'email' && emailTarget) {
       const draft = await draftApplicationEmail(job, profile, emailTarget.who);
       return await transitionApplication(app.id, 'ready_for_review', 'email_drafted',
         `Draft ready for ${emailTarget.email} (${emailTarget.status})`, {
           channel: 'email', emailTo: emailTarget.email, emailToStatus: emailTarget.status,
           emailSubject: draft.subject, emailBody: draft.body,
         });
-    }
-
-    // Best-effort generic headless fill for unknown (but not login-walled)
-    // ATSs: safe because the fill-only run pauses for review, never guesses,
-    // and lands in needs_user with evidence when the form is unsupported.
-    if (route.atsType && !LOGIN_WALLED_ATS.has(route.atsType)) {
-      const genericPacket = await buildAssistedPacket(job, route.applyUrl);
-      await db.update(applications)
-        .set({ channel: 'ats_auto', packet: genericPacket, updatedAt: new Date() })
-        .where(eq(applications.id, app.id));
-      return await prepareAtsApplication(app.id);
     }
 
     const packet = await buildAssistedPacket(job, route.applyUrl);
@@ -620,7 +641,11 @@ export async function approveApplication(appId: string, edits?: { emailSubject?:
     // User approved the reviewed, pre-filled form → headless submission run.
     await transitionApplication(appId, 'approved', 'user_approved', 'ATS auto-submit approved by user');
     await transitionApplication(appId, 'submitting', 'ats_submit_start', `Submitting via ${app.atsType ?? 'ATS'}`);
-    const { submitAtsApplication } = await import('./atsSubmitter/index.js');
+    const { submitAtsApplication, LOGIN_WALLED_ATS } = await import('./atsSubmitter/index.js');
+    if (app.atsType && LOGIN_WALLED_ATS.has(app.atsType)) {
+      const { submitLoginWalledApplication } = await import('./atsSubmitter/loginWalled.js');
+      return submitLoginWalledApplication(appId);
+    }
     return submitAtsApplication(appId);
   }
 

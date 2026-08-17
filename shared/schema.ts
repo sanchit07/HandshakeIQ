@@ -259,6 +259,64 @@ export const applicationScreenshots = pgTable("application_screenshots", {
 
 export type ApplicationScreenshot = typeof applicationScreenshots.$inferSelect;
 
+/**
+ * Per-company ATS account credential vault. Every account the automation
+ * creates on a login-walled ATS (Workday, iCIMS, Taleo, SuccessFactors) is
+ * recorded here BEFORE the signup form is submitted, so the user can always
+ * log in themselves. Passwords are AES-256-GCM encrypted at rest.
+ */
+export const atsCredentials = pgTable("ats_credentials", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  company: varchar("company").notNull(),
+  atsType: varchar("ats_type").notNull(), // workday | icims | taleo | successfactors | other
+  portalDomain: varchar("portal_domain").notNull(), // e.g. acme.wd3.myworkdayjobs.com
+  portalUrl: text("portal_url").notNull(),
+  email: varchar("email").notNull(),
+  passwordEnc: text("password_enc").notNull(), // AES-256-GCM: iv.tag.ciphertext (base64)
+  status: varchar("status").notNull().default("created"), // created | verified | login_failed
+  notes: text("notes"),
+  createdAt: timestamp("created_at").defaultNow(),
+  lastUsedAt: timestamp("last_used_at"),
+}, (table) => [
+  uniqueIndex("uq_ats_credentials_domain").on(table.portalDomain),
+]);
+
+export type AtsCredential = typeof atsCredentials.$inferSelect;
+
+/**
+ * Per-domain ban-risk guard-rails: cooldowns between automated sessions,
+ * block counting (CAPTCHA walls, bot blocks, login failures), and automatic
+ * downgrade to assisted mode after repeated blocks from one domain.
+ */
+export const domainControls = pgTable("domain_controls", {
+  domain: varchar("domain").primaryKey(),
+  blockCount: integer("block_count").notNull().default(0),
+  lastBlockAt: timestamp("last_block_at"),
+  lastRunAt: timestamp("last_run_at"),
+  cooldownUntil: timestamp("cooldown_until"),
+  downgraded: boolean("downgraded").notNull().default(false), // true → assisted mode only
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export type DomainControl = typeof domainControls.$inferSelect;
+
+// Live CAPTCHA hand-off sessions. DB-mediated so any replica can serve the
+// remote view (frames, inputs, resolution) while the replica that owns the
+// Playwright page pumps frames out and drains inputs in.
+export const handoffSessions = pgTable("handoff_sessions", {
+  id: varchar("id").primaryKey(),
+  applicationId: varchar("application_id").notNull(),
+  reason: text("reason").notNull(),
+  status: text("status").notNull().default("open"), // open | solved | aborted | timeout
+  frameB64: text("frame_b64"), // latest JPEG frame, base64 (owner-written)
+  frameAt: timestamp("frame_at"),
+  inputQueue: jsonb("input_queue").notNull().default(sql`'[]'::jsonb`), // pending user input events
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  expiresAt: timestamp("expires_at").notNull(),
+}, (t) => [index("handoff_sessions_app_idx").on(t.applicationId)]);
+
+export type HandoffSessionRow = typeof handoffSessions.$inferSelect;
+
 export type Application = typeof applications.$inferSelect;
 export type UpsertApplication = typeof applications.$inferInsert;
 
