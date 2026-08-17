@@ -75,7 +75,7 @@ interface Application {
 }
 
 interface ApplySummary {
-    total: number; submitted: number; awaitingReview: number; needsUser: number; failed: number; inProgress: number; notStarted: number;
+    total: number; submitted: number; unconfirmed: number; awaitingReview: number; needsUser: number; failed: number; inProgress: number; notStarted: number;
 }
 
 const APP_STATE_BADGE: Record<string, { label: string; cls: string }> = {
@@ -85,6 +85,7 @@ const APP_STATE_BADGE: Record<string, { label: string; cls: string }> = {
     approved: { label: 'Apply: approved', cls: 'bg-cyan-900/40 text-cyan-300 border-cyan-500/30' },
     submitting: { label: 'Apply: submitting…', cls: 'bg-cyan-900/40 text-cyan-300 border-cyan-500/30' },
     submitted: { label: 'Applied ✓', cls: 'bg-green-900/40 text-green-300 border-green-500/30' },
+    submitted_unconfirmed: { label: 'Applied (unconfirmed)', cls: 'bg-lime-900/40 text-lime-300 border-lime-500/30' },
     needs_user: { label: 'Apply: needs your input', cls: 'bg-red-900/40 text-red-300 border-red-500/30' },
     failed: { label: 'Apply: failed', cls: 'bg-red-900/40 text-red-300 border-red-500/30' },
 };
@@ -115,6 +116,26 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
     const [approvingId, setApprovingId] = useState<string | null>(null);
     const [reviewingApp, setReviewingApp] = useState<Application | null>(null);
     const [emailEdits, setEmailEdits] = useState<{ subject: string; body: string }>({ subject: '', body: '' });
+    const [screenshots, setScreenshots] = useState<Record<string, { id: string; kind: string; createdAt: string | null }[]>>({});
+    const [viewingShot, setViewingShot] = useState<{ appId: string; shotId: string; kind: string } | null>(null);
+
+    // Load screenshot metadata for headless-apply applications (once per app id)
+    useEffect(() => {
+        const atsApps = Object.values(apps).flat().filter((a) => a.channel === 'ats_auto' && !(a.id in screenshots));
+        if (atsApps.length === 0) return;
+        atsApps.forEach(async (a) => {
+            try {
+                const res = await fetch(`/api/applications/${a.id}/screenshots`);
+                setScreenshots((prev) => ({ ...prev, [a.id]: res.ok ? [] : [] }));
+                if (res.ok) {
+                    const meta = await res.json();
+                    setScreenshots((prev) => ({ ...prev, [a.id]: meta }));
+                }
+            } catch { setScreenshots((prev) => ({ ...prev, [a.id]: [] })); }
+        });
+    }, [apps, screenshots]);
+
+    const SHOT_LABEL: Record<string, string> = { pre_submit: 'Pre-submit screenshot', confirmation: 'Confirmation screenshot', failure: 'Screenshot at pause' };
 
     const loadApplications = useCallback(async (jobIds: string[], date: string) => {
         try {
@@ -156,6 +177,8 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.message || 'Approval failed');
             setApps((prev) => ({ ...prev, [application.jobMatchId]: (prev[application.jobMatchId] || []).map((a) => (a.id === data.id ? data : a)) }));
+            // Force screenshot metadata refresh (a submission run adds new screenshots)
+            setScreenshots((prev) => { const { [application.id]: _gone, ...rest } = prev; return rest; });
             setReviewingApp(null);
         } catch (e: any) {
             setError(e.message || 'Approval failed');
@@ -440,6 +463,7 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                     <div className="flex flex-wrap items-center gap-2 text-xs bg-gray-900/50 border border-cyan-600/20 rounded-lg p-3">
                         <span className="font-bold text-cyan-300 uppercase tracking-wide">Applications:</span>
                         <span className="px-2 py-0.5 bg-green-900/40 text-green-300 border border-green-500/30 rounded-full">{applySummary.submitted} submitted</span>
+                        {(applySummary.unconfirmed ?? 0) > 0 && <span className="px-2 py-0.5 bg-lime-900/40 text-lime-300 border border-lime-500/30 rounded-full">{applySummary.unconfirmed} unconfirmed — verify</span>}
                         <span className="px-2 py-0.5 bg-amber-900/40 text-amber-300 border border-amber-500/30 rounded-full">{applySummary.awaitingReview} awaiting review</span>
                         <span className="px-2 py-0.5 bg-red-900/40 text-red-300 border border-red-500/30 rounded-full">{applySummary.needsUser} need input</span>
                         {applySummary.failed > 0 && <span className="px-2 py-0.5 bg-red-900/40 text-red-300 border border-red-500/30 rounded-full">{applySummary.failed} failed</span>}
@@ -535,7 +559,7 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                         <div className="flex flex-wrap items-center gap-2 text-xs">
                                             <span className="font-bold text-cyan-300 uppercase tracking-wide">Application</span>
                                             <span className={`px-2 py-0.5 border rounded-full ${APP_STATE_BADGE[a.state]?.cls || 'bg-gray-800 text-gray-400 border-gray-600/40'}`}>{APP_STATE_BADGE[a.state]?.label || a.state}</span>
-                                            {a.channel && <span className="px-2 py-0.5 bg-gray-800 text-gray-300 border border-gray-600/40 rounded-full">{a.channel === 'email' ? 'Email apply' : 'Assisted apply'}</span>}
+                                            {a.channel && <span className="px-2 py-0.5 bg-gray-800 text-gray-300 border border-gray-600/40 rounded-full">{a.channel === 'email' ? 'Email apply' : a.channel === 'ats_auto' ? 'Auto-apply (ATS)' : 'Assisted apply'}</span>}
                                             {a.atsType && a.atsType !== 'unknown' && <span className="px-2 py-0.5 bg-purple-900/40 text-purple-300 border border-purple-500/30 rounded-full">ATS: {a.atsType}</span>}
                                             {a.routeSource && <span className="px-2 py-0.5 bg-gray-800 text-gray-400 border border-gray-600/40 rounded-full">{a.routeSource === 'official' ? 'Official careers page' : 'Original posting URL'}</span>}
                                         </div>
@@ -551,6 +575,18 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                         {a.state === 'submitted' && a.submittedAt && (
                                             <p className="text-xs text-green-400">Submitted {new Date(a.submittedAt).toLocaleString()}{a.channel === 'email' && a.emailTo ? ` — email sent to ${a.emailTo}` : ''}</p>
                                         )}
+                                        {a.state === 'submitted_unconfirmed' && (
+                                            <p className="text-xs text-lime-300 bg-lime-900/20 border border-lime-500/30 rounded p-2">The form was submitted but no confirmation message was detected — check the confirmation screenshot below to verify.</p>
+                                        )}
+                                        {a.channel === 'ats_auto' && (screenshots[a.id] || []).length > 0 && (
+                                            <div className="flex flex-wrap gap-2">
+                                                {(screenshots[a.id] || []).map((s) => (
+                                                    <button key={s.id} onClick={() => setViewingShot({ appId: a.id, shotId: s.id, kind: s.kind })} className="px-2 py-1 text-xs text-purple-300 border border-purple-400/40 rounded-full hover:bg-purple-900/40 transition-colors">
+                                                        {SHOT_LABEL[s.kind] || s.kind} ↗
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
                                         <div className="flex flex-wrap gap-2">
                                             {a.state === 'ready_for_review' && a.channel === 'email' && (
                                                 <button
@@ -558,6 +594,14 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                                     className="px-3 py-1.5 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-full transition-colors"
                                                 >
                                                     Review Email &amp; Send
+                                                </button>
+                                            )}
+                                            {a.state === 'ready_for_review' && a.channel === 'ats_auto' && (
+                                                <button
+                                                    onClick={() => setReviewingApp(a)}
+                                                    className="px-3 py-1.5 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-full transition-colors"
+                                                >
+                                                    Review Filled Form &amp; Approve
                                                 </button>
                                             )}
                                             {a.state === 'ready_for_review' && a.channel === 'assisted' && (
@@ -651,6 +695,32 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                     </button>
                                 </div>
                             </>
+                        ) : reviewingApp.channel === 'ats_auto' ? (
+                            <>
+                                <h3 className="font-exo text-xl text-white">Review Auto-Filled Application</h3>
+                                <p className="text-xs text-gray-400">The form on {reviewingApp.atsType ? `the ${reviewingApp.atsType} page` : 'the ATS page'} was filled with the answers below (see the pre-submit screenshot). Nothing is submitted until you approve.</p>
+                                {(screenshots[reviewingApp.id] || []).filter((s) => s.kind === 'pre_submit').slice(-1).map((s) => (
+                                    <img key={s.id} src={`/api/applications/${reviewingApp.id}/screenshots/${s.id}`} alt="Pre-submit screenshot of the filled application form" className="w-full border border-cyan-500/30 rounded-lg" />
+                                ))}
+                                <div className="space-y-1">
+                                    {(reviewingApp.packet?.answers || []).map((ans, i) => (
+                                        <div key={i} className="flex items-start gap-2 text-sm p-2 bg-gray-900/60 border border-cyan-600/20 rounded">
+                                            <span className="text-cyan-300 min-w-[40%] text-xs pt-0.5">{ans.label}</span>
+                                            <span className="text-white flex-1">{ans.value}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="flex flex-wrap gap-3 justify-end">
+                                    <button onClick={() => setReviewingApp(null)} className="px-4 py-2 text-sm text-gray-300 border border-gray-500/40 rounded-lg hover:bg-gray-800 transition-colors">Cancel</button>
+                                    <button
+                                        onClick={() => handleApprove(reviewingApp)}
+                                        disabled={approvingId === reviewingApp.id}
+                                        className="px-4 py-2 text-sm font-bold text-slate-900 bg-green-400 hover:bg-green-300 disabled:opacity-50 rounded-lg transition-colors font-exo"
+                                    >
+                                        {approvingId === reviewingApp.id ? 'Submitting… (1-2 min)' : 'Approve & Submit Application'}
+                                    </button>
+                                </div>
+                            </>
                         ) : (
                             <>
                                 <h3 className="font-exo text-xl text-white">Assisted Apply Packet</h3>
@@ -693,6 +763,15 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                 </div>
                             </>
                         )}
+                    </div>
+                </div>
+            )}
+
+            {viewingShot && (
+                <div className="fixed inset-0 z-[120] bg-black/80 flex items-center justify-center p-4" onClick={() => setViewingShot(null)}>
+                    <div className="max-w-4xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+                        <p className="text-sm text-cyan-300 mb-2">{SHOT_LABEL[viewingShot.kind] || viewingShot.kind}</p>
+                        <img src={`/api/applications/${viewingShot.appId}/screenshots/${viewingShot.shotId}`} alt={SHOT_LABEL[viewingShot.kind] || 'Application screenshot'} className="w-full border border-cyan-500/40 rounded-lg" />
                     </div>
                 </div>
             )}

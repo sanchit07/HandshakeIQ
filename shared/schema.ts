@@ -236,9 +236,28 @@ export const applications = pgTable("applications", {
   index("idx_applications_match").on(table.jobMatchId),
   index("idx_applications_state").on(table.state),
   // One ACTIVE application per job: prevents concurrent prepare requests from
-  // creating duplicate in-flight rows (submitted rows are history and exempt).
-  uniqueIndex("uq_applications_active_per_job").on(table.jobMatchId).where(sql`state != 'submitted'`),
+  // creating duplicate in-flight rows (terminal submitted rows are history and exempt).
+  uniqueIndex("uq_applications_active_per_job").on(table.jobMatchId).where(sql`state NOT IN ('submitted', 'submitted_unconfirmed')`),
 ]);
+
+/**
+ * Screenshots captured by the headless ATS submitter (pre-submit review shot,
+ * post-submit confirmation shot, failure/CAPTCHA evidence). Stored in the DB
+ * (base64 JPEG) because the deployment filesystem is ephemeral.
+ */
+export const applicationScreenshots = pgTable("application_screenshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  applicationId: varchar("application_id").notNull().references(() => applications.id, { onDelete: "cascade" }),
+  kind: varchar("kind").notNull(), // pre_submit | confirmation | failure
+  mime: varchar("mime").notNull().default("image/jpeg"),
+  dataBase64: text("data_base64").notNull(),
+  pageUrl: text("page_url"),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_app_screenshots_app").on(table.applicationId),
+]);
+
+export type ApplicationScreenshot = typeof applicationScreenshots.$inferSelect;
 
 export type Application = typeof applications.$inferSelect;
 export type UpsertApplication = typeof applications.$inferInsert;

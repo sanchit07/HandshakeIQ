@@ -51,7 +51,7 @@ function parseJsonLoose(text: string): any {
 
 export type ApplicationState =
   | 'queued' | 'route_resolved' | 'ready_for_review' | 'approved'
-  | 'submitting' | 'submitted' | 'needs_user' | 'failed';
+  | 'submitting' | 'submitted' | 'submitted_unconfirmed' | 'needs_user' | 'failed';
 
 /** Allowed transitions. needs_user and failed are recoverable (back to queued via retry). */
 export const ALLOWED_TRANSITIONS: Record<ApplicationState, ApplicationState[]> = {
@@ -59,8 +59,11 @@ export const ALLOWED_TRANSITIONS: Record<ApplicationState, ApplicationState[]> =
   route_resolved: ['ready_for_review', 'needs_user', 'failed'],
   ready_for_review: ['approved', 'needs_user', 'failed'],
   approved: ['submitting', 'needs_user', 'failed'],
-  submitting: ['submitted', 'needs_user', 'failed'],
+  // submitted_unconfirmed: the ATS form was submitted but no confirmation
+  // message was detected — terminal, with a screenshot as evidence.
+  submitting: ['submitted', 'submitted_unconfirmed', 'needs_user', 'failed'],
   submitted: [],
+  submitted_unconfirmed: [],
   needs_user: ['queued', 'ready_for_review'],
   failed: ['queued'],
 };
@@ -93,7 +96,7 @@ export async function transitionApplication(
       state: to,
       stepLog: log,
       updatedAt: new Date(),
-      ...(to === 'submitted' ? { submittedAt: new Date() } : {}),
+      ...(to === 'submitted' || to === 'submitted_unconfirmed' ? { submittedAt: new Date() } : {}),
       ...(extra ?? {}),
     })
     .where(sql`${applications.id} = ${appId} AND ${applications.state} = ${from}`)
@@ -368,6 +371,8 @@ export interface AssistedPacket {
   answers: PacketAnswer[];
   coverNote: string | null;
   missing: string[];
+  /** ats_auto only: hash binding user approval to the exact reviewed answers */
+  reviewHash?: string;
 }
 
 /**
@@ -472,7 +477,8 @@ export async function prepareApplication(jobId: string): Promise<Application> {
   const existing = await db.select().from(applications)
     .where(eq(applications.jobMatchId, jobId))
     .orderBy(desc(applications.createdAt));
-  let app = existing.find((a) => a.state !== 'submitted');
+  const TERMINAL_SUBMITTED = new Set(['submitted', 'submitted_unconfirmed']);
+  let app = existing.find((a) => !TERMINAL_SUBMITTED.has(a.state));
   if (app && (app.state === 'failed' || app.state === 'needs_user')) {
     app = await transitionApplication(app.id, 'queued', 'retry', 'Re-preparing application', {
       errorReason: null, needsUserReason: null, attemptCount: (app.attemptCount ?? 0) + 1,
@@ -491,7 +497,7 @@ export async function prepareApplication(jobId: string): Promise<Application> {
     } else {
       const again = await db.select().from(applications)
         .where(eq(applications.jobMatchId, jobId)).orderBy(desc(applications.createdAt));
-      app = again.find((a) => a.state !== 'submitted');
+      app = again.find((a) => !TERMINAL_SUBMITTED.has(a.state));
       if (!app) throw new Error('Failed to create application record');
       return app; // another request is preparing it
     }
@@ -528,7 +534,21 @@ export async function prepareApplication(jobId: string): Promise<Application> {
         workAuthGap.step, { needsUserReason: workAuthGap.reason });
     }
 
-    // 4. Channel pick: email if a trustworthy address exists, else assisted packet
+    // 4. Channel pick: headless ATS submission for supported ATSs; else email
+    //    if a trustworthy address exists; else best-effort generic headless
+    //    fill for non-login-walled unknown ATSs; else assisted packet.
+    const { SUPPORTED_ATS, LOGIN_WALLED_ATS, prepareAtsApplication } = await import('./atsSubmitter/index.js');
+    if (route.atsType && SUPPORTED_ATS.has(route.atsType)) {
+      // Build a cover note up-front so the browser layer can fill cover-letter
+      // textareas; the fill-only run then pauses at ready_for_review with a
+      // pre-submit screenshot + every answer for approval.
+      const packet = await buildAssistedPacket(job, route.applyUrl);
+      await db.update(applications)
+        .set({ channel: 'ats_auto', packet, updatedAt: new Date() })
+        .where(eq(applications.id, app.id));
+      return await prepareAtsApplication(app.id);
+    }
+
     const emailTarget = await findApplicationEmail(jobId);
     if (emailTarget) {
       const draft = await draftApplicationEmail(job, profile, emailTarget.who);
@@ -537,6 +557,17 @@ export async function prepareApplication(jobId: string): Promise<Application> {
           channel: 'email', emailTo: emailTarget.email, emailToStatus: emailTarget.status,
           emailSubject: draft.subject, emailBody: draft.body,
         });
+    }
+
+    // Best-effort generic headless fill for unknown (but not login-walled)
+    // ATSs: safe because the fill-only run pauses for review, never guesses,
+    // and lands in needs_user with evidence when the form is unsupported.
+    if (route.atsType && !LOGIN_WALLED_ATS.has(route.atsType)) {
+      const genericPacket = await buildAssistedPacket(job, route.applyUrl);
+      await db.update(applications)
+        .set({ channel: 'ats_auto', packet: genericPacket, updatedAt: new Date() })
+        .where(eq(applications.id, app.id));
+      return await prepareAtsApplication(app.id);
     }
 
     const packet = await buildAssistedPacket(job, route.applyUrl);
@@ -583,6 +614,14 @@ export async function approveApplication(appId: string, edits?: { emailSubject?:
     return transitionApplication(appId, 'approved', 'user_approved', 'Assisted apply confirmed by user')
       .then(() => transitionApplication(appId, 'submitting', 'assisted_submit'))
       .then(() => transitionApplication(appId, 'submitted', 'assisted_submitted', 'User confirmed manual submission'));
+  }
+
+  if (app.channel === 'ats_auto') {
+    // User approved the reviewed, pre-filled form → headless submission run.
+    await transitionApplication(appId, 'approved', 'user_approved', 'ATS auto-submit approved by user');
+    await transitionApplication(appId, 'submitting', 'ats_submit_start', `Submitting via ${app.atsType ?? 'ATS'}`);
+    const { submitAtsApplication } = await import('./atsSubmitter/index.js');
+    return submitAtsApplication(appId);
   }
 
   if (app.channel === 'email') {
@@ -638,17 +677,20 @@ export async function getApplicationsForJobs(jobIds: string[]): Promise<Record<s
 }
 
 export interface ApplySummary {
-  total: number; submitted: number; awaitingReview: number; needsUser: number; failed: number; inProgress: number; notStarted: number;
+  total: number; submitted: number; unconfirmed: number; awaitingReview: number; needsUser: number; failed: number; inProgress: number; notStarted: number;
 }
 
 /** Day-level apply summary: every shortlisted role lands in exactly one bucket. */
 export async function getApplySummary(runDate: string): Promise<ApplySummary> {
   const jobs = await db.select({ id: jobMatches.id }).from(jobMatches).where(eq(jobMatches.runDate, runDate));
   const byJob = await getApplicationsForJobs(jobs.map((j) => j.id));
-  const summary: ApplySummary = { total: jobs.length, submitted: 0, awaitingReview: 0, needsUser: 0, failed: 0, inProgress: 0, notStarted: 0 };
+  const summary: ApplySummary = { total: jobs.length, submitted: 0, unconfirmed: 0, awaitingReview: 0, needsUser: 0, failed: 0, inProgress: 0, notStarted: 0 };
   for (const j of jobs) {
     const apps = byJob[j.id] ?? [];
+    // submitted_unconfirmed is deliberately NOT counted as submitted: a click
+    // without a detected confirmation is unverified until the user checks it.
     if (apps.some((a) => a.state === 'submitted')) summary.submitted++;
+    else if (apps.some((a) => a.state === 'submitted_unconfirmed')) summary.unconfirmed++;
     else if (apps.some((a) => a.state === 'ready_for_review')) summary.awaitingReview++;
     else if (apps.some((a) => a.state === 'needs_user')) summary.needsUser++;
     else if (apps.some((a) => a.state === 'failed')) summary.failed++;

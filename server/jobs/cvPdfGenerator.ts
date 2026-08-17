@@ -207,8 +207,12 @@ export function generateCvPdf(markdownCv: string, jobTitle: string, company: str
       info: {
         // Some parsers read PDF metadata: put the candidate name (first h1
         // line of the CV) in Title/Author rather than tool branding.
+        // NOTE: an explicitly-undefined key (e.g. Author: undefined) corrupts
+        // pdfkit's info merge and crashes document creation — omit instead.
         Title: (markdownCv.match(/^#\s+(.+)$/m)?.[1] ?? `CV - ${jobTitle}`).trim(),
-        Author: (markdownCv.match(/^#\s+(.+)$/m)?.[1] ?? '').trim() || undefined,
+        ...((markdownCv.match(/^#\s+(.+)$/m)?.[1] ?? '').trim()
+          ? { Author: (markdownCv.match(/^#\s+(.+)$/m)![1]).trim() }
+          : {}),
         Subject: `CV - ${jobTitle} at ${company}`,
       },
     });

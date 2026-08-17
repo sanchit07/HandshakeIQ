@@ -335,6 +335,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Screenshots captured by the headless ATS submitter (list + image)
+  app.get('/api/applications/:id/screenshots', requireAdmin, async (req: any, res) => {
+    try {
+      const { getScreenshotsMeta } = await import('./jobs/atsSubmitter/index.js');
+      res.json(await getScreenshotsMeta(req.params.id));
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to load screenshots' });
+    }
+  });
+  app.get('/api/applications/:id/screenshots/:shotId', requireAdmin, async (req: any, res) => {
+    try {
+      const { getScreenshot } = await import('./jobs/atsSubmitter/index.js');
+      const shot = await getScreenshot(req.params.id, req.params.shotId);
+      if (!shot) return res.status(404).json({ message: 'Screenshot not found' });
+      res.setHeader('Content-Type', shot.mime);
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.send(Buffer.from(shot.dataBase64, 'base64'));
+    } catch (error: any) {
+      res.status(500).json({ message: error?.message || 'Failed to load screenshot' });
+    }
+  });
+
   // Day-level apply summary for the dashboard / daily report
   app.get('/api/applications/summary', requireAdmin, async (req: any, res) => {
     try {
