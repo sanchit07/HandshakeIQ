@@ -30,6 +30,7 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 - Improved person deduplication for distinct profiles across platforms.
 
 ## External Dependencies
+- **Anthropic Claude API** (`@anthropic-ai/sdk`, claude-sonnet-4-5): Powers the Job Opportunities auto-apply engine — daily job discovery/ranking with web search, CV tailoring, contact discovery, apply-route resolution, and application email drafting. Admin-only feature (see `server/jobs/`).
 - **Google Gemini API** (`@google/genai`): For AI intelligence report generation, web search grounding, and business card scanning using gemini-2.5-flash model.
 - **Google OAuth 2.0**: For user authentication and authorization.
 - **Google Custom Search API**: For real-time person search across the web.
@@ -43,6 +44,23 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 - **`googleapis`**: For Google Calendar API access.
 
 ## Recent Changes
+
+### August 19, 2026 - Auto-Apply Engine Hardening (enterprise-readiness gap fixes)
+Follow-up to a code-level audit of the Job Opportunities auto-apply pipeline (discovery → CV tailoring → ATS auto-apply), benchmarked against real-world ATS behavior. Fixes span `shared/schema.ts`, `server/jobs/jobMatchService.ts`, `server/jobs/applyService.ts`, and `server/jobs/atsSubmitter/*`:
+- **Role discovery learning**: a `role_search_log` table now records searched titles vs. what actually got shortlisted, so Phase 1 role derivation can see (and deprioritize) titles that consistently produce nothing after repeated tries.
+- **Full-JD relevance re-scoring**: the AI posting-liveness audit now also re-judges candidate fit against the FULL fetched job description (not just the short discovery snippet), dropping or re-scoring jobs a hard mismatch reveals.
+- **Admin Q&A learnings** now also inform the daily shortlisting/ranking prompt, not just CV wording.
+- **Guardrail tenant isolation**: per-domain CAPTCHA/bot-block cooldowns are now keyed on the actual employer tenant (hostname + company slug for shared-hosting ATSs like Greenhouse/Lever, full hostname for per-tenant Workday-style subdomains) — a block on one company's ATS instance no longer cools down or downgrades automation for every other unrelated company on the same platform.
+- **Invisible bot-block detection**: enterprise anti-bot pages (Akamai/PerimeterX/DataDome/Cloudflare) that render no visible CAPTCHA are now detected via HTTP status + page-text signatures, correctly feeding the domain guardrail instead of silently retrying forever.
+- **2FA/MFA and email-code verification**: a true second-factor challenge (authenticator app/SMS) now degrades to assisted immediately instead of risking a false "no auth wall" pass-through; an email-delivered numeric code (as opposed to a link) is now polled and typed automatically, same trust boundary as the existing link-based flow.
+- **"Already applied" / "account already exists"** ATS states are now recognized distinctly with accurate messaging, instead of a generic "unsupported flow"/looping degrade.
+- **Automated password reset**: a rejected vaulted password now triggers an automated "Forgot password" → inbox-polled reset link → new-password flow before degrading to assisted.
+- **Conditionally-revealed form fields** (e.g. a visa-detail field that only appears after answering a prior question) are now caught via a bounded re-scan pass, instead of being silently never filled.
+- **Multi-page application forms** outside the Workday-style login wall (e.g. a multi-step Greenhouse/Ashby flow) are now walked page-by-page instead of only ever filling the first page.
+- **Non-native form widgets**: ARIA combobox/typeahead fields and native `<select multiple>` are now filled correctly (type + click matching option; multi-value selection), and a JS-only drag-and-drop resume upload zone (no native file input) is now supported via a simulated drop event.
+- **Outreach hygiene**: the same contact is no longer cold-emailed for two different jobs within a cooldown window; a daily cap protects the connected Gmail account's sending reputation; a verified named contact is now preferred over a generic posting-listed mailbox alias; contacts with stale evidence are excluded from outreach entirely.
+- **Stealth hardening**: the headless browser session now patches `navigator.webdriver` and other default headless tells, and rotates its user-agent/viewport per session instead of using one fixed fingerprint on every run.
+- Full test suite (500+ assertions across `server/jobs/*.test.ts`) passes; see PR for details.
 
 ### November 17, 2025 - Zoho OAuth Integration
 - **Real Zoho authentication**: Replaced mock Zoho login with complete OAuth 2.0 integration using Zoho API.

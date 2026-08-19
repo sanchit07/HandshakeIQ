@@ -28,13 +28,13 @@ import {
 import { probeUrlLive } from '../jobMatchService.js';
 import {
   buildCanonicalValues, resolveField, classifyField, isTransientError,
-  looksLikeConfirmation, jitterMs, RETRY_ATTEMPTS, RETRY_JITTER,
+  looksLikeConfirmation, looksLikeAlreadyApplied, jitterMs, RETRY_ATTEMPTS, RETRY_JITTER,
   DAILY_ATS_SUBMIT_CAP, SUPPORTED_ATS, LOGIN_WALLED_ATS, computeAnswersHash,
   classifySubmitOutcome,
 } from './core.js';
 import {
   launchHardenedSession, observeFields, resolveFormScope, humanType, humanPause, sleep,
-  detectCaptcha, visiblePageText, bestOption, type DomField,
+  detectCaptcha, detectBotBlock, visiblePageText, bestOption, dropFileOnElement, type DomField,
 } from './browser.js';
 import { getAdapter } from './adapters.js';
 
@@ -123,7 +123,7 @@ export async function getScreenshot(appId: string, shotId: string) {
 // ── Fill engine (shared by fill-only and submit runs) ────────────────────────
 
 interface FillOutcome {
-  status: 'filled' | 'needs_user' | 'captcha';
+  status: 'filled' | 'needs_user' | 'captcha' | 'bot_blocked';
   reason?: string;
   answers: PacketAnswer[];
   page: Page;
@@ -139,10 +139,71 @@ async function generateCvFile(job: JobMatch): Promise<string> {
   return file;
 }
 
+/**
+ * A page with no resolvable form and no fields is ambiguous: it could be an
+ * unsupported layout, an invisible bot-detection block, or the ATS reporting
+ * a prior application already on file for this exact job. Distinguishing
+ * these matters — a bot block must feed the domain guardrail, and an
+ * already-applied page needs a specific, actionable reason instead of a
+ * generic "unsupported flow" message.
+ */
+async function detectAmbiguousBlankForm(page: Page, mainResponseStatus: number | null): Promise<{ status: 'needs_user' | 'bot_blocked'; reason: string } | null> {
+  const text = await visiblePageText(page);
+  if (looksLikeAlreadyApplied(text)) {
+    return {
+      status: 'needs_user',
+      reason: 'This employer\'s portal reports that an application for this role already exists on file — possibly from a manual application before this tool ran. Check the employer\'s site (or any account you may already have there) before applying again elsewhere.',
+    };
+  }
+  const blockReason = await detectBotBlock(page, mainResponseStatus);
+  if (blockReason) {
+    return {
+      status: 'bot_blocked',
+      reason: `Automated access to this employer's site appears to be blocked (${blockReason}) — this is not a solvable puzzle. Apply manually via the apply link.`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Bound on how many pages a single (non-login-walled) application flow can
+ * span. Greenhouse/Lever/Ashby/SmartRecruiters forms are usually one page,
+ * but some run a multi-page wizard via their own "Continue" buttons rather
+ * than a login wall — this caps the walk instead of looping forever.
+ */
+const MAX_GENERIC_WIZARD_PAGES = 8;
+
+/** Lowercased visible text of every button/link-as-button on the page. */
+async function visibleButtonTexts(page: Page): Promise<string[]> {
+  try {
+    return (await page.locator('button:visible, a[role="button"]:visible, input[type="submit"]:visible').allInnerTexts())
+      .map((b) => b.trim().toLowerCase()).filter(Boolean);
+  } catch { return []; }
+}
+
+/** Clicks the first visible Next/Continue-style control found. */
+async function clickNextButton(page: Page): Promise<boolean> {
+  for (const sel of [
+    'button:has-text("Save and Continue")', 'button:has-text("Continue")', 'button:has-text("Next")',
+    'a:has-text("Continue")', 'a:has-text("Next")',
+  ]) {
+    try {
+      const el = page.locator(sel).first();
+      if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
+        await el.click();
+        await sleep(jitterMs(1200, 2200));
+        await page.waitForLoadState('domcontentloaded').catch(() => {});
+        return true;
+      }
+    } catch {}
+  }
+  return false;
+}
+
 /** Exported for integration tests (decoy-form PII-scoping fixtures). */
 export async function fillForm(page: Page, app: Application, job: JobMatch, profile: CandidateProfile): Promise<FillOutcome> {
   const adapter = getAdapter(app.atsType);
-  await page.goto(app.applyUrl!, { waitUntil: 'domcontentloaded' });
+  const mainResponse = await page.goto(app.applyUrl!, { waitUntil: 'domcontentloaded' });
   await sleep(jitterMs(1500, 3500));
 
   if (await detectCaptcha(page)) {
@@ -154,27 +215,66 @@ export async function fillForm(page: Page, app: Application, job: JobMatch, prof
     return { status: 'captcha', reason: 'A CAPTCHA appeared when opening the application form. Complete this application manually via the apply link.', answers: [], page };
   }
 
-  // Bind the whole run (observe → fill → submit) to ONE resolved form element,
-  // so a newsletter/search/login form on the same page can never be filled or
-  // submitted by mistake.
-  const formSelector = await resolveFormScope(page, adapter.formScope);
-  if (!formSelector) {
-    return { status: 'needs_user', reason: 'No fillable application form was found on the page — the posting may use an unsupported flow. Apply manually via the apply link.', answers: [], page };
-  }
-  const fields = await observeFields(page, formSelector);
-  if (fields.length === 0) {
-    return { status: 'needs_user', reason: 'No fillable application form was found on the page — the posting may use an unsupported flow. Apply manually via the apply link.', answers: [], page };
+  const allAnswers: PacketAnswer[] = [];
+  let formSelector: string | null = null;
+
+  // Multi-page walk: a Greenhouse/Ashby/etc. form that spans several screens
+  // via its own "Continue" buttons (no login wall) previously got exactly one
+  // observe+fill pass and one submit attempt — anything past page one was
+  // silently never reached. Bounded like the login-walled wizard walker.
+  for (let step = 0; step < MAX_GENERIC_WIZARD_PAGES; step++) {
+    // Bind this page's fill to ONE resolved form element, so a
+    // newsletter/search/login form on the same page can never be filled or
+    // submitted by mistake.
+    formSelector = await resolveFormScope(page, adapter.formScope);
+    if (!formSelector) {
+      const special = await detectAmbiguousBlankForm(page, mainResponse?.status() ?? null);
+      if (special) return { ...special, answers: allAnswers, page };
+      return { status: 'needs_user', reason: 'No fillable application form was found on the page — the posting may use an unsupported flow. Apply manually via the apply link.', answers: allAnswers, page };
+    }
+    const fields = await observeFields(page, formSelector);
+    if (fields.length === 0) {
+      const special = await detectAmbiguousBlankForm(page, mainResponse?.status() ?? null);
+      if (special) return { ...special, answers: allAnswers, page };
+      return { status: 'needs_user', reason: 'No fillable application form was found on the page — the posting may use an unsupported flow. Apply manually via the apply link.', answers: allAnswers, page };
+    }
+
+    const res = await fillFieldsInScope(page, formSelector, fields, app, job, profile);
+    allAnswers.push(...res.answers);
+    if (res.status === 'needs_user') {
+      return { status: 'needs_user', reason: res.reason, answers: allAnswers, page };
+    }
+
+    if (await detectCaptcha(page)) {
+      return { status: 'captcha', reason: 'A CAPTCHA appeared after filling the form. Complete this application manually via the apply link — your answers are saved below.', answers: allAnswers, page };
+    }
+
+    // A genuinely-labeled submit control means this page is the final one —
+    // stop here so the caller submits. (Many per-step "Next" buttons are also
+    // HTML type="submit" internally, so this checks visible TEXT, not just
+    // the adapter's generic submit selector, to tell a real submit from a
+    // same-form step-advance button.)
+    const buttons = await visibleButtonTexts(page);
+    const looksFinal = buttons.some((b) => /^submit( application)?$|^apply$/i.test(b));
+    if (!looksFinal) {
+      const advanced = await clickNextButton(page);
+      if (advanced) {
+        if (await detectCaptcha(page)) {
+          return { status: 'captcha', reason: 'A CAPTCHA appeared advancing to the next page of the application. Complete this application manually via the apply link — your answers so far are saved below.', answers: allAnswers, page };
+        }
+        continue;
+      }
+    }
+    // Either this looks like the final page, or there is nothing left to
+    // advance to — stop here (the caller resolves the actual submit button).
+    return { status: 'filled', answers: allAnswers, page, formSelector };
   }
 
-  const res = await fillFieldsInScope(page, formSelector, fields, app, job, profile);
-  if (res.status === 'needs_user') {
-    return { status: 'needs_user', reason: res.reason, answers: res.answers, page };
-  }
-
-  if (await detectCaptcha(page)) {
-    return { status: 'captcha', reason: 'A CAPTCHA appeared after filling the form. Complete this application manually via the apply link — your answers are saved below.', answers: res.answers, page };
-  }
-  return { status: 'filled', answers: res.answers, page, formSelector };
+  return {
+    status: 'needs_user',
+    reason: `This application spans more than ${MAX_GENERIC_WIZARD_PAGES} pages without reaching a submit control. Finish it manually via the apply link — your answers so far are saved below.`,
+    answers: allAnswers, page, formSelector: formSelector ?? undefined,
+  };
 }
 
 /**
@@ -183,6 +283,17 @@ export async function fillForm(page: Page, app: Application, job: JobMatch, prof
  * resolved FORM, never from the document — a decoy form sharing field names
  * (email, first_name, …) must never receive candidate PII.
  */
+/**
+ * A field revealed only after answering an earlier one on the SAME page
+ * (e.g. a visa-type dropdown that appears only once "Are you legally
+ * authorized to work here?" is answered "No") does not exist in the DOM at
+ * the initial observeFields() snapshot — fillFieldsInScope must re-scan after
+ * each pass to catch it, or it is silently never filled and never even
+ * flagged as an unanswered required field. Bounded to guard against a page
+ * whose DOM keeps churning (each pass costs one extra observeFields call).
+ */
+const MAX_FILL_PASSES = 3;
+
 export async function fillFieldsInScope(
   page: Page, formSelector: string, fields: DomField[],
   app: Application, job: JobMatch, profile: CandidateProfile,
@@ -191,10 +302,14 @@ export async function fillFieldsInScope(
   const answers: PacketAnswer[] = [];
   let cvFile: string | null = null;
   const radioGroups = new Set<string>();
+  const processedSelectors = new Set<string>();
   const form = page.locator(formSelector);
 
   try {
-    for (const field of fields) {
+    let queue = fields;
+    for (let pass = 0; pass < MAX_FILL_PASSES && queue.length > 0; pass++) {
+    for (const field of queue) {
+      processedSelectors.add(field.selector);
       // Radio groups: handle once per name
       if (field.kind === 'radio') {
         if (radioGroups.has(field.name)) continue;
@@ -207,6 +322,21 @@ export async function fillFieldsInScope(
         // Resume upload (also default for an unlabeled single file input)
         if (!job.tailoredCv) {
           return { status: 'needs_user', reason: 'This form requires a resume upload but no tailored CV exists yet. Generate the CV first ("Prepare Tailored CV"), then retry.', answers };
+        }
+        if (field.isDropzone) {
+          // JS-driven drop-zone (no native <input type=file>) — simulate a
+          // real OS-level drop instead of setInputFiles, which has nothing to
+          // target here.
+          const { generateCvPdf } = await import('../cvPdfGenerator.js');
+          const pdf = await generateCvPdf(job.tailoredCv!, job.title, job.company);
+          const fileName = `CV_${job.company.replace(/[^a-z0-9]/gi, '_')}_${job.title.replace(/[^a-z0-9]/gi, '_')}.pdf`;
+          const dropped = await dropFileOnElement(page, field.selector, pdf, fileName, 'application/pdf');
+          if (!dropped) {
+            return { status: 'needs_user', reason: `This form's resume drop-zone ("${field.label}") could not be found to attach the CV to. Upload it manually via the apply link.`, answers };
+          }
+          answers.push({ label: field.label || 'Resume', value: 'Tailored CV PDF (dropped)', source: 'cv' });
+          await humanPause();
+          continue;
         }
         cvFile = cvFile ?? await generateCvFile(job);
         await form.locator(field.selector).first().setInputFiles(cvFile);
@@ -242,6 +372,37 @@ export async function fillFieldsInScope(
         }
         await loc.selectOption({ label: opt });
         answers.push({ label: field.label, value: opt, source: res.source === 'vault' ? 'vault' : 'cv' });
+      } else if (field.kind === 'multiselect') {
+        // Native <select multiple> (e.g. a skills list): the vault stores
+        // one string, so a comma/semicolon-separated value selects each
+        // matching option rather than only ever the first.
+        const tokens = res.value.split(/[,;]/).map((t) => t.trim()).filter(Boolean);
+        const matched = tokens.map((t) => bestOption(field.options ?? [], t)).filter((o): o is string => !!o);
+        if (matched.length === 0) {
+          if (field.required) {
+            return { status: 'needs_user', reason: `The form's options for "${field.label}" don't match your saved answer ("${res.value}"). Answer this one manually via the apply link, or adjust your Profile Vault wording.`, answers };
+          }
+          continue;
+        }
+        await loc.selectOption(matched.map((label) => ({ label })));
+        answers.push({ label: field.label, value: matched.join(', '), source: res.source === 'vault' ? 'vault' : 'cv' });
+      } else if (field.kind === 'combobox') {
+        // JS-driven typeahead: type the value (many of these are genuinely
+        // free-text-with-suggestions, e.g. school/company name), then try to
+        // click a matching option in the associated listbox if one resolved
+        // — unlike a native <select>, a combobox that accepts the typed text
+        // directly is not necessarily wrong, so this never blocks on no match.
+        await humanType(loc, res.value);
+        await humanPause();
+        if (field.listboxSelector) {
+          const optionLocs = page.locator(field.listboxSelector).locator('[role="option"], li, [role="listitem"]');
+          const texts = await optionLocs.allInnerTexts().catch(() => [] as string[]);
+          const best = bestOption(texts, res.value);
+          if (best) {
+            await optionLocs.nth(texts.indexOf(best)).click({ force: true }).catch(() => {});
+          }
+        }
+        answers.push({ label: field.label, value: res.value, source: res.source === 'vault' ? 'vault' : 'cv' });
       } else if (field.kind === 'radio') {
         // Click the radio in the group whose label matches (within the form)
         const groupLabels = await form.locator(`input[type="radio"][name="${field.name}"]`).evaluateAll((els) =>
@@ -267,6 +428,17 @@ export async function fillFieldsInScope(
         answers.push({ label: field.label, value: res.value, source: 'vault' });
       }
       await humanPause();
+    }
+
+    // Re-scan for fields that appeared only after answering the ones above
+    // (conditional reveals). Skip on the last allowed pass — no point
+    // re-scanning if we won't fill what it finds.
+    if (pass < MAX_FILL_PASSES - 1) {
+      const rescanned = await observeFields(page, formSelector);
+      const revealed = rescanned.filter((f) => !processedSelectors.has(f.selector));
+      if (revealed.length === 0) break;
+      queue = revealed;
+    }
     }
   } finally {
     if (cvFile) { try { fs.unlinkSync(cvFile); } catch {} }
@@ -403,6 +575,15 @@ async function runAtsPhase(appId: string, phase: 'fill' | 'submit'): Promise<App
         } else {
           outcome = { ...outcome, reason: 'A human-verification puzzle blocked this application and the live hand-off window expired. Retry to get a new hand-off, or apply manually via the apply link.' };
         }
+      }
+
+      // Invisible enterprise bot-block (Akamai/PerimeterX/DataDome/Cloudflare):
+      // there is nothing to hand off — no puzzle exists to solve — but the
+      // guardrail must still record it so this domain cools down/downgrades
+      // like a CAPTCHA block instead of being retried at full frequency forever.
+      if (outcome.status === 'bot_blocked') {
+        const { recordDomainBlock } = await import('./guardrails.js');
+        await recordDomainBlock(app.applyUrl!, 'bot_blocked');
       }
 
       if (outcome.status !== 'filled') {

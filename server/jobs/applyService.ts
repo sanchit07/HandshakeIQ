@@ -344,14 +344,78 @@ Respond ONLY with JSON: {"url": "https://..." | null, "confidence": "high"|"medi
 
 // ── Email channel ────────────────────────────────────────────────────────────
 
-/** Best application email for a job: posting-listed first, then verified contact email. */
+export interface ContactCandidate {
+  email: string | null;
+  emailStatus: string;
+  evidenceStatus: string;
+  fullName: string;
+}
+
+/**
+ * Pure selection logic: a verified NAMED individual first — the point of
+ * outreach is a genuine personalized note, not a mailbox alias just because
+ * the posting happened to list one — falling back to the posting-listed
+ * mailbox only when no named contact was found. Either way, a contact whose
+ * public evidence page has gone stale (no longer confirms they hold the
+ * role) is excluded outright, not just flagged for the admin.
+ */
+export function pickApplicationContact(contacts: ContactCandidate[]): { email: string; status: string; who: string } | null {
+  const eligible = contacts.filter((c) => c.email && c.evidenceStatus !== 'stale');
+  const verified = eligible.find((c) => c.emailStatus === 'verified');
+  if (verified?.email) return { email: verified.email, status: 'verified', who: verified.fullName };
+  const listed = eligible.find((c) => c.emailStatus === 'listed_in_posting');
+  if (listed?.email) return { email: listed.email, status: 'listed_in_posting', who: listed.fullName };
+  return null;
+}
+
+/** Best application email for a job — see pickApplicationContact for the selection policy. */
 export async function findApplicationEmail(jobId: string): Promise<{ email: string; status: string; who: string } | null> {
   const contacts = await db.select().from(jobContacts).where(eq(jobContacts.jobMatchId, jobId));
-  const listed = contacts.find((c) => c.email && c.emailStatus === 'listed_in_posting');
-  if (listed?.email) return { email: listed.email, status: 'listed_in_posting', who: listed.fullName };
-  const verified = contacts.find((c) => c.email && c.emailStatus === 'verified');
-  if (verified?.email) return { email: verified.email, status: 'verified', who: verified.fullName };
-  return null;
+  return pickApplicationContact(contacts);
+}
+
+/**
+ * Minimum days between contacting the SAME email address for different jobs.
+ * A recruiter or hiring manager who covers multiple roles/countries could
+ * otherwise get several separate cold emails "from the same candidate" in
+ * one week — the internal 90-day vacancy dedup and 28-day company cooldown
+ * don't catch this, since they're keyed by job/company, not by who actually
+ * gets emailed.
+ */
+export const EMAIL_CONTACT_COOLDOWN_DAYS = 21;
+
+/** Application channel/states that represent a real (sent or about-to-be-sent) email contact. */
+const EMAIL_CONTACT_STATES = ['ready_for_review', 'approved', 'submitting', 'submitted'] as const;
+
+/**
+ * True when `email` already has an email-channel application — sent, or
+ * drafted and awaiting/undergoing approval — for a DIFFERENT job within the
+ * cooldown window. Excludes the job being checked so re-preparing the SAME
+ * job's own application never blocks itself.
+ */
+export async function wasContactRecentlyEmailed(email: string, excludeJobId: string, days = EMAIL_CONTACT_COOLDOWN_DAYS): Promise<boolean> {
+  const rows = await db.select({ id: applications.id }).from(applications)
+    .where(sql`lower(${applications.emailTo}) = lower(${email})
+      AND ${applications.jobMatchId} != ${excludeJobId}
+      AND ${applications.channel} = 'email'
+      AND ${applications.state} IN ${EMAIL_CONTACT_STATES}
+      AND ${applications.createdAt} > now() - interval '${sql.raw(String(days))} days'`);
+  return rows.length > 0;
+}
+
+/**
+ * Hard daily cap on outbound application emails sent through the connected
+ * Gmail account — protects its sending reputation/deliverability. Mirrors
+ * DAILY_ATS_SUBMIT_CAP's role for the browser-automation channel.
+ */
+export const DAILY_EMAIL_SEND_CAP = 15;
+
+export async function countTodaysEmailSends(): Promise<number> {
+  const rows = await db.select({ n: sql<number>`count(*)::int` }).from(applications)
+    .where(sql`${applications.channel} = 'email'
+      AND ${applications.state} = 'submitted'
+      AND ${applications.submittedAt} >= date_trunc('day', now())`);
+  return rows[0]?.n ?? 0;
 }
 
 export async function draftApplicationEmail(job: JobMatch, profile: CandidateProfile, recipientName: string): Promise<{ subject: string; body: string }> {
@@ -556,7 +620,15 @@ export async function prepareApplication(jobId: string): Promise<Application> {
     const { prepareAtsApplication } = await import('./atsSubmitter/index.js');
     const atsRecognized = !!(route.atsType && (SUPPORTED_ATS.has(route.atsType) || LOGIN_WALLED_ATS.has(route.atsType)));
     // Email lookup is only needed when no recognized ATS route exists.
-    const emailTarget = atsRecognized ? null : await findApplicationEmail(jobId);
+    let emailTarget = atsRecognized ? null : await findApplicationEmail(jobId);
+    if (emailTarget && await wasContactRecentlyEmailed(emailTarget.email, jobId)) {
+      // Same contact already emailed (or mid-approval) for a different job
+      // within the cooldown — don't draft a second cold email to them this
+      // soon. Falls through to the assisted-packet path below, same as if no
+      // contact had been found at all.
+      console.log(`[APPLY] Skipping email channel for job ${jobId} — ${emailTarget.email} was already contacted for a different job within ${EMAIL_CONTACT_COOLDOWN_DAYS} days`);
+      emailTarget = null;
+    }
     const choice = chooseApplyChannel(route.atsType, !!emailTarget);
 
     if (choice === 'ats_supported' || choice === 'ats_login_walled' || choice === 'ats_generic') {
@@ -654,6 +726,15 @@ export async function approveApplication(appId: string, edits?: { emailSubject?:
     const subject = edits?.emailSubject?.trim() || app.emailSubject || '';
     const body = edits?.emailBody?.trim() || app.emailBody || '';
     if (!subject || !body) throw new Error('Email subject and body are required');
+
+    // Daily send-volume cap: protects the connected Gmail account's sending
+    // reputation/deliverability — mirrors the ATS channel's daily submit cap.
+    if (await countTodaysEmailSends() >= DAILY_EMAIL_SEND_CAP) {
+      return await transitionApplication(appId, 'needs_user', 'daily_email_cap',
+        `Daily email-send cap reached (${DAILY_EMAIL_SEND_CAP})`, {
+          needsUserReason: `Today's automatic email-sending cap (${DAILY_EMAIL_SEND_CAP}) is reached, to protect your Gmail account's sending reputation. Approve this application again tomorrow, or send it manually.`,
+        });
+    }
 
     await transitionApplication(appId, 'approved', 'user_approved', undefined, { emailSubject: subject, emailBody: body });
     await transitionApplication(appId, 'submitting', 'email_send_start', `Sending to ${app.emailTo}`);

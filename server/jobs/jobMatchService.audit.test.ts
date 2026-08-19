@@ -27,6 +27,8 @@ import {
   auditJobPostingWithAI,
   verifyPostingLive,
   filterLiveJobs,
+  titleMatchesRole,
+  computeUnderperformingTitles,
 } from './jobMatchService.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -500,4 +502,130 @@ test('filterLiveJobs: mixed batch — only CLOSED job removed, ACTIVE kept', asy
   const kept = await filterLiveJobs(jobs);
   assert.equal(kept.length, 1);
   assert.equal(kept[0].url, 'https://linkedin.com/jobs/view/active-mix');
+});
+
+// ── filterLiveJobs — full-JD relevance re-scoring (profile param) ────────────
+
+function geminiBodyWithRelevance(status: 'ACTIVE' | 'CLOSED' | 'UNCERTAIN', relevanceScore: number, relevanceNote = 'Full JD note') {
+  return {
+    candidates: [{
+      content: {
+        parts: [{ text: JSON.stringify({ status, confidence_score: 0.9, reason: `Gemini: ${status}`, relevanceScore, relevanceNote }) }],
+      },
+    }],
+  };
+}
+
+test('auditJobPostingWithAI: relevance context passed through → relevanceScore/relevanceNote parsed', async () => {
+  mockFetch([{ urlContains: 'generativelanguage', ok: true, body: geminiBodyWithRelevance('ACTIVE', 82, 'Strong match on platform PM experience') }]);
+  const verdict = await auditJobPostingWithAI('https://example.com/job/rel-1', LIVE_BODY, {
+    title: 'Senior PM', company: 'Acme', claimedMatchReason: 'looks good', profile: 'candidate profile text',
+  });
+  assert.equal(verdict.status, 'ACTIVE');
+  assert.equal(verdict.relevanceScore, 82);
+  assert.equal(verdict.relevanceNote, 'Strong match on platform PM experience');
+});
+
+test('auditJobPostingWithAI: no relevance context → relevanceScore/relevanceNote undefined', async () => {
+  mockFetch([{ urlContains: 'generativelanguage', ok: true, body: geminiBody('ACTIVE', 0.9) }]);
+  const verdict = await auditJobPostingWithAI('https://example.com/job/rel-2', LIVE_BODY);
+  assert.equal(verdict.relevanceScore, undefined);
+  assert.equal(verdict.relevanceNote, undefined);
+});
+
+test('filterLiveJobs: no profile param → no relevance re-scoring, matchScore untouched', async () => {
+  mockDnsPublic();
+  mockHttpsRequest(200, LIVE_BODY);
+  mockFetch([{ urlContains: 'generativelanguage', ok: true, body: geminiBodyWithRelevance('ACTIVE', 10, 'would have failed if used') }]);
+
+  const jobs = [{ url: 'https://linkedin.com/jobs/view/no-profile-1', title: 'PM', company: 'Acme', matchScore: 77 }];
+  const kept = await filterLiveJobs(jobs); // no profile arg
+  assert.equal(kept.length, 1, 'job must be kept — relevance re-scoring only runs when a profile is supplied');
+  assert.equal(kept[0].matchScore, 77, 'matchScore must be untouched without a profile');
+});
+
+test('filterLiveJobs: with profile, high relevanceScore → job kept, matchScore/matchReason updated to full-JD judgment', async () => {
+  mockDnsPublic();
+  mockHttpsRequest(200, LIVE_BODY);
+  mockFetch([{ urlContains: 'generativelanguage', ok: true, body: geminiBodyWithRelevance('ACTIVE', 91, 'Full JD confirms strong platform PM fit') }]);
+
+  const jobs = [{ url: 'https://linkedin.com/jobs/view/high-rel', title: 'PM', company: 'Acme', matchScore: 60, matchReason: 'snippet-based guess' }];
+  const kept = await filterLiveJobs(jobs, 'candidate profile text');
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].matchScore, 91);
+  assert.equal(kept[0].matchReason, 'Full JD confirms strong platform PM fit');
+});
+
+test('filterLiveJobs: with profile, low relevanceScore → job dropped even though ACTIVE', async () => {
+  mockDnsPublic();
+  mockHttpsRequest(200, LIVE_BODY);
+  mockFetch([{ urlContains: 'generativelanguage', ok: true, body: geminiBodyWithRelevance('ACTIVE', 15, 'Full JD requires a certification the candidate lacks') }]);
+
+  const jobs = [{ url: 'https://linkedin.com/jobs/view/low-rel', title: 'PM', company: 'Acme', matchScore: 70 }];
+  const kept = await filterLiveJobs(jobs, 'candidate profile text');
+  assert.equal(kept.length, 0, 'a hard full-JD mismatch must drop the job even though the deterministic/closure check said ACTIVE');
+});
+
+test('filterLiveJobs: with profile, borderline relevanceScore at threshold → kept (not below it)', async () => {
+  mockDnsPublic();
+  mockHttpsRequest(200, LIVE_BODY);
+  mockFetch([{ urlContains: 'generativelanguage', ok: true, body: geminiBodyWithRelevance('ACTIVE', 35, 'Right at the line') }]);
+
+  const jobs = [{ url: 'https://linkedin.com/jobs/view/borderline-rel', title: 'PM', company: 'Acme', matchScore: 70 }];
+  const kept = await filterLiveJobs(jobs, 'candidate profile text');
+  assert.equal(kept.length, 1, 'score exactly at JD_RELEVANCE_DROP_THRESHOLD (35) must not be dropped — only strictly below it');
+});
+
+// ── titleMatchesRole / computeUnderperformingTitles (per-title learning) ─────
+
+test('titleMatchesRole: exact and substring matches', () => {
+  assert.equal(titleMatchesRole('Product Manager', 'Product Manager'), true);
+  assert.equal(titleMatchesRole('Senior Product Manager', 'Product Manager'), true);
+  assert.equal(titleMatchesRole('Product Manager', 'Senior Product Manager'), true);
+  assert.equal(titleMatchesRole('Product Manager', 'Business Analyst'), false);
+});
+
+test('titleMatchesRole: case/punctuation-insensitive', () => {
+  assert.equal(titleMatchesRole('  senior PRODUCT-manager!! ', 'Product Manager'), true);
+});
+
+test('titleMatchesRole: reordered variants match via shared significant words', () => {
+  assert.equal(titleMatchesRole('Growth Product Manager', 'Product Manager, Growth'), true);
+});
+
+test('titleMatchesRole: empty strings never match', () => {
+  assert.equal(titleMatchesRole('', 'Product Manager'), false);
+  assert.equal(titleMatchesRole('Product Manager', ''), false);
+});
+
+test('computeUnderperformingTitles: flags a title searched repeatedly with zero conversions', () => {
+  const logs = [
+    { roles: ['Innovation Manager', 'Product Manager'], shortlistedTitles: ['Senior Product Manager'] },
+    { roles: ['Innovation Manager', 'Product Manager'], shortlistedTitles: ['Product Owner'] },
+    { roles: ['Innovation Manager', 'Product Manager'], shortlistedTitles: [] },
+  ];
+  const flagged = computeUnderperformingTitles(logs);
+  assert.ok(flagged.includes('Innovation Manager'));
+  assert.ok(!flagged.includes('Product Manager'), 'Product Manager converted at least once and must not be flagged');
+});
+
+test('computeUnderperformingTitles: does not flag a title searched fewer than minSearches times', () => {
+  const logs = [
+    { roles: ['Rare Title'], shortlistedTitles: [] },
+    { roles: ['Rare Title'], shortlistedTitles: [] },
+  ];
+  assert.deepEqual(computeUnderperformingTitles(logs, 3), []);
+});
+
+test('computeUnderperformingTitles: a single conversion anywhere in the window clears the flag', () => {
+  const logs = [
+    { roles: ['Head of Product'], shortlistedTitles: [] },
+    { roles: ['Head of Product'], shortlistedTitles: [] },
+    { roles: ['Head of Product'], shortlistedTitles: ['Head of Product'] },
+  ];
+  assert.deepEqual(computeUnderperformingTitles(logs), []);
+});
+
+test('computeUnderperformingTitles: empty logs → no flags', () => {
+  assert.deepEqual(computeUnderperformingTitles([]), []);
 });

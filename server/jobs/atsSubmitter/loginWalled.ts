@@ -21,13 +21,13 @@ import { applications, jobMatches, candidateProfile, type Application, type JobM
 import { eq } from 'drizzle-orm';
 import { transitionApplication, type AssistedPacket, type PacketAnswer } from '../applyService.js';
 import {
-  launchHardenedSession, detectCaptcha, visiblePageText, resolveFormScope, observeFields, sleep, humanType, type HardenedSession,
+  launchHardenedSession, detectCaptcha, detectBotBlock, visiblePageText, resolveFormScope, observeFields, sleep, humanType, type HardenedSession,
 } from './browser.js';
-import { computeAnswersHash, jitterMs, DAILY_ATS_SUBMIT_CAP, looksLikeConfirmation, classifySubmitOutcome } from './core.js';
+import { computeAnswersHash, jitterMs, DAILY_ATS_SUBMIT_CAP, looksLikeConfirmation, looksLikeAlreadyApplied, classifySubmitOutcome } from './core.js';
 import {
   enqueueBrowserRun, countTodaysAtsSubmissions, saveScreenshot, fillFieldsInScope,
 } from './index.js';
-import { classifyAuthPage, extractVerificationLink, isSafeVerificationLink, isAutoCheckableConsent, type PageSignals } from './loginPages.js';
+import { classifyAuthPage, extractVerificationLink, extractVerificationCode, isSafeVerificationLink, isAutoCheckableConsent, type PageSignals } from './loginPages.js';
 import { getCredentialByDomain, saveCredential, markCredentialStatus, generateStrongPassword } from './credentialVault.js';
 import { checkDomainAllowed, recordDomainRun, recordDomainBlock } from './guardrails.js';
 import { openHandoff } from './handoff.js';
@@ -86,19 +86,26 @@ async function captchaHandoff(app: Application, page: Page, applyUrl: string, co
 
 // ── Email verification ───────────────────────────────────────────────────────
 
-async function pollGmailForVerification(portalDomain: string, timeoutMs = 90_000): Promise<string | null> {
+/**
+ * Shared inbox-polling loop: searches the connected Gmail inbox for a recent
+ * message related to this portal and applies `extract` to its full text,
+ * returning the first non-null result. Used for both link-based and
+ * code-based email verification (see pollGmailForVerification/pollGmailForCode)
+ * — same trust boundary either way, just a different extractor.
+ */
+async function pollGmailForMatch<T>(portalDomain: string, extract: (body: string) => T | null, timeoutMs = 90_000): Promise<T | null> {
   let token: string;
   try {
     const { getGmailAccessToken } = await import('../emailSender.js');
     token = await getGmailAccessToken();
   } catch {
-    return null; // Gmail not connected — manual paste-link fallback applies
+    return null; // Gmail not connected — manual fallback applies
   }
   const deadline = Date.now() + timeoutMs;
   const headers = { Authorization: `Bearer ${token}` };
   while (Date.now() < deadline) {
     try {
-      const q = encodeURIComponent(`newer_than:1d (verify OR verification OR activate OR confirm) ${portalDomain.split('.')[0]}`);
+      const q = encodeURIComponent(`newer_than:1d (verify OR verification OR activate OR confirm OR code) ${portalDomain.split('.')[0]}`);
       const list = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?q=${q}&maxResults=5`, { headers });
       if (list.ok) {
         const data = await list.json();
@@ -112,14 +119,22 @@ async function pollGmailForVerification(portalDomain: string, timeoutMs = 90_000
             (p?.parts ?? []).forEach(walk);
           };
           walk(full.payload);
-          const link = extractVerificationLink(parts.join('\n'), portalDomain);
-          if (link) return link;
+          const found = extract(parts.join('\n'));
+          if (found) return found;
         }
       }
     } catch {}
     await sleep(10_000);
   }
   return null;
+}
+
+async function pollGmailForVerification(portalDomain: string, timeoutMs = 90_000): Promise<string | null> {
+  return pollGmailForMatch(portalDomain, (body) => extractVerificationLink(body, portalDomain), timeoutMs);
+}
+
+async function pollGmailForCode(portalDomain: string, timeoutMs = 90_000): Promise<string | null> {
+  return pollGmailForMatch(portalDomain, extractVerificationCode, timeoutMs);
 }
 
 // ── Account handling ─────────────────────────────────────────────────────────
@@ -166,13 +181,96 @@ async function performCreateAccount(page: Page, email: string, password: string)
   await sleep(jitterMs(2500, 4000));
 }
 
+/**
+ * Types an email-delivered verification code into the portal's code field and
+ * submits. Returns false if no plausible code field is found (caller falls
+ * back to needs_user — never guesses which field to use).
+ */
+async function performEmailCodeEntry(page: Page, code: string): Promise<boolean> {
+  const codeLoc = page.locator(
+    'input[autocomplete="one-time-code"]:visible, input[name*="code" i]:visible, input[id*="code" i]:visible, input[name*="otp" i]:visible, input[id*="otp" i]:visible, input[name*="pin" i]:visible, input[id*="pin" i]:visible',
+  ).first();
+  if (await codeLoc.count() === 0) return false;
+  await humanType(codeLoc, code);
+  await clickFirst(page, [
+    'button:has-text("Verify")', 'button:has-text("Confirm")', 'button:has-text("Continue")',
+    'button[type="submit"]', 'input[type="submit"]',
+  ]);
+  await sleep(jitterMs(2000, 3500));
+  return true;
+}
+
 function looksLikeLoginFailure(text: string): boolean {
   return /(incorrect (email|username|password)|invalid (credentials|email or password)|unable to sign in|authentication failed|account (is )?locked)/i.test(text);
 }
 
+/**
+ * Attempts an automated password reset when the vaulted password is rejected
+ * — the portal may have forced a rotation, or the vault entry predates a
+ * manual change. Reuses the exact same trust boundary as email verification
+ * (poll the connected inbox for a link from this portal) rather than
+ * introducing a new one. Returns the new password on success; null means
+ * "could not complete it automatically" — the caller degrades to assisted
+ * rather than guessing at any point in this flow.
+ *
+ * `deps.pollLink` is injectable (defaults to pollGmailForVerification) purely
+ * for testing the DOM-interaction sequence with real Playwright against a
+ * fixture form, without needing to mock the Gmail REST API.
+ */
+export async function attemptPasswordReset(
+  ctx: FlowCtx, page: Page,
+  deps: { pollLink?: (portalDomain: string) => Promise<string | null> } = {},
+): Promise<string | null> {
+  const pollLink = deps.pollLink ?? pollGmailForVerification;
+  const openedReset = await clickFirst(page, [
+    'a:has-text("Forgot password")', 'a:has-text("Forgot Password")', 'button:has-text("Forgot password")',
+    'a:has-text("Reset password")', 'a:has-text("Reset Password")', 'button:has-text("Reset password")',
+    'a:has-text("Trouble signing in")', 'a:has-text("Can\'t sign in")',
+  ]);
+  if (!openedReset) return null;
+
+  // Some portals ask for the email again on the reset-request page; others
+  // already know it from the failed sign-in attempt and skip straight to a
+  // "check your email" message.
+  const emailLoc = page.locator('input[type="email"]:visible, input[name*="email" i]:visible, input[id*="email" i]:visible').first();
+  if (await emailLoc.count() > 0 && ctx.profile.email) {
+    await humanType(emailLoc, ctx.profile.email);
+    await clickFirst(page, [
+      'button:has-text("Send")', 'button:has-text("Reset")', 'button:has-text("Continue")', 'button:has-text("Submit")',
+      'button[type="submit"]', 'input[type="submit"]',
+    ]);
+    await sleep(jitterMs(1500, 2500));
+  }
+
+  // Poll the connected inbox for the reset link (identical mechanism to
+  // pollGmailForVerification — same portal domain, same safety validation).
+  const link = await pollLink(ctx.portalDomain);
+  if (!link || !isSafeVerificationLink(link, ctx.portalDomain)) return null;
+  await page.goto(link, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  await sleep(jitterMs(1500, 2500));
+
+  // Set a fresh password. If the page we landed on doesn't show a password
+  // field, this isn't a set-new-password form we recognize — stop rather
+  // than guess at what to click next.
+  const pwLocs = page.locator('input[type="password"]:visible');
+  const count = await pwLocs.count();
+  if (count === 0) return null;
+  const newPassword = generateStrongPassword();
+  for (let i = 0; i < count; i++) await humanType(pwLocs.nth(i), newPassword);
+  await clickFirst(page, [
+    'button:has-text("Reset Password")', 'button:has-text("Change Password")', 'button:has-text("Update Password")',
+    'button:has-text("Submit")', 'button:has-text("Save")', 'button[type="submit"]', 'input[type="submit"]',
+  ]);
+  await sleep(jitterMs(2000, 3500));
+
+  const after = await visiblePageText(page);
+  if (looksLikeLoginFailure(after)) return null;
+  return newPassword;
+}
+
 // ── Main flow ────────────────────────────────────────────────────────────────
 
-interface FlowCtx {
+export interface FlowCtx {
   app: Application; job: JobMatch; profile: CandidateProfile;
   applyUrl: string; portalDomain: string; atsType: string;
   answers: PacketAnswer[];
@@ -223,10 +321,24 @@ async function ensureAuthenticated(ctx: FlowCtx, page: Page): Promise<'ok' | App
         const after = await visiblePageText(page);
         if (looksLikeLoginFailure(after)) {
           await markCredentialStatus(ctx.portalDomain, 'login_failed');
+          // Try an automated reset before giving up — the vaulted password
+          // may simply be stale (portal forced a rotation, or it predates a
+          // manual change). Uses the exact same inbox-polling trust boundary
+          // already used for email verification, never a new one.
+          const newPassword = await attemptPasswordReset(ctx, page);
+          if (newPassword) {
+            await saveCredential({
+              company: ctx.job.company, atsType: ctx.atsType, portalDomain: ctx.portalDomain,
+              portalUrl: ctx.applyUrl, email: cred.email, password: newPassword,
+              notes: `Password reset automatically after the vaulted password was rejected (job: ${ctx.job.title})`,
+            });
+            await markCredentialStatus(ctx.portalDomain, 'verified');
+            continue; // re-classify: may already be signed in, or back at sign_in with the fresh password
+          }
           await recordDomainBlock(ctx.applyUrl, 'login_failed');
           await saveScreenshot(ctx.app.id, page, 'failure');
-          return degradeToAssisted(ctx, 'The saved portal password was rejected — it may have been changed on the site.',
-            `Your account email is ${cred.email}; use "forgot password" on the portal, then update the vault entry.`);
+          return degradeToAssisted(ctx, 'The saved portal password was rejected, and an automated password reset could not be completed.',
+            `Your account email is ${cred.email}; use "forgot password" on the portal yourself, then update the vault entry.`);
         }
         await markCredentialStatus(ctx.portalDomain, 'verified');
         return 'ok';
@@ -256,6 +368,19 @@ async function ensureAuthenticated(ctx: FlowCtx, page: Page): Promise<'ok' | App
       continue;
     }
 
+    if (kind === 'account_exists') {
+      // A real scenario: the candidate manually created a portal account
+      // before this tool ever touched it, or a prior automated run partially
+      // completed without being recorded. There is no password to try — the
+      // vault only ever holds passwords THIS tool generated — so guessing or
+      // retrying the same signup would just loop. Stop with a specific,
+      // accurate reason instead of the generic "kept looping" fallback.
+      await saveScreenshot(ctx.app.id, page, 'failure');
+      return degradeToAssisted(ctx,
+        `An account for ${ctx.profile.email} already exists on this portal, but this tool did not create it (or the vaulted password no longer matches it).`,
+        'Sign in yourself — use "forgot password" on the portal if you don\'t know the password — then finish the application manually via the apply link.');
+    }
+
     if (kind === 'verify_email') {
       // 1) User-pasted link takes precedence
       const packet = ctx.app.packet as (AssistedPacket & { verificationLink?: string }) | null;
@@ -278,6 +403,32 @@ async function ensureAuthenticated(ctx: FlowCtx, page: Page): Promise<'ok' | App
         'Awaiting email verification link', {
           needsUserReason: `The portal sent a verification email to ${ctx.profile.email}. Open it, copy the verification link, paste it into this application's "Verification link" box, then retry — the account password is already saved in your vault.`,
         });
+    }
+
+    if (kind === 'verify_email_code') {
+      // Same trust boundary as verify_email (proving control of the inbox
+      // already used to create the account) — just typed instead of clicked.
+      const code = await pollGmailForCode(ctx.portalDomain);
+      if (code && await performEmailCodeEntry(page, code)) {
+        continue;
+      }
+      await saveScreenshot(ctx.app.id, page, 'failure');
+      return transitionApplication(ctx.app.id, 'needs_user', 'verify_email_code',
+        'Awaiting email verification code', {
+          needsUserReason: `The portal sent a verification code to ${ctx.profile.email}. Check your inbox, enter the code on the portal yourself, then retry — the account password is already saved in your vault. (Automated retrieval/entry didn't complete in time — the portal's code field may not have been recognized.)`,
+        });
+    }
+
+    if (kind === 'mfa_challenge') {
+      // A true second factor (authenticator app / SMS) cannot be automated —
+      // there is no phone number or TOTP secret to draw from, and unlike a
+      // CAPTCHA there is nothing a live hand-off would help solve any faster
+      // than the user just doing it themselves. Stop immediately rather than
+      // loop or risk misreading this as "no auth wall".
+      await saveScreenshot(ctx.app.id, page, 'failure');
+      return degradeToAssisted(ctx,
+        'This portal requires a two-factor/authentication step (authenticator app or SMS code) that the automation cannot receive or generate.',
+        `Your account email is ${ctx.profile.email}; sign in yourself to complete this step, then finish the application manually via the apply link.`);
     }
 
     return 'ok'; // no auth wall (or already past it)
@@ -308,6 +459,31 @@ async function fillWizardPage(ctx: FlowCtx, page: Page): Promise<'advanced' | 'r
   if (!advanced) {
     // No next button: maybe this page IS review-like (submit present)
     if (signals.buttons.some((b) => /^submit( application)?$/i.test(b))) return 'review';
+    // The ATS itself may be reporting a prior application on file for this
+    // job (distinct from this app's own internal dedup — the candidate could
+    // have applied manually before this tool ever ran). Checked before the
+    // bot-block check below: more specific and more informative.
+    if (looksLikeAlreadyApplied(signals.text)) {
+      await saveScreenshot(ctx.app.id, page, 'failure');
+      return transitionApplication(ctx.app.id, 'needs_user', 'already_applied',
+        'The ATS reports an application already on file for this job', {
+          needsUserReason: 'This employer\'s portal reports that an application for this role already exists on file — possibly from a manual application before this tool ran. Check the portal account (credentials in your vault) to confirm before applying again elsewhere.',
+        });
+    }
+    // No CAPTCHA (already checked by the caller), no continue button: this
+    // could be an invisible enterprise bot-detection block (Akamai/PerimeterX/
+    // DataDome/Cloudflare) rather than just an unsupported wizard layout —
+    // check explicitly so a real block feeds the domain guardrail instead of
+    // being silently retried at full frequency forever.
+    const blockReason = await detectBotBlock(page);
+    if (blockReason) {
+      await recordDomainBlock(ctx.applyUrl, 'bot_blocked');
+      await saveScreenshot(ctx.app.id, page, 'failure');
+      return transitionApplication(ctx.app.id, 'needs_user', 'bot_blocked',
+        `Automated access appears blocked (${blockReason})`, {
+          needsUserReason: `Automated access to this employer's site appears to be blocked (${blockReason}) — this is not a solvable puzzle. Your portal account and password are saved in the vault; finish manually via the apply link.`,
+        });
+    }
     return transitionApplication(ctx.app.id, 'needs_user', 'wizard_stuck',
       'No continue/next control found', { needsUserReason: 'The application wizard page had no recognizable Continue button. Finish this application manually via the apply link — your portal account and password are saved in the vault.' });
   }

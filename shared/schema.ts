@@ -111,6 +111,23 @@ export const jobMatches = pgTable("job_matches", {
 export type JobMatch = typeof jobMatches.$inferSelect;
 export type UpsertJobMatch = typeof jobMatches.$inferInsert;
 
+/**
+ * One row per daily search run: which role titles were searched and which
+ * titles actually converted to a shortlisted job that day. Lets Phase 1 role
+ * derivation see which of its own past anchor titles are chronically
+ * unproductive (searched repeatedly, never shortlisted) instead of re-deriving
+ * titles from the resume with no memory of what has actually worked.
+ */
+export const roleSearchLog = pgTable("role_search_log", {
+  runDate: varchar("run_date").primaryKey(), // YYYY-MM-DD (Asia/Kuala_Lumpur)
+  country: varchar("country").notNull(),
+  roles: jsonb("roles").$type<string[]>().notNull(),
+  shortlistedTitles: jsonb("shortlisted_titles").$type<string[]>().notNull(),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export type RoleSearchLog = typeof roleSearchLog.$inferSelect;
+
 // Questions the AI needs the admin to answer for a specific opportunity.
 // Answered questions become "learnings" injected into future prompts so
 // the number of questions trends toward zero over time.

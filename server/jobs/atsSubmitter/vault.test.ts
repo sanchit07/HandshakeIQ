@@ -2,11 +2,11 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import { encryptSecret, decryptSecret, generateStrongPassword } from './credentialVault.js';
 import {
-  evaluateDomainControl, blockCooldownMs, DOWNGRADE_AFTER_BLOCKS, DOMAIN_RUN_COOLDOWN_MS,
+  evaluateDomainControl, blockCooldownMs, DOWNGRADE_AFTER_BLOCKS, DOMAIN_RUN_COOLDOWN_MS, domainForUrl,
 } from './guardrails.js';
 import { chooseApplyChannel } from './core.js';
 import { preserveContinuation } from '../applyService.js';
-import { classifyAuthPage, extractVerificationLink, isSafeVerificationLink, isAutoCheckableConsent } from './loginPages.js';
+import { classifyAuthPage, extractVerificationLink, extractVerificationCode, isSafeVerificationLink, isAutoCheckableConsent } from './loginPages.js';
 
 const SECRET = 'test-secret-for-vault-crypto';
 
@@ -91,6 +91,21 @@ describe('domain guard-rails', () => {
     assert.strictEqual(blockCooldownMs(10), 24 * 60 * 60 * 1000);
     assert.ok(DOWNGRADE_AFTER_BLOCKS >= 2);
   });
+
+  it('keys different tenants on shared ATS hosting separately (tenant isolation regression)', () => {
+    assert.notStrictEqual(
+      domainForUrl('https://boards.greenhouse.io/acme/jobs/1'),
+      domainForUrl('https://boards.greenhouse.io/othercorp/jobs/2'),
+    );
+    assert.notStrictEqual(
+      domainForUrl('https://acme.wd3.myworkdayjobs.com/en-US/careers/job/1'),
+      domainForUrl('https://othercorp.wd5.myworkdayjobs.com/en-US/careers/job/2'),
+    );
+  });
+
+  it('falls back to "unknown" for an unparseable URL', () => {
+    assert.strictEqual(domainForUrl('not a url'), 'unknown');
+  });
 });
 
 describe('login-walled page classification', () => {
@@ -134,6 +149,68 @@ describe('login-walled page classification', () => {
       text: 'Thank you for applying! Your application was submitted successfully.',
       hasPasswordField: false, hasConfirmPasswordField: false, buttons: [],
     }), 'confirmation');
+  });
+
+  it('detects an email-delivered verification code page (automatable)', () => {
+    assert.strictEqual(classifyAuthPage({
+      text: 'We sent a verification code to your email address. Enter the code below to continue.',
+      hasPasswordField: false, hasConfirmPasswordField: false, buttons: ['verify'],
+    }), 'verify_email_code');
+  });
+
+  it('does not misclassify a plain link-based email check as a code page', () => {
+    assert.strictEqual(classifyAuthPage({
+      text: 'Almost there! A verification email has been sent to you@example.com. Check your inbox.',
+      hasPasswordField: false, hasConfirmPasswordField: false, buttons: [],
+    }), 'verify_email');
+  });
+
+  it('detects a true 2FA/MFA challenge (authenticator app) — not automatable', () => {
+    assert.strictEqual(classifyAuthPage({
+      text: 'Two-factor authentication required. Open your authenticator app and enter the 6-digit code.',
+      hasPasswordField: false, hasConfirmPasswordField: false, buttons: ['continue'],
+    }), 'mfa_challenge');
+  });
+
+  it('detects a true 2FA/MFA challenge (SMS to phone) — not automatable', () => {
+    assert.strictEqual(classifyAuthPage({
+      text: 'We sent a security code to your phone via text message. Enter it to continue.',
+      hasPasswordField: false, hasConfirmPasswordField: false, buttons: ['submit'],
+    }), 'mfa_challenge');
+  });
+
+  it('detects a signup rejected because the account already exists', () => {
+    assert.strictEqual(classifyAuthPage({
+      text: 'An account with this email already exists. Please sign in instead.',
+      hasPasswordField: true, hasConfirmPasswordField: true, buttons: ['create account'],
+    }), 'account_exists');
+  });
+
+  it('does not misclassify a fresh signup form as account_exists', () => {
+    assert.strictEqual(classifyAuthPage({
+      text: 'Create Account. Email Address. Password. Verify New Password.',
+      hasPasswordField: true, hasConfirmPasswordField: true, buttons: ['create account'],
+    }), 'create_account');
+  });
+});
+
+describe('email verification codes', () => {
+  it('extracts a labeled code', () => {
+    assert.strictEqual(extractVerificationCode('Your verification code is: 483920. It expires in 10 minutes.'), '483920');
+    assert.strictEqual(extractVerificationCode('One-time code: 8842'), '8842');
+  });
+
+  it('falls back to a standalone digit token near the word "code"', () => {
+    assert.strictEqual(extractVerificationCode('Hi there, here is your code 719284 — do not share it.'), '719284');
+  });
+
+  it('returns null when no plausible code exists', () => {
+    assert.strictEqual(extractVerificationCode('Welcome to Acme! Check out our other openings.'), null);
+  });
+
+  it('does not grab an unrelated number far from the word "code"', () => {
+    const body = 'Order confirmation #58213947. '.padEnd(200, 'x') + ' Please contact support for any code-related issues.';
+    assert.strictEqual(extractVerificationCode(body), null);
   });
 });
 

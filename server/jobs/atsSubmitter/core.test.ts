@@ -9,6 +9,7 @@ import {
   classifyField, buildCanonicalValues, resolveField, isTransientError,
   looksLikeConfirmation, isNavigationAllowed, baseDomain, jitterMs,
   SUPPORTED_ATS, LOGIN_WALLED_ATS, computeAnswersHash, classifySubmitOutcome,
+  guardrailKeyForUrl, looksLikeBotBlockText, looksLikeAlreadyApplied,
   type ObservedField, type CanonicalValues,
 } from './core.js';
 import { canTransition, ALLOWED_TRANSITIONS } from '../applyService.js';
@@ -134,6 +135,81 @@ test('navigation allowlist is public-suffix aware for multi-part TLDs', () => {
   assert.ok(!isNavigationAllowed('https://acme.co.uk/jobs/1', 'https://evil.co.uk/x'),
     'sibling registrants under co.uk must NOT be treated as the same site');
   assert.ok(isNavigationAllowed('https://careers.acme.co.uk/jobs/1', 'https://apply.acme.co.uk/form'));
+});
+
+// ── Guardrail key: tenant isolation on shared ATS hosting ───────────────────
+
+test('guardrailKeyForUrl: shared-hostname ATS platforms key on hostname + company slug', () => {
+  const acme = guardrailKeyForUrl('https://boards.greenhouse.io/acme/jobs/123');
+  const other = guardrailKeyForUrl('https://boards.greenhouse.io/othercorp/jobs/456');
+  assert.notEqual(acme, other, 'two different companies on the same Greenhouse host must get different guardrail keys');
+  assert.equal(acme, guardrailKeyForUrl('https://boards.greenhouse.io/acme/jobs/999'),
+    'the same company must always key the same regardless of posting id');
+});
+
+test('guardrailKeyForUrl: covers Lever, Ashby, SmartRecruiters shared hosts', () => {
+  assert.notEqual(
+    guardrailKeyForUrl('https://jobs.lever.co/acme/abc'),
+    guardrailKeyForUrl('https://jobs.lever.co/othercorp/def'),
+  );
+  assert.notEqual(
+    guardrailKeyForUrl('https://jobs.ashbyhq.com/acme/abc'),
+    guardrailKeyForUrl('https://jobs.ashbyhq.com/othercorp/def'),
+  );
+  assert.notEqual(
+    guardrailKeyForUrl('https://jobs.smartrecruiters.com/Acme/abc'),
+    guardrailKeyForUrl('https://jobs.smartrecruiters.com/OtherCorp/def'),
+  );
+});
+
+test('guardrailKeyForUrl: Workday-style per-tenant subdomains already key correctly on hostname alone', () => {
+  const acme = guardrailKeyForUrl('https://acme.wd3.myworkdayjobs.com/en-US/careers/job/123');
+  const other = guardrailKeyForUrl('https://othercorp.wd5.myworkdayjobs.com/en-US/careers/job/456');
+  assert.notEqual(acme, other, 'two different Workday tenants must never share a guardrail key');
+  // Regression: the OLD implementation collapsed both to the shared
+  // "myworkdayjobs.com" base domain — a block on one tenant would then
+  // cascade cooldown/downgrade to every other unrelated Workday customer.
+  assert.ok(!acme.match(/^myworkdayjobs\.com$/) && acme.includes('acme'));
+});
+
+test('guardrailKeyForUrl: custom/company-owned domains key on the full hostname', () => {
+  assert.equal(guardrailKeyForUrl('https://careers.acme.com/jobs/1'), 'careers.acme.com');
+  assert.notEqual(
+    guardrailKeyForUrl('https://careers.acme.com/jobs/1'),
+    guardrailKeyForUrl('https://careers.othercorp.com/jobs/2'),
+  );
+});
+
+// ── Bot-block text detection ─────────────────────────────────────────────────
+
+test('looksLikeBotBlockText: recognizes common enterprise bot-detection vendor pages', () => {
+  assert.ok(looksLikeBotBlockText('Access Denied. You have been blocked.'));
+  assert.ok(looksLikeBotBlockText('Request blocked. Reference ID: 182736451afcd (Akamai)'));
+  assert.ok(looksLikeBotBlockText('Pardon Our Interruption while we verify you are human'));
+  assert.ok(looksLikeBotBlockText('Attention Required! | Cloudflare'));
+  assert.ok(looksLikeBotBlockText('Checking your browser before accessing the site...'));
+  assert.ok(looksLikeBotBlockText('Our systems have detected unusual traffic from your network.'));
+  assert.ok(looksLikeBotBlockText('Ray ID: 8b3f9c2a1e0d4f5a'));
+});
+
+test('looksLikeBotBlockText: does not flag ordinary application-page text', () => {
+  assert.ok(!looksLikeBotBlockText('Apply now for this Senior Product Manager role at Acme Corp.'));
+  assert.ok(!looksLikeBotBlockText('Please verify your email address to continue.'));
+  assert.ok(!looksLikeBotBlockText(''));
+});
+
+// ── "Already applied" detection ──────────────────────────────────────────────
+
+test('looksLikeAlreadyApplied: recognizes common ATS phrasing', () => {
+  assert.ok(looksLikeAlreadyApplied('You have already applied to this position.'));
+  assert.ok(looksLikeAlreadyApplied("You've already applied for this role."));
+  assert.ok(looksLikeAlreadyApplied('An application already exists for this job.'));
+  assert.ok(looksLikeAlreadyApplied('You can only apply once for a given requisition.'));
+});
+
+test('looksLikeAlreadyApplied: does not flag a normal blank application form', () => {
+  assert.ok(!looksLikeAlreadyApplied('Apply for this Senior Product Manager role at Acme Corp.'));
+  assert.ok(!looksLikeAlreadyApplied(''));
 });
 
 // ── Review-approval binding ──────────────────────────────────────────────────

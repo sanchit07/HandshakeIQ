@@ -18,10 +18,23 @@ export interface ObservedField {
   label: string;
   /** name/id attribute (secondary classification signal) */
   name: string;
-  kind: 'text' | 'textarea' | 'email' | 'tel' | 'url' | 'select' | 'radio' | 'checkbox' | 'file' | 'unknown';
+  kind: 'text' | 'textarea' | 'email' | 'tel' | 'url' | 'select' | 'multiselect' | 'combobox' | 'radio' | 'checkbox' | 'file' | 'unknown';
   required: boolean;
   /** For select/radio: available option labels */
   options?: string[];
+  /**
+   * combobox only: selector of the associated ARIA listbox (aria-controls/
+   * aria-owns), if one could be resolved — where matching options are looked
+   * for after typing.
+   */
+  listboxSelector?: string;
+  /**
+   * file only: true when the selector points at a JS-driven drop-zone
+   * container (no underlying native file input at all — e.g. react-dropzone/
+   * Dropzone.js/FilePond/Uppy) rather than a real `<input type=file>`. The
+   * fill layer must use a simulated drop instead of setInputFiles for these.
+   */
+  isDropzone?: boolean;
 }
 
 export type CanonicalKey =
@@ -195,6 +208,28 @@ export const CAPTCHA_SELECTORS = [
   '.g-recaptcha', '.h-captcha', '.cf-turnstile', '[data-sitekey]', '#captcha',
 ];
 
+/**
+ * HTTP statuses consistent with an enterprise anti-bot vendor (Akamai Bot
+ * Manager, PerimeterX, DataDome, Cloudflare) blocking automated traffic
+ * outright — as opposed to a normal 4xx/5xx application error.
+ */
+export const BOT_BLOCK_HTTP_STATUSES = new Set([401, 403, 429]);
+
+/**
+ * Text signatures of an enterprise bot-detection block page. These vendors
+ * typically render NO interactive CAPTCHA element at all (detectCaptcha()
+ * correctly returns false for them) — without this separate check, such a
+ * page was previously indistinguishable from "this posting just uses a form
+ * layout we don't support", which meant it was never recorded as a block and
+ * the domain guardrail cooldown/downgrade never engaged.
+ */
+const BOT_BLOCK_TEXT_RE = /access denied|request blocked|automated (?:access|requests?|traffic) (?:has been |was |is )?(?:blocked|detected|denied)|unusual traffic (?:from your|detected)|pardon our interruption|attention required[!.]?\s*\|?\s*cloudflare|checking your browser before accessing|ray id\s*:|reference (?:id|#)\s*[:#]?\s*\w{8,}.{0,30}(?:akamai|perimeterx|datadome|imperva)|please verify you are a human|bot detection/i;
+
+/** True when visible page text matches a known bot-detection block pattern. */
+export function looksLikeBotBlockText(text: string): boolean {
+  return BOT_BLOCK_TEXT_RE.test(text);
+}
+
 const CONFIRMATION_TEXT_RE = /thank you for (?:applying|your application|your interest)|application (?:has been |was )?(?:submitted|received|sent)|we(?:'|’)?ve received your application|successfully (?:applied|submitted)|your application to .{0,80} (?:has been|was) (?:received|submitted)/i;
 
 const CONFIRMATION_URL_RE = /confirmation|thank[-_]?you|application[-_]?(?:submitted|complete)/i;
@@ -202,6 +237,21 @@ const CONFIRMATION_URL_RE = /confirmation|thank[-_]?you|application[-_]?(?:submi
 /** True when a page's visible text or URL indicates a completed submission. */
 export function looksLikeConfirmation(pageText: string, url: string): boolean {
   return CONFIRMATION_TEXT_RE.test(pageText) || CONFIRMATION_URL_RE.test(url);
+}
+
+/**
+ * The ATS itself reporting a prior application on file for this exact job —
+ * distinct from this app's own internal 90-day shortlisting dedup: the
+ * candidate (or a previous partial run) may have applied once before through
+ * a channel this system has no record of. Without this check such a page
+ * shows zero fillable fields and was previously indistinguishable from an
+ * unsupported layout or a bot block.
+ */
+const ALREADY_APPLIED_RE = /you(?:'|’)?(?:ve| have) already applied|already submitted (?:an|your) application (?:for|to) this|application already (?:submitted|received|exists|on file)|you (?:can|may) only apply once|duplicate application/i;
+
+/** True when page text indicates the ATS considers this job already applied-to. */
+export function looksLikeAlreadyApplied(text: string): boolean {
+  return ALREADY_APPLIED_RE.test(text);
 }
 
 // ── Navigation allowlist ─────────────────────────────────────────────────────
@@ -224,6 +274,44 @@ export function baseDomain(hostname: string): string {
     return parts.slice(-3).join('.');
   }
   return parts.slice(-2).join('.');
+}
+
+/**
+ * Hostnames where the ATS tenant is encoded in the URL PATH, not the
+ * hostname — every customer on these platforms shares the exact same
+ * hostname (e.g. all Greenhouse job boards live at boards.greenhouse.io/{company}).
+ * Workday/iCIMS/Taleo/SuccessFactors are deliberately NOT here: each tenant
+ * gets its own subdomain there, so the full hostname alone is already
+ * tenant-specific (this matches how ats_credentials.portalDomain is keyed).
+ */
+const PATH_TENANT_HOSTS = new Set([
+  'boards.greenhouse.io', 'job-boards.greenhouse.io',
+  'jobs.lever.co',
+  'jobs.ashbyhq.com',
+  'jobs.smartrecruiters.com', 'careers.smartrecruiters.com',
+]);
+
+/**
+ * Guard-rail key for an apply URL: identifies the actual TENANT (employer)
+ * being automated against, never just the ATS vendor's shared hosting
+ * domain. A CAPTCHA/bot-block on one company's ATS instance must never cool
+ * down or downgrade automation for every OTHER unrelated company hosted on
+ * the same platform.
+ *  - Path-tenant hosts (Greenhouse/Lever/Ashby/SmartRecruiters shared
+ *    hostnames): hostname + first path segment (the company slug) — two
+ *    different companies on the same host get different keys.
+ *  - Everything else (Workday/iCIMS/Taleo/SuccessFactors per-tenant
+ *    subdomains, and any company-owned custom domain): the full hostname,
+ *    lowercased — already tenant-specific there.
+ */
+export function guardrailKeyForUrl(url: string): string {
+  const u = new URL(url);
+  const host = u.hostname.toLowerCase();
+  if (PATH_TENANT_HOSTS.has(host)) {
+    const seg = u.pathname.split('/').filter(Boolean)[0];
+    return seg ? `${host}/${seg.toLowerCase()}` : host;
+  }
+  return host;
 }
 
 /**

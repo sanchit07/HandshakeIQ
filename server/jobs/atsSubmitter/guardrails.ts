@@ -11,7 +11,7 @@
 import { db } from '../../db';
 import { domainControls } from '../../../shared/schema.js';
 import { eq } from 'drizzle-orm';
-import { baseDomain } from './core.js';
+import { guardrailKeyForUrl } from './core.js';
 
 export const DOMAIN_RUN_COOLDOWN_MS = 3 * 60 * 1000;       // min gap between runs to one domain
 export const BLOCK_COOLDOWN_BASE_MS = 30 * 60 * 1000;      // first block: 30 min
@@ -45,7 +45,7 @@ export function evaluateDomainControl(
 }
 
 export function domainForUrl(url: string): string {
-  try { return baseDomain(new URL(url).hostname); } catch { return 'unknown'; }
+  try { return guardrailKeyForUrl(url); } catch { return 'unknown'; }
 }
 
 export async function checkDomainAllowed(applyUrl: string, opts: { ignoreRunGap?: boolean } = {}): Promise<{ allowed: boolean; reason?: string }> {

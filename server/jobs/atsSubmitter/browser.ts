@@ -5,13 +5,31 @@
  *  - Main-frame navigation allowlist: only within the apply route's site.
  *  - Humanized typing/delays (see core.ts parameters).
  *  - Generic form observation + fill that per-ATS adapters build on.
+ *
+ * IMPORTANT — writing code for page.evaluate()/addInitScript() in this file:
+ * this app runs under tsx (dev AND prod — see package.json), whose esbuild
+ * transform injects a call to an outer-scope `__name(fn, "name")` helper
+ * wherever it can attach a name to a function — a `const x = () => {}`, a
+ * nested `function x() {}` declaration, or an object-literal method/getter —
+ * even when nested inside another function. Playwright serializes an
+ * evaluate/addInitScript callback via .toString(), which captures that
+ * `__name(...)` call WITHOUT the outer scope that defines it, so it throws
+ * `ReferenceError: __name is not defined` INSIDE THE PAGE the first time such
+ * a nested named function runs — silently aborting the rest of the callback,
+ * not just that one statement. Only fully anonymous, unnamed functions escape
+ * this (an inline `.map(x => ...)`, or the top-level callback passed directly
+ * to evaluate/addInitScript itself). Inside any evaluate/addInitScript body:
+ * never write `const helper = () => {}` or a nested `function helper() {}` —
+ * inline the logic instead (this exact bug silently broke the stealth init
+ * script below; caught only by testing it against a real page, not by
+ * reasoning about the code — always verify anything new the same way).
  */
 import { execSync } from 'child_process';
 import fs from 'fs';
 import { chromium, type Browser, type BrowserContext, type Page, type Locator } from 'playwright-core';
 import {
   type ObservedField, isNavigationAllowed, jitterMs, TYPE_DELAY, FIELD_PAUSE,
-  CAPTCHA_SELECTORS,
+  CAPTCHA_SELECTORS, BOT_BLOCK_HTTP_STATUSES, looksLikeBotBlockText,
 } from './core.js';
 
 // ── Launcher ─────────────────────────────────────────────────────────────────
@@ -39,7 +57,64 @@ export interface HardenedSession {
   close: () => Promise<void>;
 }
 
-const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36';
+// A small pool of realistic desktop Chrome fingerprints, one picked per
+// session rather than a single fixed UA/viewport used on every run — an
+// unvarying fingerprint across every automated visit is itself a signal
+// enterprise bot-detection vendors (Akamai/PerimeterX/DataDome/Cloudflare)
+// key on, independent of anything else about the request.
+export const UA_POOL = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36',
+];
+export const VIEWPORT_POOL = [
+  { width: 1366, height: 900 },
+  { width: 1440, height: 900 },
+  { width: 1536, height: 864 },
+  { width: 1920, height: 1080 },
+];
+
+export function pickOne<T>(pool: T[]): T {
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+/**
+ * Patches the small set of well-known, low-risk automation tells that a
+ * stock Playwright/headless-Chromium page exposes by default:
+ *  - navigator.webdriver === true (the single most-checked automation flag)
+ *  - an empty navigator.plugins/mimeTypes list (real browsers always have some)
+ *  - navigator.languages not matching the context locale
+ *  - window.chrome missing entirely (present in every real Chrome browser)
+ *  - the permissions API leaking a headless-specific quirk for "notifications"
+ * This is deliberately narrow — not a full stealth-plugin reimplementation —
+ * covering the checks cheap enterprise bot-detection heuristics actually run,
+ * without pretending to defeat a determined fingerprinting stack.
+ *
+ * Passed to addInitScript as a STRING, not a function reference: this app
+ * runs under tsx (dev AND production — see package.json), whose esbuild
+ * transform rewrites arrow-function object properties to call an injected
+ * `__name(...)` helper that only exists in the outer module scope. Serializing
+ * a function via .toString() for the page loses that scope, so the helper
+ * call throws inside the page and silently aborts the whole init script,
+ * leaving navigator.webdriver unpatched. A plain string has no such artifact.
+ */
+const STEALTH_INIT_SCRIPT = `
+Object.defineProperty(navigator, 'webdriver', { get: function () { return undefined; } });
+Object.defineProperty(navigator, 'languages', { get: function () { return ['en-US', 'en']; } });
+Object.defineProperty(navigator, 'plugins', { get: function () { return [1, 2, 3, 4, 5]; } });
+if (!window.chrome) window.chrome = { runtime: {} };
+(function () {
+  var perms = window.navigator.permissions;
+  if (perms && perms.query) {
+    var originalQuery = perms.query.bind(perms);
+    perms.query = function (params) {
+      return (params && params.name === 'notifications')
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(params);
+    };
+  }
+})();
+`;
 
 export async function launchHardenedSession(applyUrl: string): Promise<HardenedSession> {
   const browser = await chromium.launch({
@@ -48,11 +123,12 @@ export async function launchHardenedSession(applyUrl: string): Promise<HardenedS
     args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
   });
   const context = await browser.newContext({
-    userAgent: UA,
-    viewport: { width: 1366, height: 900 },
+    userAgent: pickOne(UA_POOL),
+    viewport: pickOne(VIEWPORT_POOL),
     locale: 'en-US',
     acceptDownloads: false,
   });
+  await context.addInitScript(STEALTH_INIT_SCRIPT);
   context.setDefaultTimeout(20_000);
   context.setDefaultNavigationTimeout(45_000);
 
@@ -105,6 +181,28 @@ export async function visiblePageText(page: Page): Promise<string> {
   try {
     return (await page.evaluate(() => document.body?.innerText ?? '')).slice(0, 20000);
   } catch { return ''; }
+}
+
+/**
+ * Detects an enterprise anti-bot vendor block (Akamai/PerimeterX/DataDome/
+ * Cloudflare) that renders no interactive CAPTCHA widget — a plain
+ * "Access Denied" page or a 401/403/429 main-document response. Distinct
+ * from detectCaptcha(): there is nothing here for a human to solve via
+ * hand-off, so callers should record the block and degrade straight to
+ * needs_user with an accurate reason instead of offering a hand-off.
+ * `mainResponseStatus` is the main-frame navigation response status when the
+ * caller has one to hand (a fresh page.goto); omit it for a mid-flow check
+ * (e.g. mid-wizard) where only the page's current text is available.
+ */
+export async function detectBotBlock(page: Page, mainResponseStatus?: number | null): Promise<string | null> {
+  if (typeof mainResponseStatus === 'number' && BOT_BLOCK_HTTP_STATUSES.has(mainResponseStatus)) {
+    return `the page returned HTTP ${mainResponseStatus}, consistent with an automated-traffic block`;
+  }
+  const text = await visiblePageText(page);
+  if (looksLikeBotBlockText(text)) {
+    return 'the page text matches a known bot-detection block pattern (e.g. Akamai/PerimeterX/DataDome/Cloudflare)';
+  }
+  return null;
 }
 
 // ── Form observation ─────────────────────────────────────────────────────────
@@ -217,26 +315,107 @@ export async function observeFields(page: Page, formScope: string): Promise<DomF
 
       let kind = type;
       if (!['text', 'textarea', 'email', 'tel', 'url', 'select', 'radio', 'checkbox', 'file'].includes(kind)) kind = 'text';
+      if (el.tagName === 'SELECT' && (el as HTMLSelectElement).multiple) kind = 'multiselect';
 
       let options: string[] | undefined;
       if (el.tagName === 'SELECT') {
         options = Array.from((el as HTMLSelectElement).options).map((o) => o.label || o.text).filter((t) => t.trim());
       }
 
-      // Unique selector: prefer id, then name+index
+      // JS-driven combobox/typeahead: a plain text input wired to an ARIA
+      // listbox (role=combobox / aria-autocomplete, aria-controls/aria-owns
+      // pointing at the option list). Without this it's indistinguishable
+      // from a plain text field and gets typed into blind, with no attempt
+      // to open/select from the resulting option list.
+      let listboxSelector: string | undefined;
+      if (kind === 'text' && (input.getAttribute('role') === 'combobox' || input.getAttribute('aria-autocomplete'))) {
+        kind = 'combobox';
+        const listboxId = (input.getAttribute('aria-controls') || input.getAttribute('aria-owns') || '').split(/\s+/)[0];
+        if (listboxId) listboxSelector = `#${CSS.escape(listboxId)}`;
+      }
+
+      // Unique selector: prefer id, then name, then a stable per-element
+      // fallback marker. The marker is stable ACROSS repeated observeFields
+      // calls on the same live page (reused if already set, not reassigned
+      // from a fresh idx each time) — fillFieldsInScope re-scans mid-fill to
+      // catch conditionally-revealed fields, and an unstable idx-based
+      // selector would make an already-filled field look "new" (or a
+      // genuinely new field collide with an old selector) if the visible
+      // field count/order shifted between scans.
       let selector = '';
       if (id) selector = `#${CSS.escape(id)}`;
       else {
         const name = input.getAttribute('name');
         if (name) selector = `${el.tagName.toLowerCase()}[name="${CSS.escape(name)}"]`;
-        else { input.setAttribute('data-ats-idx', String(idx)); selector = `[data-ats-idx="${idx}"]`; }
+        else {
+          let marker = input.getAttribute('data-ats-idx');
+          if (marker === null) { marker = String(idx); input.setAttribute('data-ats-idx', marker); }
+          selector = `[data-ats-idx="${marker}"]`;
+        }
       }
       idx++;
 
-      out.push({ label, name: input.getAttribute('name') || id || '', kind, required, options, selector });
+      out.push({ label, name: input.getAttribute('name') || id || '', kind, required, options, selector, listboxSelector });
     }
+
+    // JS-driven drop-zone upload widgets (react-dropzone/Dropzone.js/
+    // FilePond/Uppy, etc.) render no native <input type=file> at all in some
+    // configurations — without this they are invisible to observeFields
+    // entirely (setInputFiles has nothing to target). Matched narrowly on the
+    // "dropzone" naming convention these libraries actually use, so this
+    // never fires on an unrelated draggable element.
+    const dropzoneCandidates = root.querySelectorAll('[class*="dropzone" i], [class*="drop-zone" i], [data-dropzone]');
+    for (const dz of Array.from(dropzoneCandidates)) {
+      if (dz.querySelector('input[type="file"]')) continue; // has a real input — already handled above
+      const dzStyle = window.getComputedStyle(dz as HTMLElement);
+      if (dzStyle.display === 'none' || dzStyle.visibility === 'hidden') continue;
+      const dzText = (dz as HTMLElement).innerText || '';
+      if (!/resume|\bcv\b|curriculum|upload|attach/i.test(dzText)) continue;
+      let dzSelector = '';
+      if ((dz as HTMLElement).id) dzSelector = `#${CSS.escape((dz as HTMLElement).id)}`;
+      else {
+        let marker = dz.getAttribute('data-ats-idx');
+        if (marker === null) { marker = String(idx); dz.setAttribute('data-ats-idx', marker); }
+        dzSelector = `[data-ats-idx="${marker}"]`;
+      }
+      idx++;
+      out.push({
+        label: dzText.replace(/\s+/g, ' ').trim().slice(0, 300) || 'Resume upload',
+        name: '', kind: 'file', required: true, selector: dzSelector, isDropzone: true,
+      });
+      break; // one resume drop-zone per form is the realistic case
+    }
+
     return out;
   }, formScope);
+}
+
+/**
+ * Simulates dropping a file onto a JS-driven drop-zone element (no native
+ * `<input type=file>` to target with setInputFiles). Constructs a real
+ * File/DataTransfer inside the page and dispatches dragenter/dragover/drop —
+ * the same event sequence a real browser fires for an actual OS-level drop.
+ */
+export async function dropFileOnElement(page: Page, selector: string, fileBuffer: Buffer, fileName: string, mimeType: string): Promise<boolean> {
+  const base64 = fileBuffer.toString('base64');
+  return page.evaluate(
+    ([sel, b64, name, type]) => {
+      const target = document.querySelector(sel);
+      if (!target) return false;
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const file = new File([bytes], name, { type });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      const opts = { bubbles: true, cancelable: true, dataTransfer: dt };
+      target.dispatchEvent(new DragEvent('dragenter', opts));
+      target.dispatchEvent(new DragEvent('dragover', opts));
+      target.dispatchEvent(new DragEvent('drop', opts));
+      return true;
+    },
+    [selector, base64, fileName, mimeType] as [string, string, string, string],
+  );
 }
 
 /** Pick the select/radio option whose label best matches the desired value. */

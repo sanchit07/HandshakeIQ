@@ -7,7 +7,8 @@ import assert from 'node:assert';
 import {
   canTransition, ALLOWED_TRANSITIONS, classifyAtsFromUrl, isValidHttpUrl,
   validateCountryAuth, buildPacketAnswers, findCountryAuth,
-  workAuthBlockReason, packetBlocksReview,
+  workAuthBlockReason, packetBlocksReview, pickApplicationContact,
+  type ContactCandidate,
 } from './applyService.js';
 import { buildMimeMessage, assertNoHeaderInjection } from './emailSender.js';
 
@@ -206,4 +207,47 @@ test('header injection via subject/recipient/filename is rejected', () => {
 test('non-ASCII subject is RFC 2047 encoded', () => {
   const mime = buildMimeMessage({ to: 'hr@acme.com', subject: 'Application — PM role', body: 'Hi' });
   assert.ok(mime.includes('=?UTF-8?B?'));
+});
+
+// ── Application contact selection ────────────────────────────────────────────
+
+const contact = (over: Partial<ContactCandidate>): ContactCandidate =>
+  ({ email: 'x@acme.com', emailStatus: 'not_found', evidenceStatus: 'ok', fullName: 'Someone', ...over });
+
+test('pickApplicationContact prefers a verified named contact over a posting-listed mailbox alias', () => {
+  const contacts = [
+    contact({ email: 'careers@acme.com', emailStatus: 'listed_in_posting', fullName: 'Application mailbox (careers@acme.com)' }),
+    contact({ email: 'jane@acme.com', emailStatus: 'verified', fullName: 'Jane Doe' }),
+  ];
+  const picked = pickApplicationContact(contacts);
+  assert.deepStrictEqual(picked, { email: 'jane@acme.com', status: 'verified', who: 'Jane Doe' });
+});
+
+test('pickApplicationContact falls back to the posting-listed mailbox when no named contact exists', () => {
+  const contacts = [contact({ email: 'careers@acme.com', emailStatus: 'listed_in_posting', fullName: 'Application mailbox (careers@acme.com)' })];
+  const picked = pickApplicationContact(contacts);
+  assert.deepStrictEqual(picked, { email: 'careers@acme.com', status: 'listed_in_posting', who: 'Application mailbox (careers@acme.com)' });
+});
+
+test('pickApplicationContact excludes a contact with stale evidence entirely', () => {
+  const contacts = [
+    contact({ email: 'jane@acme.com', emailStatus: 'verified', evidenceStatus: 'stale', fullName: 'Jane Doe' }),
+    contact({ email: 'careers@acme.com', emailStatus: 'listed_in_posting', evidenceStatus: 'stale', fullName: 'Application mailbox (careers@acme.com)' }),
+  ];
+  assert.strictEqual(pickApplicationContact(contacts), null, 'a stale verified contact must not fall through to being used anyway');
+});
+
+test('pickApplicationContact skips a stale verified contact in favor of a fresh listed mailbox', () => {
+  const contacts = [
+    contact({ email: 'jane@acme.com', emailStatus: 'verified', evidenceStatus: 'stale', fullName: 'Jane Doe' }),
+    contact({ email: 'careers@acme.com', emailStatus: 'listed_in_posting', evidenceStatus: 'ok', fullName: 'Application mailbox (careers@acme.com)' }),
+  ];
+  const picked = pickApplicationContact(contacts);
+  assert.deepStrictEqual(picked, { email: 'careers@acme.com', status: 'listed_in_posting', who: 'Application mailbox (careers@acme.com)' });
+});
+
+test('pickApplicationContact returns null when no eligible contact exists', () => {
+  assert.strictEqual(pickApplicationContact([]), null);
+  assert.strictEqual(pickApplicationContact([contact({ email: null, emailStatus: 'verified' })]), null);
+  assert.strictEqual(pickApplicationContact([contact({ emailStatus: 'not_found' })]), null);
 });
