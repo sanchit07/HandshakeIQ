@@ -10,6 +10,10 @@ import {
   looksLikeConfirmation, isNavigationAllowed, baseDomain, jitterMs,
   SUPPORTED_ATS, LOGIN_WALLED_ATS, computeAnswersHash, classifySubmitOutcome,
   guardrailKeyForUrl, looksLikeBotBlockText, looksLikeAlreadyApplied,
+  classifyExperienceRole, classifyEducationRole, groupEntryFields,
+  parseMonthIso, formatMonthYear, experienceRoleValue, educationRoleValue,
+  EXPERIENCE_SECTION_HEADING_RE, EDUCATION_SECTION_HEADING_RE,
+  ADD_ANOTHER_EXPERIENCE_RE, ADD_ANOTHER_EDUCATION_RE,
   type ObservedField, type CanonicalValues,
 } from './core.js';
 import { canTransition, ALLOWED_TRANSITIONS } from '../applyService.js';
@@ -95,6 +99,125 @@ test('required known field missing from vault blocks', () => {
   const noPhone = buildCanonicalValues({ ...profile, phone: null } as any, job);
   const r = resolveField(field({ label: 'Phone' }), noPhone);
   assert.ok(r.blockReason);
+});
+
+// ── GDPR / data-processing consent ───────────────────────────────────────────
+
+test('GDPR consent checkboxes classify as sensitive dataConsent, never as generic fields', () => {
+  assert.deepEqual(classifyField('I consent to the processing of my personal data'), { key: 'dataConsent', sensitive: true });
+  assert.deepEqual(classifyField('I have read and agree to the Privacy Policy and consent to data processing'), { key: 'dataConsent', sensitive: true });
+  assert.equal(classifyField('GDPR Declaration').key, 'dataConsent');
+});
+
+test('dataConsent auto-checks ONLY when the vault has explicitly opted in', () => {
+  const consented = buildCanonicalValues({ ...profile, dataConsent: true } as any, job);
+  const r = resolveField(field({ label: 'I consent to processing of my personal data', kind: 'checkbox' }), consented);
+  assert.equal(r.value, 'Yes');
+  assert.equal(r.blockReason, null);
+});
+
+test('dataConsent with no vault opt-in pauses a required checkbox and skips an optional one', () => {
+  const noConsent = buildCanonicalValues({ ...profile, dataConsent: false } as any, job);
+  const req = resolveField(field({ label: 'I consent to processing of my personal data', required: true }), noConsent);
+  assert.ok(req.blockReason, 'must pause — consent is never auto-checked without explicit opt-in');
+  assert.equal(req.value, null);
+  const opt = resolveField(field({ label: 'I consent to processing of my personal data', required: false }), noConsent);
+  assert.equal(opt.blockReason, null);
+  assert.equal(opt.value, null, 'left unchecked, never guessed true');
+});
+
+// ── Structured Work Experience / Education entry grouping ───────────────────
+
+test('classifyExperienceRole recognizes Workday-style field labels', () => {
+  assert.equal(classifyExperienceRole('Job Title'), 'jobTitle');
+  assert.equal(classifyExperienceRole('Company'), 'employer');
+  assert.equal(classifyExperienceRole('Location'), 'location');
+  assert.equal(classifyExperienceRole('Start Date'), 'startDate');
+  assert.equal(classifyExperienceRole('Start Date - Month'), 'startMonth');
+  assert.equal(classifyExperienceRole('Start Date - Year'), 'startYear');
+  assert.equal(classifyExperienceRole('End Date - Month'), 'endMonth');
+  assert.equal(classifyExperienceRole('I currently work here'), 'current');
+  assert.equal(classifyExperienceRole('Role Description'), 'description');
+  assert.equal(classifyExperienceRole('Something unrelated'), null);
+});
+
+test('classifyEducationRole recognizes school/degree field labels', () => {
+  assert.equal(classifyEducationRole('School or University'), 'school');
+  assert.equal(classifyEducationRole('Degree'), 'degree');
+  assert.equal(classifyEducationRole('Field of Study'), 'fieldOfStudy');
+  assert.equal(classifyEducationRole('End Date - Year'), 'endYear');
+  assert.equal(classifyEducationRole('Something unrelated'), null);
+});
+
+test('groupEntryFields assigns each field to the entry started by the most recent boundary field', () => {
+  const fields = [
+    { label: 'Job Title', selector: '#t1' },
+    { label: 'Company', selector: '#c1' },
+    { label: 'Start Date', selector: '#s1' },
+    { label: 'Job Title', selector: '#t2' },
+    { label: 'Company', selector: '#c2' },
+    { label: 'Unrelated question', selector: '#u' },
+  ];
+  const grouped = groupEntryFields(fields, classifyExperienceRole, 'jobTitle');
+  assert.deepEqual(grouped.map((g) => [g.selector, g.role, g.index]), [
+    ['#t1', 'jobTitle', 0], ['#c1', 'employer', 0], ['#s1', 'startDate', 0],
+    ['#t2', 'jobTitle', 1], ['#c2', 'employer', 1],
+  ]);
+});
+
+test('groupEntryFields drops fields that appear before the first boundary field', () => {
+  const fields = [{ label: 'Company', selector: '#orphan' }, { label: 'Job Title', selector: '#t1' }];
+  const grouped = groupEntryFields(fields, classifyExperienceRole, 'jobTitle');
+  assert.equal(grouped.length, 1);
+  assert.equal(grouped[0].selector, '#t1');
+});
+
+test('section heading and add-another patterns match common Workday phrasing', () => {
+  assert.ok(EXPERIENCE_SECTION_HEADING_RE.test('My Experience'));
+  assert.ok(EDUCATION_SECTION_HEADING_RE.test('Education'));
+  assert.ok(ADD_ANOTHER_EXPERIENCE_RE.test('Add Another Work Experience'));
+  assert.ok(ADD_ANOTHER_EDUCATION_RE.test('Add Education'));
+});
+
+test('parseMonthIso/formatMonthYear round-trip valid vault dates and reject junk', () => {
+  assert.deepEqual(parseMonthIso('2019-05'), { year: '2019', month: 5, monthName: 'May' });
+  assert.equal(parseMonthIso('not-a-date'), null);
+  assert.equal(parseMonthIso(undefined), null);
+  assert.equal(formatMonthYear('2019-05'), '05/2019');
+  assert.equal(formatMonthYear(undefined), '');
+});
+
+test('experienceRoleValue always sources from the vault entry, never leaves a guess', () => {
+  const entry = { jobTitle: 'Forensic Scientist', employer: 'Acme Labs', location: 'Boston, MA', startDate: '2019-05', endDate: '2022-08', description: 'Casework analysis' };
+  assert.equal(experienceRoleValue(entry, 'jobTitle'), 'Forensic Scientist');
+  assert.equal(experienceRoleValue(entry, 'location'), 'Boston, MA');
+  assert.equal(experienceRoleValue(entry, 'startMonth'), 'May');
+  assert.equal(experienceRoleValue(entry, 'startYear'), '2019');
+  assert.equal(experienceRoleValue(entry, 'endDate'), '08/2022');
+  assert.equal(experienceRoleValue(entry, 'description'), 'Casework analysis');
+});
+
+test('experienceRoleValue suppresses end-date roles and reports isCurrent when the entry is ongoing', () => {
+  const entry = { jobTitle: 'Engineer', employer: 'Acme', startDate: '2023-01', isCurrent: true };
+  assert.equal(experienceRoleValue(entry, 'endDate'), null);
+  assert.equal(experienceRoleValue(entry, 'endMonth'), null);
+  assert.equal(experienceRoleValue(entry, 'current'), 'Yes');
+});
+
+test('experienceRoleValue returns null (not a guess) for an optional sub-field the vault never captured', () => {
+  const entry = { jobTitle: 'Engineer', employer: 'Acme' };
+  assert.equal(experienceRoleValue(entry, 'location'), null);
+  assert.equal(experienceRoleValue(entry, 'description'), null);
+});
+
+test('educationRoleValue mirrors the same date/current handling for school entries', () => {
+  const entry = { school: 'MIT', degree: 'PhD', fieldOfStudy: 'Computer Science', startDate: '2013-09', endDate: '2017-06' };
+  assert.equal(educationRoleValue(entry, 'school'), 'MIT');
+  assert.equal(educationRoleValue(entry, 'degree'), 'PhD');
+  assert.equal(educationRoleValue(entry, 'endYear'), '2017');
+  const ongoing = { school: 'MIT', startDate: '2021-09', isCurrent: true };
+  assert.equal(educationRoleValue(ongoing, 'endDate'), null);
+  assert.equal(educationRoleValue(ongoing, 'current'), 'Yes');
 });
 
 // ── Error classification ─────────────────────────────────────────────────────

@@ -18,9 +18,10 @@ import { db } from '../../db';
 import {
   applications, applicationScreenshots, jobMatches,
   type Application, type JobMatch, type CandidateProfile,
+  type WorkHistoryEntry, type EducationEntry,
 } from '../../../shared/schema.js';
 import { eq, sql } from 'drizzle-orm';
-import type { Page } from 'playwright-core';
+import type { Page, Locator } from 'playwright-core';
 import {
   transitionApplication, getProfile, workAuthBlockReason,
   type AssistedPacket, type PacketAnswer,
@@ -31,6 +32,11 @@ import {
   looksLikeConfirmation, looksLikeAlreadyApplied, jitterMs, RETRY_ATTEMPTS, RETRY_JITTER,
   DAILY_ATS_SUBMIT_CAP, SUPPORTED_ATS, LOGIN_WALLED_ATS, computeAnswersHash,
   classifySubmitOutcome,
+  classifyExperienceRole, classifyEducationRole, groupEntryFields,
+  experienceRoleValue, educationRoleValue,
+  EXPERIENCE_SECTION_HEADING_RE, EDUCATION_SECTION_HEADING_RE,
+  ADD_ANOTHER_EXPERIENCE_RE, ADD_ANOTHER_EDUCATION_RE,
+  type ExperienceRole, type EducationRole, type GroupedEntryField,
 } from './core.js';
 import {
   launchHardenedSession, observeFields, resolveFormScope, humanType, humanPause, sleep,
@@ -200,6 +206,53 @@ async function clickNextButton(page: Page): Promise<boolean> {
   return false;
 }
 
+/** Bound on "Add Another" clicks when growing repeated Experience/Education entries to match the vault. */
+const MAX_ADD_ANOTHER_CLICKS = 12;
+
+/** Clicks the first visible button/link whose text matches `re`. */
+async function clickButtonMatching(page: Page, re: RegExp): Promise<boolean> {
+  try {
+    const buttons = page.locator('button:visible, a[role="button"]:visible, input[type="button"]:visible, input[type="submit"]:visible');
+    const n = await buttons.count();
+    for (let i = 0; i < n; i++) {
+      const el = buttons.nth(i);
+      const t = (await el.innerText().catch(() => '')).trim();
+      if (t && re.test(t)) {
+        await el.click();
+        await sleep(jitterMs(900, 1800));
+        await page.waitForLoadState('domcontentloaded').catch(() => {});
+        return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
+/**
+ * Grows a repeated Experience/Education section by clicking its "Add
+ * Another" control until the number of boundary fields (Job Title / School)
+ * matches `wantCount` — the vault's own entry count — or the button stops
+ * producing new entries. Returns the freshly observed field list either way.
+ * Exported for the login-walled wizard flow (Workday etc.), which shares this
+ * fill engine but drives its own per-page navigation loop.
+ */
+export async function ensureEntryCount(
+  page: Page, formSelector: string,
+  classify: (label: string) => string | null, boundaryRole: string,
+  addAnotherRe: RegExp, wantCount: number,
+): Promise<DomField[]> {
+  let fields = await observeFields(page, formSelector);
+  let have = fields.filter((f) => classify(f.label) === boundaryRole).length;
+  for (let attempts = 0; have < wantCount && attempts < MAX_ADD_ANOTHER_CLICKS; attempts++) {
+    if (!(await clickButtonMatching(page, addAnotherRe))) break;
+    fields = await observeFields(page, formSelector);
+    const newHave = fields.filter((f) => classify(f.label) === boundaryRole).length;
+    if (newHave <= have) break; // clicking stopped producing new entries — avoid spinning forever
+    have = newHave;
+  }
+  return fields;
+}
+
 /** Exported for integration tests (decoy-form PII-scoping fixtures). */
 export async function fillForm(page: Page, app: Application, job: JobMatch, profile: CandidateProfile): Promise<FillOutcome> {
   const adapter = getAdapter(app.atsType);
@@ -232,11 +285,23 @@ export async function fillForm(page: Page, app: Application, job: JobMatch, prof
       if (special) return { ...special, answers: allAnswers, page };
       return { status: 'needs_user', reason: 'No fillable application form was found on the page — the posting may use an unsupported flow. Apply manually via the apply link.', answers: allAnswers, page };
     }
-    const fields = await observeFields(page, formSelector);
+    let fields = await observeFields(page, formSelector);
     if (fields.length === 0) {
       const special = await detectAmbiguousBlankForm(page, mainResponse?.status() ?? null);
       if (special) return { ...special, answers: allAnswers, page };
       return { status: 'needs_user', reason: 'No fillable application form was found on the page — the posting may use an unsupported flow. Apply manually via the apply link.', answers: allAnswers, page };
+    }
+
+    // A native "Work Experience"/"Education" repeating section renders one
+    // fewer (or more) entry block than the vault has records for until its own
+    // "Add Another" control is clicked — grow it to match before filling, so
+    // every vaulted entry actually has a field to land in.
+    const pageText = await visiblePageText(page);
+    if (EXPERIENCE_SECTION_HEADING_RE.test(pageText) && (profile.workHistory?.length ?? 0) > 0) {
+      fields = await ensureEntryCount(page, formSelector, classifyExperienceRole, 'jobTitle', ADD_ANOTHER_EXPERIENCE_RE, profile.workHistory!.length);
+    }
+    if (EDUCATION_SECTION_HEADING_RE.test(pageText) && (profile.education?.length ?? 0) > 0) {
+      fields = await ensureEntryCount(page, formSelector, classifyEducationRole, 'school', ADD_ANOTHER_EDUCATION_RE, profile.education!.length);
     }
 
     const res = await fillFieldsInScope(page, formSelector, fields, app, job, profile);
@@ -294,6 +359,72 @@ export async function fillForm(page: Page, app: Application, job: JobMatch, prof
  */
 const MAX_FILL_PASSES = 3;
 
+/**
+ * Fills one field belonging to a repeated Work Experience/Education entry
+ * from the vault's structured data — ALWAYS overwriting whatever the ATS's
+ * own resume-parser may have pre-filled (per the same principle that already
+ * applies to name/email/phone). If the form renders more entries than the
+ * vault has records for, a required field in the unmatched entry pauses
+ * rather than being left with unverified auto-parsed content.
+ */
+async function fillStructuredEntryField(
+  page: Page, form: Locator, field: DomField,
+  section: 'experience' | 'education', index: number, role: ExperienceRole | EducationRole,
+  profile: CandidateProfile, answers: PacketAnswer[],
+): Promise<{ blockReason: string } | null> {
+  const entry = section === 'experience' ? profile.workHistory?.[index] : profile.education?.[index];
+  const entryLabel = section === 'experience' ? `Work Experience #${index + 1}` : `Education #${index + 1}`;
+  if (!entry) {
+    if (field.required) {
+      return { blockReason: `This form has more ${section === 'experience' ? 'Work Experience' : 'Education'} entries than your Profile Vault — ${entryLabel} has no matching record, so its required "${field.label}" can't be verified. Add it to your Profile Vault, or remove the extra entry in the form, then retry.` };
+    }
+    return null; // nothing to verify against — leave whatever's there untouched
+  }
+
+  const value = section === 'experience'
+    ? experienceRoleValue(entry as WorkHistoryEntry, role as ExperienceRole)
+    : educationRoleValue(entry as EducationEntry, role as EducationRole);
+  const loc = form.locator(field.selector).first();
+  const fieldLabel = `${entryLabel} — ${field.label || role}`;
+
+  if (role === 'current') {
+    await loc.setChecked(value === 'Yes', { force: true }).catch(() => {});
+    answers.push({ label: fieldLabel, value: value === 'Yes' ? 'Yes' : 'No', source: 'vault' });
+    await humanPause();
+    return null;
+  }
+
+  if (field.kind === 'select' || field.kind === 'multiselect') {
+    if (value === null) return null; // no vault value for this sub-field — a native select can't be safely cleared
+    const opt = bestOption(field.options ?? [], value);
+    if (!opt) {
+      if (field.required) {
+        return { blockReason: `${entryLabel}'s "${field.label}" options don't match your saved value ("${value}"). Answer this one manually via the apply link, or adjust your Profile Vault wording.` };
+      }
+      return null;
+    }
+    await loc.selectOption({ label: opt });
+    answers.push({ label: fieldLabel, value: opt, source: 'vault' });
+    await humanPause();
+    return null;
+  }
+
+  // text / textarea / combobox: always (re)type the vault value, clearing
+  // whatever the ATS pre-filled — humanType() clears the field before typing,
+  // so an empty/absent vault sub-field correctly blanks it rather than
+  // leaving unverified auto-parsed content in place.
+  await humanType(loc, value ?? '');
+  if (field.kind === 'combobox' && field.listboxSelector && value) {
+    const optionLocs = page.locator(field.listboxSelector).locator('[role="option"], li, [role="listitem"]');
+    const texts = await optionLocs.allInnerTexts().catch(() => [] as string[]);
+    const best = bestOption(texts, value);
+    if (best) await optionLocs.nth(texts.indexOf(best)).click({ force: true }).catch(() => {});
+  }
+  if (value) answers.push({ label: fieldLabel, value, source: 'vault' });
+  await humanPause();
+  return null;
+}
+
 export async function fillFieldsInScope(
   page: Page, formSelector: string, fields: DomField[],
   app: Application, job: JobMatch, profile: CandidateProfile,
@@ -305,11 +436,38 @@ export async function fillFieldsInScope(
   const processedSelectors = new Set<string>();
   const form = page.locator(formSelector);
 
+  // Repeated Work Experience / Education entries (see core.ts's grouping
+  // note): grouped ONCE from the initial field snapshot, so their fields
+  // never reach the generic classifyField/resolveField path below — that
+  // path has no notion of "this Location belongs to job #2", and would
+  // otherwise wrongly overwrite it with the CANDIDATE's own current location.
+  // Gated on the page's own section heading — a plain screening question
+  // like "What position are you applying for?" must never be mistaken for a
+  // Work Experience entry just because it contains the word "Position".
+  const scopePageText = await visiblePageText(page);
+  const expBySelector = EXPERIENCE_SECTION_HEADING_RE.test(scopePageText)
+    ? new Map(groupEntryFields(fields, classifyExperienceRole, 'jobTitle').map((g) => [g.selector, g] as const))
+    : new Map<string, GroupedEntryField<ExperienceRole>>();
+  const eduBySelector = EDUCATION_SECTION_HEADING_RE.test(scopePageText)
+    ? new Map(groupEntryFields(fields, classifyEducationRole, 'school').map((g) => [g.selector, g] as const))
+    : new Map<string, GroupedEntryField<EducationRole>>();
+
   try {
     let queue = fields;
     for (let pass = 0; pass < MAX_FILL_PASSES && queue.length > 0; pass++) {
     for (const field of queue) {
       processedSelectors.add(field.selector);
+
+      const expGroup = expBySelector.get(field.selector);
+      const eduGroup = eduBySelector.get(field.selector);
+      if (expGroup || eduGroup) {
+        const outcome = expGroup
+          ? await fillStructuredEntryField(page, form, field, 'experience', expGroup.index, expGroup.role, profile, answers)
+          : await fillStructuredEntryField(page, form, field, 'education', eduGroup!.index, eduGroup!.role, profile, answers);
+        if (outcome?.blockReason) return { status: 'needs_user', reason: outcome.blockReason, answers };
+        continue;
+      }
+
       // Radio groups: handle once per name
       if (field.kind === 'radio') {
         if (radioGroups.has(field.name)) continue;

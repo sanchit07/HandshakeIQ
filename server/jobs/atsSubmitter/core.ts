@@ -7,7 +7,7 @@
  *    answer pauses the application (needs_user) — never guessed, never skipped.
  *  - Unknown required fields also pause — the engine never invents answers.
  */
-import type { CandidateProfile, CountryAuthRecord, JobMatch } from '../../../shared/schema.js';
+import type { CandidateProfile, CountryAuthRecord, JobMatch, WorkHistoryEntry, EducationEntry } from '../../../shared/schema.js';
 import { findCountryAuth } from '../applyService.js';
 
 // ── Field model ──────────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ export interface ObservedField {
 export type CanonicalKey =
   | 'fullName' | 'firstName' | 'lastName' | 'email' | 'phone' | 'location'
   | 'linkedin' | 'github' | 'portfolio' | 'noticePeriod' | 'resume' | 'coverLetter'
-  | 'salary' | 'relocation' | 'rightToWork' | 'sponsorship' | 'eeo';
+  | 'salary' | 'relocation' | 'rightToWork' | 'sponsorship' | 'eeo' | 'dataConsent';
 
 export interface FieldClassification {
   key: CanonicalKey | null;
@@ -51,6 +51,11 @@ const SENSITIVE_PATTERNS: Array<[RegExp, CanonicalKey]> = [
   [/sponsor|sponsorship/i, 'sponsorship'],
   [/right to work|work (?:authori[sz]ation|permit)|legally (?:authori[sz]ed|entitled|allowed) to work|authori[sz]ed to work|eligib\w* to work|visa status|require.*visa|work visa/i, 'rightToWork'],
   [/gender|race|ethnicit|hispanic|latin|veteran|disabilit|sexual orientation|lgbtq|pronouns|transgender|religio|demographic|equal employment|\beeo\b|diversity survey/i, 'eeo'],
+  // GDPR/data-processing consent (near-universal on EU/Swiss/UK career sites):
+  // a legally consequential yes/no the engine must never guess. Gated on the
+  // profile's explicit dataConsent opt-in (see buildCanonicalValues) — this
+  // pattern only decides WHICH field is asking, not the answer.
+  [/consent.{0,40}(?:process|personal data|privacy)|(?:process|personal data).{0,40}consent|privacy policy.{0,30}(?:agree|accept|consent)|gdpr|data protection (?:notice|policy).{0,30}(?:agree|accept|consent)/i, 'dataConsent'],
 ];
 
 const NON_SENSITIVE_PATTERNS: Array<[RegExp, CanonicalKey]> = [
@@ -110,6 +115,7 @@ export function buildCanonicalValues(profile: CandidateProfile, job: JobMatch): 
     relocation: auth?.relocationWilling === undefined ? undefined : (auth.relocationWilling ? 'Yes' : 'No'),
     rightToWork: auth ? auth.rightToWork.replace(/_/g, ' ') : undefined,
     sponsorship: auth ? (auth.needsSponsorship ? 'Yes' : 'No') : undefined,
+    dataConsent: profile.dataConsent ? 'Yes' : undefined,
   };
   return {
     values,
@@ -171,6 +177,11 @@ export function resolveField(field: ObservedField, canon: CanonicalValues): Fiel
       // no vault answer must pause — "prefer not to say" is a user choice.
       return skipOrPause(`Required demographic question "${field.label}" has no answer in your Profile Vault. Add it (e.g. "Prefer not to say"), then retry — these answers are never guessed.`);
     }
+    if (cls.key === 'dataConsent') {
+      const v = canon.values.dataConsent;
+      if (v) return { value: v, source: 'vault', blockReason: null };
+      return skipOrPause(`This form's data-processing/privacy consent ("${field.label}") requires your explicit approval. Enable "Data processing consent" in the Profile Vault, then retry — this is never auto-checked without it.`);
+    }
     const v = cls.key ? canon.values[cls.key] : undefined;
     if (v) return { value: v, source: 'vault', blockReason: null };
     return pause(`Sensitive question "${field.label}" has no matching Profile Vault answer for this country. Add your work-authorization record, then retry — visa/sponsorship answers are never guessed.`);
@@ -190,6 +201,164 @@ export function resolveField(field: ObservedField, canon: CanonicalValues): Fiel
   const screen = matchScreeningAnswer(field.label, canon.screeningAnswers);
   if (screen) return { value: screen, source: 'vault', blockReason: null };
   return skipOrPause(`The form asks "${field.label}" and there is no saved answer for it. Add it under Screening Answers in the Profile Vault, then retry — the engine never invents answers.`);
+}
+
+// ── Structured Work Experience / Education entry sections ───────────────────
+//
+// A Workday-style "My Experience" page renders a REPEATING fieldset per past
+// job (Job Title, Company, Location, Start/End Date, Description) — often
+// PRE-FILLED by the ATS's own resume parser, which is frequently wrong (a
+// title paired with the wrong description, garbled dates, entries merged).
+// classifyField()/resolveField() above only knows single scalar canonical
+// fields; a bare "Location" label inside one of these entries would wrongly
+// match the candidate's OWN location pattern and overwrite it with the wrong
+// value. These fields must never reach the generic per-field path — instead
+// they are grouped into per-entry indices here and filled from the vault's
+// structured workHistory/education (verified once by the user), which always
+// overwrites the ATS's own parse. Detection is gated on the page's visible
+// section heading so an unrelated "Job Title" screening question elsewhere on
+// the form is never mistaken for an experience entry.
+
+export const EXPERIENCE_SECTION_HEADING_RE = /\bwork experience\b|\bemployment history\b|\bmy experience\b/i;
+export const EDUCATION_SECTION_HEADING_RE = /\beducation\b/i;
+
+/** "Add another" controls that create one more repeated entry block. */
+export const ADD_ANOTHER_EXPERIENCE_RE = /add (?:another\s+)?(?:work experience|position|job|employer)/i;
+export const ADD_ANOTHER_EDUCATION_RE = /add (?:another\s+)?(?:education|school)/i;
+
+export type ExperienceRole =
+  | 'jobTitle' | 'employer' | 'location'
+  | 'startMonth' | 'startYear' | 'startDay' | 'startDate'
+  | 'endMonth' | 'endYear' | 'endDay' | 'endDate'
+  | 'current' | 'description';
+
+export type EducationRole =
+  | 'school' | 'degree' | 'fieldOfStudy'
+  | 'startMonth' | 'startYear' | 'startDay' | 'startDate'
+  | 'endMonth' | 'endYear' | 'endDay' | 'endDate'
+  | 'current' | 'description';
+
+/** Sub-role for a Start/End date that may be split across Month/Year/Day fields. */
+function dateSubRole<R extends string>(label: string, kind: 'start' | 'end', startRole: R, endRole: R,
+  monthRole: R, yearRole: R, dayRole: R): R | null {
+  const re = kind === 'start' ? /\bstart\b/i : /\bend\b/i;
+  if (!re.test(label)) return null;
+  if (/\bmonth\b/i.test(label)) return monthRole;
+  if (/\byear\b/i.test(label)) return yearRole;
+  if (/\bday\b/i.test(label)) return dayRole;
+  return kind === 'start' ? startRole : endRole;
+}
+
+/** Classify one field label as a role within a Work Experience entry, or null if unrelated. */
+export function classifyExperienceRole(label: string): ExperienceRole | null {
+  if (/\bjob title\b|\bposition(?:\s*title)?\b|\btitle\b/i.test(label)) return 'jobTitle';
+  if (/\bcompany(?:\s*name)?\b|\bemployer\b|\borgani[sz]ation\b/i.test(label)) return 'employer';
+  if (/\blocation\b|\bcity\b/i.test(label)) return 'location';
+  if (/currently work here|current(?:ly)?\s*(?:position|role|job)|still work(?:ing)? here|\bpresent\b/i.test(label)) return 'current';
+  if (/\bdescription\b|responsibilit/i.test(label)) return 'description';
+  return dateSubRole(label, 'start', 'startDate', 'endDate', 'startMonth', 'startYear', 'startDay')
+    ?? dateSubRole(label, 'end', 'startDate', 'endDate', 'endMonth', 'endYear', 'endDay');
+}
+
+/** Classify one field label as a role within an Education entry, or null if unrelated. */
+export function classifyEducationRole(label: string): EducationRole | null {
+  if (/\bschool\b|\buniversity\b|\bcollege\b|\binstitution(?:\s*name)?\b/i.test(label)) return 'school';
+  if (/\bdegree\b/i.test(label)) return 'degree';
+  if (/field of study|\bmajor\b|\bdiscipline\b/i.test(label)) return 'fieldOfStudy';
+  if (/currently (?:attend|enrolled)|still (?:studying|enrolled)|\bpresent\b/i.test(label)) return 'current';
+  if (/\bdescription\b/i.test(label)) return 'description';
+  return dateSubRole(label, 'start', 'startDate', 'endDate', 'startMonth', 'startYear', 'startDay')
+    ?? dateSubRole(label, 'end', 'startDate', 'endDate', 'endMonth', 'endYear', 'endDay');
+}
+
+export interface GroupedEntryField<R extends string> {
+  selector: string;
+  role: R;
+  /** 0-based position of the repeated entry this field belongs to. */
+  index: number;
+}
+
+/**
+ * Groups a flat, DOM-order field list into per-entry roles: a new entry
+ * starts each time `boundaryRole` (Job Title / School) is seen. Fields
+ * appearing before the first boundary field belong to no entry and are
+ * omitted — they fall through to the generic field path unchanged.
+ */
+export function groupEntryFields<R extends string>(
+  fields: { label: string; selector: string }[],
+  classify: (label: string) => R | null,
+  boundaryRole: R,
+): GroupedEntryField<R>[] {
+  const out: GroupedEntryField<R>[] = [];
+  let index = -1;
+  for (const f of fields) {
+    const role = classify(f.label);
+    if (!role) continue;
+    if (role === boundaryRole) index++;
+    if (index < 0) continue;
+    out.push({ selector: f.selector, role, index });
+  }
+  return out;
+}
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+/** Parses a "YYYY-MM" vault date into its numeric parts, or null if invalid/absent. */
+export function parseMonthIso(iso: string | undefined | null): { year: string; month: number; monthName: string } | null {
+  if (!iso) return null;
+  const m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(iso.trim());
+  if (!m) return null;
+  const month = Number(m[2]);
+  return { year: m[1], month, monthName: MONTH_NAMES[month - 1] };
+}
+
+/** "YYYY-MM" → "MM/YYYY" for a plain combined date text field; '' if invalid. */
+export function formatMonthYear(iso: string | undefined | null): string {
+  const p = parseMonthIso(iso);
+  return p ? `${String(p.month).padStart(2, '0')}/${p.year}` : '';
+}
+
+/** Shared start/end date-role resolution; returns undefined (not null) when `role` isn't a date role at all. */
+function dateRoleValue(role: string, startDate: string | undefined, endDate: string | undefined, isCurrent: boolean | undefined): string | null | undefined {
+  switch (role) {
+    case 'startDate': return formatMonthYear(startDate) || null;
+    case 'startMonth': return parseMonthIso(startDate)?.monthName ?? null;
+    case 'startYear': return parseMonthIso(startDate)?.year ?? null;
+    case 'startDay': return startDate ? '1' : null;
+    case 'endDate': return isCurrent ? null : (formatMonthYear(endDate) || null);
+    case 'endMonth': return isCurrent ? null : (parseMonthIso(endDate)?.monthName ?? null);
+    case 'endYear': return isCurrent ? null : (parseMonthIso(endDate)?.year ?? null);
+    case 'endDay': return (!isCurrent && endDate) ? '1' : null;
+    default: return undefined;
+  }
+}
+
+/** Value to fill for one role within one Work Experience entry, or null to leave the field untouched. */
+export function experienceRoleValue(entry: WorkHistoryEntry, role: ExperienceRole): string | null {
+  const dateVal = dateRoleValue(role, entry.startDate, entry.endDate, entry.isCurrent);
+  if (dateVal !== undefined) return dateVal;
+  switch (role) {
+    case 'jobTitle': return entry.jobTitle || null;
+    case 'employer': return entry.employer || null;
+    case 'location': return entry.location || null;
+    case 'description': return entry.description || null;
+    case 'current': return entry.isCurrent ? 'Yes' : null;
+    default: return null;
+  }
+}
+
+/** Value to fill for one role within one Education entry, or null to leave the field untouched. */
+export function educationRoleValue(entry: EducationEntry, role: EducationRole): string | null {
+  const dateVal = dateRoleValue(role, entry.startDate, entry.endDate, entry.isCurrent);
+  if (dateVal !== undefined) return dateVal;
+  switch (role) {
+    case 'school': return entry.school || null;
+    case 'degree': return entry.degree || null;
+    case 'fieldOfStudy': return entry.fieldOfStudy || null;
+    case 'description': return entry.description || null;
+    case 'current': return entry.isCurrent ? 'Yes' : null;
+    default: return null;
+  }
 }
 
 // ── Error classification ─────────────────────────────────────────────────────

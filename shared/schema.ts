@@ -197,6 +197,21 @@ export const candidateProfile = pgTable("candidate_profile", {
   eeoAnswers: jsonb("eeo_answers").$type<Record<string, string>>().default({}),
   // Standard screening Q&A: [{ question, answer }]
   screeningAnswers: jsonb("screening_answers").$type<{ question: string; answer: string }[]>().default([]),
+  // Structured work-history entries — the source of truth for an ATS's native
+  // "Work Experience" form section. Dates are "YYYY-MM" strings (month
+  // precision only). This exists so the engine can OVERWRITE whatever an ATS's
+  // own resume-parser auto-fills into these fields (which is frequently wrong —
+  // e.g. a job title paired with the wrong description, or garbled dates) with
+  // the candidate-verified data entered here, instead of trusting the parse.
+  workHistory: jsonb("work_history").$type<WorkHistoryEntry[]>().default([]),
+  // Structured education entries — same rationale as workHistory, for the
+  // ATS's native "Education" section.
+  education: jsonb("education").$type<EducationEntry[]>().default([]),
+  // Explicit, user-set opt-in: only when true may the engine auto-check a
+  // recognized GDPR/data-processing-consent checkbox on an application form.
+  // Defaults to false/unset — such a checkbox is never guessed or auto-checked
+  // without this explicit flag, and a REQUIRED one still pauses for review.
+  dataConsent: boolean("data_consent").default(false),
   // Per-channel submit mode: { email: 'review'|'auto' } — default review-before-submit
   channelModes: jsonb("channel_modes").$type<Record<string, 'review' | 'auto'>>().default({}),
   seededFromResume: boolean("seeded_from_resume").default(false),
@@ -212,6 +227,30 @@ export interface CountryAuthRecord {
   salaryExpectation?: string;
   relocationWilling?: boolean;
   notes?: string;
+}
+
+export interface WorkHistoryEntry {
+  jobTitle: string;
+  employer: string;
+  location?: string;
+  /** "YYYY-MM" */
+  startDate?: string;
+  /** "YYYY-MM"; ignored when isCurrent is true */
+  endDate?: string;
+  isCurrent?: boolean;
+  description?: string;
+}
+
+export interface EducationEntry {
+  school: string;
+  degree?: string;
+  fieldOfStudy?: string;
+  /** "YYYY-MM" */
+  startDate?: string;
+  /** "YYYY-MM"; ignored when isCurrent is true */
+  endDate?: string;
+  isCurrent?: boolean;
+  description?: string;
 }
 
 export type CandidateProfile = typeof candidateProfile.$inferSelect;

@@ -17,6 +17,7 @@ import { db } from '../db';
 import {
   applications, candidateProfile, jobMatches, jobContacts,
   type Application, type CandidateProfile, type CountryAuthRecord, type JobMatch,
+  type WorkHistoryEntry, type EducationEntry,
 } from '../../shared/schema.js';
 import { eq, desc, inArray, sql } from 'drizzle-orm';
 import { probeUrlLive } from './jobMatchService.js';
@@ -180,6 +181,40 @@ export function validateCountryAuth(records: unknown): CountryAuthRecord[] {
     }));
 }
 
+const MONTH_ISO_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+const cleanMonthIso = (v: unknown): string | undefined =>
+  typeof v === 'string' && MONTH_ISO_RE.test(v.trim()) ? v.trim() : undefined;
+
+export function validateWorkHistory(records: unknown): WorkHistoryEntry[] {
+  if (!Array.isArray(records)) return [];
+  return records
+    .filter((r: any) => r && typeof r.jobTitle === 'string' && r.jobTitle.trim() && typeof r.employer === 'string' && r.employer.trim())
+    .map((r: any) => ({
+      jobTitle: String(r.jobTitle).trim().slice(0, 200),
+      employer: String(r.employer).trim().slice(0, 200),
+      location: r.location ? String(r.location).trim().slice(0, 200) : undefined,
+      startDate: cleanMonthIso(r.startDate),
+      endDate: r.isCurrent ? undefined : cleanMonthIso(r.endDate),
+      isCurrent: typeof r.isCurrent === 'boolean' ? r.isCurrent : undefined,
+      description: r.description ? String(r.description).slice(0, 4000) : undefined,
+    }));
+}
+
+export function validateEducation(records: unknown): EducationEntry[] {
+  if (!Array.isArray(records)) return [];
+  return records
+    .filter((r: any) => r && typeof r.school === 'string' && r.school.trim())
+    .map((r: any) => ({
+      school: String(r.school).trim().slice(0, 200),
+      degree: r.degree ? String(r.degree).trim().slice(0, 200) : undefined,
+      fieldOfStudy: r.fieldOfStudy ? String(r.fieldOfStudy).trim().slice(0, 200) : undefined,
+      startDate: cleanMonthIso(r.startDate),
+      endDate: r.isCurrent ? undefined : cleanMonthIso(r.endDate),
+      isCurrent: typeof r.isCurrent === 'boolean' ? r.isCurrent : undefined,
+      description: r.description ? String(r.description).slice(0, 4000) : undefined,
+    }));
+}
+
 export async function saveProfile(input: Partial<typeof candidateProfile.$inferInsert>): Promise<CandidateProfile> {
   const clean: Partial<typeof candidateProfile.$inferInsert> = {
     fullName: input.fullName?.toString().slice(0, 200),
@@ -200,6 +235,9 @@ export async function saveProfile(input: Partial<typeof candidateProfile.$inferI
           .filter((s) => s && typeof s.question === 'string' && typeof s.answer === 'string')
           .map((s) => ({ question: s.question.slice(0, 500), answer: s.answer.slice(0, 2000) }))
       : [],
+    workHistory: validateWorkHistory(input.workHistory),
+    education: validateEducation(input.education),
+    dataConsent: input.dataConsent === true,
     channelModes: (input.channelModes && typeof input.channelModes === 'object')
       ? Object.fromEntries(Object.entries(input.channelModes as Record<string, string>)
           .filter(([, v]) => v === 'review' || v === 'auto')) as Record<string, 'review' | 'auto'>

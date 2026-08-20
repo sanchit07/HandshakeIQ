@@ -23,9 +23,14 @@ import { transitionApplication, type AssistedPacket, type PacketAnswer } from '.
 import {
   launchHardenedSession, detectCaptcha, detectBotBlock, visiblePageText, resolveFormScope, observeFields, sleep, humanType, type HardenedSession,
 } from './browser.js';
-import { computeAnswersHash, jitterMs, DAILY_ATS_SUBMIT_CAP, looksLikeConfirmation, looksLikeAlreadyApplied, classifySubmitOutcome } from './core.js';
 import {
-  enqueueBrowserRun, countTodaysAtsSubmissions, saveScreenshot, fillFieldsInScope,
+  computeAnswersHash, jitterMs, DAILY_ATS_SUBMIT_CAP, looksLikeConfirmation, looksLikeAlreadyApplied, classifySubmitOutcome,
+  classifyExperienceRole, classifyEducationRole,
+  EXPERIENCE_SECTION_HEADING_RE, EDUCATION_SECTION_HEADING_RE,
+  ADD_ANOTHER_EXPERIENCE_RE, ADD_ANOTHER_EDUCATION_RE,
+} from './core.js';
+import {
+  enqueueBrowserRun, countTodaysAtsSubmissions, saveScreenshot, fillFieldsInScope, ensureEntryCount,
 } from './index.js';
 import { classifyAuthPage, extractVerificationLink, extractVerificationCode, isSafeVerificationLink, isAutoCheckableConsent, type PageSignals } from './loginPages.js';
 import { getCredentialByDomain, saveCredential, markCredentialStatus, generateStrongPassword } from './credentialVault.js';
@@ -439,7 +444,23 @@ async function ensureAuthenticated(ctx: FlowCtx, page: Page): Promise<'ok' | App
 /** Advance the wizard by one page: fill visible fields, then click next. */
 async function fillWizardPage(ctx: FlowCtx, page: Page): Promise<'advanced' | 'review' | Application> {
   const scope = (await resolveFormScope(page, 'form, [role="main"], main')) ?? 'body';
-  const fields = await observeFields(page, scope);
+  let fields = await observeFields(page, scope);
+
+  // Workday's own "My Experience"/"Education" pages render one entry block
+  // per record already on file (often auto-parsed from the uploaded resume,
+  // and frequently wrong — see fillFieldsInScope's overwrite behavior below)
+  // — grow the section to match the vault's own entry count via its "Add
+  // Another" control before filling, so every vaulted job/degree has a block.
+  if (fields.length > 0) {
+    const pageText = await visiblePageText(page);
+    if (EXPERIENCE_SECTION_HEADING_RE.test(pageText) && (ctx.profile.workHistory?.length ?? 0) > 0) {
+      fields = await ensureEntryCount(page, scope, classifyExperienceRole, 'jobTitle', ADD_ANOTHER_EXPERIENCE_RE, ctx.profile.workHistory!.length);
+    }
+    if (EDUCATION_SECTION_HEADING_RE.test(pageText) && (ctx.profile.education?.length ?? 0) > 0) {
+      fields = await ensureEntryCount(page, scope, classifyEducationRole, 'school', ADD_ANOTHER_EDUCATION_RE, ctx.profile.education!.length);
+    }
+  }
+
   if (fields.length > 0) {
     const res = await fillFieldsInScope(page, scope, fields, ctx.app, ctx.job, ctx.profile);
     ctx.answers.push(...res.answers);

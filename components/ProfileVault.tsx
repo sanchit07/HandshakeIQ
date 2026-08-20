@@ -13,6 +13,26 @@ interface CountryAuthRecord {
 
 interface ScreeningAnswer { question: string; answer: string }
 
+interface WorkHistoryEntry {
+    jobTitle: string;
+    employer: string;
+    location?: string;
+    startDate?: string; // "YYYY-MM"
+    endDate?: string; // "YYYY-MM"
+    isCurrent?: boolean;
+    description?: string;
+}
+
+interface EducationEntry {
+    school: string;
+    degree?: string;
+    fieldOfStudy?: string;
+    startDate?: string; // "YYYY-MM"
+    endDate?: string; // "YYYY-MM"
+    isCurrent?: boolean;
+    description?: string;
+}
+
 interface Profile {
     id?: string;
     fullName: string | null;
@@ -29,6 +49,9 @@ interface Profile {
     countryAuth: CountryAuthRecord[] | null;
     eeoAnswers: Record<string, string> | null;
     screeningAnswers: ScreeningAnswer[] | null;
+    workHistory: WorkHistoryEntry[] | null;
+    education: EducationEntry[] | null;
+    dataConsent?: boolean | null;
     channelModes: Record<string, 'review' | 'auto'> | null;
     seededFromResume?: boolean;
     confirmedAt?: string | null;
@@ -37,7 +60,8 @@ interface Profile {
 const EMPTY: Profile = {
     fullName: '', email: '', phone: '', addressLine: '', city: '', country: '',
     linkedinUrl: '', githubUrl: '', portfolioUrl: '', noticePeriod: '', languages: '',
-    countryAuth: [], eeoAnswers: {}, screeningAnswers: [], channelModes: {},
+    countryAuth: [], eeoAnswers: {}, screeningAnswers: [], workHistory: [], education: [],
+    dataConsent: false, channelModes: {},
 };
 
 const RIGHT_TO_WORK_OPTIONS: Array<{ value: CountryAuthRecord['rightToWork']; label: string }> = [
@@ -152,7 +176,7 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             const res = await fetch('/api/profile');
             if (res.ok) {
                 const data = await res.json();
-                if (data) setProfile({ ...EMPTY, ...data, countryAuth: data.countryAuth || [], screeningAnswers: data.screeningAnswers || [], eeoAnswers: data.eeoAnswers || {}, channelModes: data.channelModes || {} });
+                if (data) setProfile({ ...EMPTY, ...data, countryAuth: data.countryAuth || [], screeningAnswers: data.screeningAnswers || [], eeoAnswers: data.eeoAnswers || {}, workHistory: data.workHistory || [], education: data.education || [], channelModes: data.channelModes || {} });
             }
         } catch { /* noop */ } finally { setLoading(false); }
     }, []);
@@ -167,7 +191,7 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             const res = await fetch('/api/profile/seed', { method: 'POST' });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.message || 'Seeding failed');
-            setProfile({ ...EMPTY, ...data, countryAuth: data.countryAuth || [], screeningAnswers: data.screeningAnswers || [], eeoAnswers: data.eeoAnswers || {}, channelModes: data.channelModes || {} });
+            setProfile({ ...EMPTY, ...data, countryAuth: data.countryAuth || [], screeningAnswers: data.screeningAnswers || [], eeoAnswers: data.eeoAnswers || {}, workHistory: data.workHistory || [], education: data.education || [], channelModes: data.channelModes || {} });
         } catch (e: any) { setError(e.message); } finally { setSeeding(false); }
     };
 
@@ -180,7 +204,7 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.message || 'Save failed');
-            setProfile({ ...EMPTY, ...data, countryAuth: data.countryAuth || [], screeningAnswers: data.screeningAnswers || [], eeoAnswers: data.eeoAnswers || {}, channelModes: data.channelModes || {} });
+            setProfile({ ...EMPTY, ...data, countryAuth: data.countryAuth || [], screeningAnswers: data.screeningAnswers || [], eeoAnswers: data.eeoAnswers || {}, workHistory: data.workHistory || [], education: data.education || [], channelModes: data.channelModes || {} });
             setSavedAt(new Date().toLocaleTimeString());
         } catch (e: any) { setError(e.message); } finally { setSaving(false); }
     };
@@ -189,6 +213,18 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
         const list = [...(profile.countryAuth || [])];
         list[i] = { ...list[i], ...patch };
         set('countryAuth', list);
+    };
+
+    const updateWork = (i: number, patch: Partial<WorkHistoryEntry>) => {
+        const list = [...(profile.workHistory || [])];
+        list[i] = { ...list[i], ...patch };
+        set('workHistory', list);
+    };
+
+    const updateEdu = (i: number, patch: Partial<EducationEntry>) => {
+        const list = [...(profile.education || [])];
+        list[i] = { ...list[i], ...patch };
+        set('education', list);
     };
 
     if (loading) return <div className="h-full flex items-center justify-center text-gray-400">Loading profile vault…</div>;
@@ -264,6 +300,64 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                     </button>
                 </section>
 
+                {/* Work history */}
+                <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg space-y-3">
+                    <h3 className="font-exo text-lg text-cyan-300">Work History</h3>
+                    <p className="text-xs text-gray-500">
+                        The source of truth for an employer portal's own "Work Experience" section (e.g. Workday). Portals that auto-parse
+                        your uploaded resume into these fields frequently get it wrong — mismatched titles, garbled dates, merged entries. The
+                        apply engine <span className="text-cyan-300">always overwrites</span> whatever the portal auto-fills with what's entered here.
+                    </p>
+                    {(profile.workHistory || []).map((w, i) => (
+                        <div key={i} className="p-3 bg-gray-900/70 border border-purple-500/20 rounded-lg space-y-2">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div><label className={labelCls}>Job title</label><input className={inputCls} value={w.jobTitle} onChange={(e) => updateWork(i, { jobTitle: e.target.value })} /></div>
+                                <div><label className={labelCls}>Employer</label><input className={inputCls} value={w.employer} onChange={(e) => updateWork(i, { employer: e.target.value })} /></div>
+                                <div><label className={labelCls}>Location (optional)</label><input className={inputCls} value={w.location || ''} onChange={(e) => updateWork(i, { location: e.target.value })} /></div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div><label className={labelCls}>Start (YYYY-MM)</label><input className={inputCls} placeholder="2019-05" value={w.startDate || ''} onChange={(e) => updateWork(i, { startDate: e.target.value })} /></div>
+                                    <div><label className={labelCls}>End (YYYY-MM)</label><input className={inputCls} placeholder="2022-08" disabled={!!w.isCurrent} value={w.endDate || ''} onChange={(e) => updateWork(i, { endDate: e.target.value })} /></div>
+                                </div>
+                            </div>
+                            <div><label className={labelCls}>Description (optional)</label><textarea className={inputCls} rows={2} value={w.description || ''} onChange={(e) => updateWork(i, { description: e.target.value })} /></div>
+                            <div className="flex flex-wrap items-center gap-4 text-xs text-gray-300">
+                                <label className="flex items-center gap-2"><input type="checkbox" checked={!!w.isCurrent} onChange={(e) => updateWork(i, { isCurrent: e.target.checked, endDate: e.target.checked ? undefined : w.endDate })} /> I currently work here</label>
+                                <button onClick={() => set('workHistory', (profile.workHistory || []).filter((_, x) => x !== i))} className="ml-auto text-red-400 hover:text-red-300">Remove</button>
+                            </div>
+                        </div>
+                    ))}
+                    <button onClick={() => set('workHistory', [...(profile.workHistory || []), { jobTitle: '', employer: '' }])} className="px-3 py-1.5 text-xs text-cyan-300 border border-cyan-400/50 rounded-full hover:bg-cyan-900/50 transition-colors">
+                        + Add position
+                    </button>
+                </section>
+
+                {/* Education */}
+                <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg space-y-3">
+                    <h3 className="font-exo text-lg text-cyan-300">Education</h3>
+                    <p className="text-xs text-gray-500">Same rationale as Work History, for a portal's native "Education" section.</p>
+                    {(profile.education || []).map((ed, i) => (
+                        <div key={i} className="p-3 bg-gray-900/70 border border-purple-500/20 rounded-lg space-y-2">
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                <div><label className={labelCls}>School</label><input className={inputCls} value={ed.school} onChange={(e) => updateEdu(i, { school: e.target.value })} /></div>
+                                <div><label className={labelCls}>Degree (optional)</label><input className={inputCls} value={ed.degree || ''} onChange={(e) => updateEdu(i, { degree: e.target.value })} /></div>
+                                <div><label className={labelCls}>Field of study (optional)</label><input className={inputCls} value={ed.fieldOfStudy || ''} onChange={(e) => updateEdu(i, { fieldOfStudy: e.target.value })} /></div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div><label className={labelCls}>Start (YYYY-MM)</label><input className={inputCls} placeholder="2013-09" value={ed.startDate || ''} onChange={(e) => updateEdu(i, { startDate: e.target.value })} /></div>
+                                    <div><label className={labelCls}>End (YYYY-MM)</label><input className={inputCls} placeholder="2017-06" disabled={!!ed.isCurrent} value={ed.endDate || ''} onChange={(e) => updateEdu(i, { endDate: e.target.value })} /></div>
+                                </div>
+                            </div>
+                            <div><label className={labelCls}>Description (optional)</label><textarea className={inputCls} rows={2} value={ed.description || ''} onChange={(e) => updateEdu(i, { description: e.target.value })} /></div>
+                            <div className="flex flex-wrap items-center gap-4 text-xs text-gray-300">
+                                <label className="flex items-center gap-2"><input type="checkbox" checked={!!ed.isCurrent} onChange={(e) => updateEdu(i, { isCurrent: e.target.checked, endDate: e.target.checked ? undefined : ed.endDate })} /> Currently studying here</label>
+                                <button onClick={() => set('education', (profile.education || []).filter((_, x) => x !== i))} className="ml-auto text-red-400 hover:text-red-300">Remove</button>
+                            </div>
+                        </div>
+                    ))}
+                    <button onClick={() => set('education', [...(profile.education || []), { school: '' }])} className="px-3 py-1.5 text-xs text-cyan-300 border border-cyan-400/50 rounded-full hover:bg-cyan-900/50 transition-colors">
+                        + Add education
+                    </button>
+                </section>
+
                 {/* Standard screening answers */}
                 <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg space-y-3">
                     <h3 className="font-exo text-lg text-cyan-300">Standard Screening Answers</h3>
@@ -306,6 +400,19 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                     <button onClick={() => set('eeoAnswers', { ...(profile.eeoAnswers || {}), '': '' })} className="px-3 py-1.5 text-xs text-cyan-300 border border-cyan-400/50 rounded-full hover:bg-cyan-900/50 transition-colors">
                         + Add EEO answer
                     </button>
+                </section>
+
+                {/* GDPR / data-processing consent */}
+                <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg space-y-2">
+                    <h3 className="font-exo text-lg text-cyan-300">Data &amp; Privacy Consent</h3>
+                    <p className="text-xs text-gray-500">
+                        Common on EU/Swiss/UK portals: a checkbox consenting to your personal data being processed for this application (GDPR).
+                        This is a legal yes/no the engine never guesses — leave it off and every such checkbox pauses the application for you to confirm manually.
+                    </p>
+                    <label className="flex items-center gap-2 text-sm text-gray-300">
+                        <input type="checkbox" checked={!!profile.dataConsent} onChange={(e) => set('dataConsent', e.target.checked)} />
+                        I consent to my personal data being processed by employer application portals
+                    </label>
                 </section>
 
                 {/* ATS portal accounts (credential vault) */}
