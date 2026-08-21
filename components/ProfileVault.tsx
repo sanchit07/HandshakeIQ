@@ -162,6 +162,123 @@ const AtsAccountsSection: React.FC = () => {
     );
 };
 
+interface ScheduleRow {
+    id?: string;
+    dayOfWeek: number; // 0=Sunday .. 6=Saturday
+    country: string;
+    shortlistCount: number;
+}
+
+const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+const JobScheduleSection: React.FC = () => {
+    const [rows, setRows] = useState<ScheduleRow[]>([]);
+    const [countries, setCountries] = useState<string[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [savedAt, setSavedAt] = useState<string | null>(null);
+
+    const load = useCallback(async () => {
+        setLoading(true);
+        try {
+            const res = await fetch('/api/schedule');
+            const data = await res.json();
+            if (res.ok) {
+                setRows(data.schedule || []);
+                setCountries(data.supportedCountries || []);
+            }
+        } catch { /* noop */ } finally { setLoading(false); }
+    }, []);
+    useEffect(() => { load(); }, [load]);
+
+    const addRow = (dayOfWeek: number) => {
+        const used = new Set(rows.filter((r) => r.dayOfWeek === dayOfWeek).map((r) => r.country));
+        const next = countries.find((c) => !used.has(c)) || countries[0] || '';
+        setRows((r) => [...r, { dayOfWeek, country: next, shortlistCount: 10 }]);
+        setSavedAt(null);
+    };
+    const updateRow = (idx: number, patch: Partial<ScheduleRow>) => {
+        setRows((r) => r.map((row, i) => (i === idx ? { ...row, ...patch } : row)));
+        setSavedAt(null);
+    };
+    const removeRow = (idx: number) => {
+        setRows((r) => r.filter((_, i) => i !== idx));
+        setSavedAt(null);
+    };
+
+    const handleSave = async () => {
+        setSaving(true); setError(null);
+        try {
+            const res = await fetch('/api/schedule', {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ schedule: rows }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.message || 'Save failed');
+            setRows(data.schedule || []);
+            setSavedAt(new Date().toLocaleTimeString());
+        } catch (e: any) { setError(e.message); } finally { setSaving(false); }
+    };
+
+    if (loading) return (
+        <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg">
+            <p className="text-xs text-gray-400">Loading job search schedule…</p>
+        </section>
+    );
+
+    return (
+        <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg space-y-3">
+            <h3 className="font-exo text-lg text-cyan-300">Job Search Schedule</h3>
+            <p className="text-xs text-gray-500">
+                Pick which countries run on which day of the week, and how many opportunities to shortlist for each. A day can run
+                more than one country (e.g. 2 countries × 10 each = 20 that day), and the same country can appear on multiple different days.
+                Default is 10 per country per day.
+            </p>
+            {error && <p className="text-sm text-red-400 bg-red-900/20 border border-red-500/30 rounded-lg p-3">{error}</p>}
+
+            {DAY_LABELS.map((label, day) => {
+                const dayRows = rows.map((r, i) => ({ r, i })).filter(({ r }) => r.dayOfWeek === day);
+                return (
+                    <div key={day} className="p-3 bg-gray-900/70 border border-purple-500/20 rounded-lg space-y-2">
+                        <div className="flex items-center justify-between">
+                            <h4 className="text-sm font-bold text-white">{label}</h4>
+                            <button onClick={() => addRow(day)} className="px-2 py-1 text-xs text-cyan-300 border border-cyan-400/50 rounded-full hover:bg-cyan-900/50 transition-colors">
+                                + Add country
+                            </button>
+                        </div>
+                        {dayRows.length === 0 && <p className="text-xs text-gray-500 italic">No countries scheduled — this day is skipped.</p>}
+                        {dayRows.map(({ r, i }) => (
+                            <div key={i} className="flex flex-wrap items-center gap-2">
+                                <select className={inputCls + ' sm:w-1/2'} value={r.country} onChange={(e) => updateRow(i, { country: e.target.value })}>
+                                    {countries.map((c) => <option key={c} value={c}>{c}</option>)}
+                                </select>
+                                <div className="flex items-center gap-1">
+                                    <input
+                                        type="number" min={1} max={50}
+                                        className={inputCls + ' w-20'}
+                                        value={r.shortlistCount}
+                                        onChange={(e) => updateRow(i, { shortlistCount: Math.max(1, Math.min(50, Number(e.target.value) || 1)) })}
+                                    />
+                                    <span className="text-xs text-gray-500">/ day</span>
+                                </div>
+                                <button onClick={() => removeRow(i)} className="text-xs text-red-400 hover:text-red-300">Remove</button>
+                            </div>
+                        ))}
+                    </div>
+                );
+            })}
+
+            <div className="flex items-center gap-3">
+                <button onClick={handleSave} disabled={saving} className="px-6 py-2 text-sm font-bold text-slate-900 bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 rounded-lg transition-colors btn-glow font-exo">
+                    {saving ? 'Saving…' : 'Save Schedule'}
+                </button>
+                {savedAt && <span className="text-xs text-green-400">Saved at {savedAt} ✓</span>}
+            </div>
+        </section>
+    );
+};
+
 const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     const [profile, setProfile] = useState<Profile>(EMPTY);
     const [loading, setLoading] = useState(true);
@@ -245,6 +362,9 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                 </p>
 
                 {error && <p className="text-sm text-red-400 bg-red-900/20 border border-red-500/30 rounded-lg p-3">{error}</p>}
+
+                {/* Job search schedule (which countries run on which day, and how many) */}
+                <JobScheduleSection />
 
                 {/* Basics */}
                 <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg space-y-3">

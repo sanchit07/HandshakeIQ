@@ -117,7 +117,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ===== Job Hunt (admin only) =====
-  const { runDailyJobSearch, getShortlist, getShortlistDates, tailorCvForJob, clearTailoredCv, getQuestionsForJob, answerQuestion, getBoardAlerts, getGoogleDiscoveryStatus } = await import('./jobs/jobMatchService');
+  const {
+    runDailyJobSearch, getShortlist, getShortlistDates, tailorCvForJob, clearTailoredCv, getQuestionsForJob, answerQuestion, getBoardAlerts, getGoogleDiscoveryStatus,
+    getCountrySchedule, saveCountrySchedule, SUPPORTED_COUNTRIES,
+  } = await import('./jobs/jobMatchService');
+
+  app.get('/api/schedule', requireAdmin, async (_req, res) => {
+    try {
+      res.json({ schedule: await getCountrySchedule(), supportedCountries: SUPPORTED_COUNTRIES });
+    } catch (error) {
+      console.error('[JOBS] Error fetching country schedule:', error);
+      res.status(500).json({ message: 'Failed to fetch country schedule' });
+    }
+  });
+
+  app.put('/api/schedule', requireAdmin, async (req: any, res) => {
+    try {
+      const rows = Array.isArray(req.body?.schedule) ? req.body.schedule : [];
+      res.json({ schedule: await saveCountrySchedule(rows) });
+    } catch (error: any) {
+      console.error('[JOBS] Error saving country schedule:', error);
+      res.status(500).json({ message: error?.message || 'Failed to save country schedule' });
+    }
+  });
 
   app.get('/api/jobs/:id/questions', requireAdmin, async (req: any, res) => {
     try {

@@ -7,30 +7,93 @@ import http from 'node:http';
 import fs from 'fs';
 import path from 'path';
 import { db } from '../db';
-import { jobMatches, jobQuestions, jobContacts, roleSearchLog, type JobMatch, type JobQuestion } from '../../shared/schema.js';
-import { eq, desc, sql } from 'drizzle-orm';
+import {
+  jobMatches, jobQuestions, jobContacts, roleSearchLog, countrySchedule,
+  type JobMatch, type JobQuestion, type CountrySchedule,
+} from '../../shared/schema.js';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { discoverContactsForJob } from './contactDiscoveryService.js';
 
 const MODEL = 'claude-sonnet-4-5';
 
-// One country per day, Sunday → Saturday (7 countries; Malaysia gets Sunday as top priority)
-const COUNTRY_BY_DAY: string[] = [
-  'Malaysia',     // Sunday
-  'Australia',    // Monday
-  'New Zealand',  // Tuesday
-  'Ireland',      // Wednesday
-  'Switzerland',  // Thursday
-  'Sweden',       // Friday
-  'Poland',       // Saturday
+/**
+ * Every country the discovery/apply pipeline knows how to search — the
+ * admin-configurable schedule (countrySchedule table) may only reference
+ * countries from this list. Extending coverage to a new country means adding
+ * it here plus (optionally) its own REGIONAL_SOURCES/board-TLD/Adzuna entries
+ * below; without those, discovery still works via generic web search, just
+ * with fewer region-specific hints.
+ */
+export const SUPPORTED_COUNTRIES: readonly string[] = [
+  'Malaysia', 'Australia', 'New Zealand', 'Ireland', 'Switzerland', 'Sweden', 'Poland',
+  'Luxembourg', 'Netherlands', 'Spain', 'Germany', 'Norway',
 ];
 
-export function countryForToday(): string {
+/**
+ * Built-in default schedule, used ONLY to seed the countrySchedule table the
+ * first time it's read empty — one country per day, Sunday → Saturday,
+ * matching the original fixed rotation (Malaysia gets Sunday as top
+ * priority). Once the admin configures the table, this constant is never
+ * consulted again; edit the schedule via the API/UI instead of here.
+ */
+const DEFAULT_COUNTRY_SCHEDULE: Array<{ dayOfWeek: number; country: string; shortlistCount: number }> = [
+  { dayOfWeek: 0, country: 'Malaysia', shortlistCount: 10 },     // Sunday
+  { dayOfWeek: 1, country: 'Australia', shortlistCount: 10 },    // Monday
+  { dayOfWeek: 2, country: 'New Zealand', shortlistCount: 10 },  // Tuesday
+  { dayOfWeek: 3, country: 'Ireland', shortlistCount: 10 },      // Wednesday
+  { dayOfWeek: 4, country: 'Switzerland', shortlistCount: 10 },  // Thursday
+  { dayOfWeek: 5, country: 'Sweden', shortlistCount: 10 },       // Friday
+  { dayOfWeek: 6, country: 'Poland', shortlistCount: 10 },       // Saturday
+];
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+/** 0 (Sunday) .. 6 (Saturday), reckoned in the pipeline's reference timezone. */
+export function getDayOfWeekKL(): number {
   const dayName = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kuala_Lumpur', weekday: 'short' }).format(new Date());
-  const idx = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(dayName);
-  return COUNTRY_BY_DAY[idx >= 0 ? idx : 0];
+  const idx = DAY_NAMES.indexOf(dayName as typeof DAY_NAMES[number]);
+  return idx >= 0 ? idx : 0;
 }
 
-const MIN_DAILY_JOBS = 10;        // minimum live, real opportunities per day
+/** Seeds the default schedule (once) only if the table has never been configured at all. */
+async function ensureScheduleSeeded(): Promise<void> {
+  const [row] = await db.select({ id: countrySchedule.id }).from(countrySchedule).limit(1);
+  if (row) return;
+  await db.insert(countrySchedule).values(DEFAULT_COUNTRY_SCHEDULE).onConflictDoNothing();
+}
+
+/** Full schedule (all days), seeding the built-in default the first time it's read empty. */
+export async function getCountrySchedule(): Promise<CountrySchedule[]> {
+  await ensureScheduleSeeded();
+  return db.select().from(countrySchedule).orderBy(countrySchedule.dayOfWeek);
+}
+
+/** Countries (with their per-day shortlist target) scheduled for one day of the week. */
+async function getScheduleForDay(dayOfWeek: number): Promise<Array<{ country: string; shortlistCount: number }>> {
+  const all = await getCountrySchedule();
+  return all.filter((r) => r.dayOfWeek === dayOfWeek).map((r) => ({ country: r.country, shortlistCount: r.shortlistCount }));
+}
+
+/**
+ * Replaces the ENTIRE schedule. Duplicates are allowed by design (the same
+ * country may run on multiple days, and — while unusual — nothing stops the
+ * same country appearing twice on one day with different counts).
+ */
+export async function saveCountrySchedule(
+  rows: Array<{ dayOfWeek: number; country: string; shortlistCount: number }>,
+): Promise<CountrySchedule[]> {
+  const clean = rows
+    .filter((r) => Number.isInteger(r.dayOfWeek) && r.dayOfWeek >= 0 && r.dayOfWeek <= 6
+      && typeof r.country === 'string' && SUPPORTED_COUNTRIES.includes(r.country)
+      && Number.isFinite(r.shortlistCount) && r.shortlistCount >= 1 && r.shortlistCount <= 50)
+    .map((r) => ({ dayOfWeek: r.dayOfWeek, country: r.country, shortlistCount: Math.round(r.shortlistCount) }));
+  await db.transaction(async (tx) => {
+    await tx.delete(countrySchedule);
+    if (clean.length > 0) await tx.insert(countrySchedule).values(clean);
+  });
+  return db.select().from(countrySchedule).orderBy(countrySchedule.dayOfWeek);
+}
+
 const COMPANY_COOLDOWN_DAYS = 28; // skip companies shortlisted in the last 4 weeks
 const VACANCY_DEDUP_DAYS = 90;    // never re-shortlist the same vacancy
 
@@ -100,12 +163,18 @@ export function computeUnderperformingTitles(
 
 const ROLE_PERFORMANCE_WINDOW_DAYS = 14;
 
-/** Durable per-title learning note injected into the Phase 1 role-derivation prompt. */
-async function titlePerformanceNote(): Promise<string> {
+/**
+ * Durable per-title learning note injected into the Phase 1 role-derivation
+ * prompt — scoped to THIS country: a title doing poorly in one country (e.g.
+ * Norway) says nothing about how it performs in another (e.g. Netherlands),
+ * so cross-country pooling would contaminate the signal now that a day can
+ * schedule multiple countries.
+ */
+async function titlePerformanceNote(country: string): Promise<string> {
   try {
     const logs = await db.select({ roles: roleSearchLog.roles, shortlistedTitles: roleSearchLog.shortlistedTitles })
       .from(roleSearchLog)
-      .where(sql`${roleSearchLog.createdAt} > now() - interval '${sql.raw(String(ROLE_PERFORMANCE_WINDOW_DAYS))} days'`);
+      .where(sql`${roleSearchLog.createdAt} > now() - interval '${sql.raw(String(ROLE_PERFORMANCE_WINDOW_DAYS))} days' AND ${roleSearchLog.country} = ${country}`);
     if (logs.length === 0) return '';
     const underperforming = computeUnderperformingTitles(logs as Array<{ roles: string[]; shortlistedTitles: string[] }>);
     if (underperforming.length === 0) return '';
@@ -120,7 +189,7 @@ async function titlePerformanceNote(): Promise<string> {
 async function recordRoleSearchLog(runDate: string, country: string, roles: string[], shortlistedTitles: string[]): Promise<void> {
   try {
     await db.insert(roleSearchLog).values({ runDate, country, roles, shortlistedTitles })
-      .onConflictDoUpdate({ target: roleSearchLog.runDate, set: { country, roles, shortlistedTitles } });
+      .onConflictDoUpdate({ target: [roleSearchLog.runDate, roleSearchLog.country], set: { roles, shortlistedTitles } });
   } catch (e) {
     console.error('[JOB SEARCH] Failed to record role search log (non-fatal):', e);
   }
@@ -404,28 +473,17 @@ export function _resetGoogleDiscoveryStatus(): void {
   googleDiscoveryStatus = null;
 }
 
-export async function runDailyJobSearch(force = false): Promise<{ runDate: string; count: number; skipped?: boolean; boardAlerts?: string[] }> {
-  const runDate = todayKL();
-
-  // Cross-process lock: only one process may run the pipeline at a time
-  const lockResult: any = await db.execute(sql`SELECT pg_try_advisory_lock(${RUN_LOCK_KEY}) AS locked`);
-  const locked = lockResult?.rows?.[0]?.locked ?? lockResult?.[0]?.locked;
-  if (!locked) {
-    console.log('[JOB SEARCH] Another process is already running the daily search; skipping');
-    return { runDate, count: 0, skipped: true };
-  }
-
-  try {
-    // Idempotence (checked while holding the lock): don't duplicate a day's shortlist unless forced
-    const existing = await db.select({ count: sql<number>`count(*)` }).from(jobMatches).where(eq(jobMatches.runDate, runDate));
-    if (Number(existing[0]?.count) > 0 && !force) {
-      return { runDate, count: Number(existing[0].count), skipped: true };
-    }
-    const client = getClient();
-    const profile = profileSummary();
-    const country = countryForToday();
-
-    console.log(`[JOB SEARCH] Starting daily job search for ${runDate} — country of the day: ${country}`);
+/**
+ * Runs the full discovery→shortlist→CV→contacts pipeline for ONE country,
+ * targeting `targetCount` live opportunities. Extracted from the single
+ * hardcoded-country design so a day can schedule multiple countries (see
+ * getScheduleForDay/DEFAULT_COUNTRY_SCHEDULE) — every dedup/cooldown rule
+ * below was already correctly scoped per-country; only the caller changed.
+ */
+async function runJobSearchForCountry(
+  client: Anthropic, profile: string, runDate: string, country: string, targetCount: number, force: boolean,
+): Promise<{ count: number; boardAlerts?: string[] }> {
+    console.log(`[JOB SEARCH] Starting job search for ${runDate} — country: ${country}, target: ${targetCount}`);
 
     // History for dedup rules: past vacancies (never repeat) and recent companies (4-week cooldown)
     const pastVacancies = await db
@@ -453,7 +511,7 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
     const cooldownCompanies = new Set(recentCompanies.map((c) => c.toLowerCase()));
 
     // Phase 1: derive suitable role titles from the profile (not restricted to examples)
-    const titleNote = await titlePerformanceNote();
+    const titleNote = await titlePerformanceNote(country);
     const rolesResponse = await client.messages.create({
       model: MODEL,
       max_tokens: 1024,
@@ -555,9 +613,11 @@ export async function runDailyJobSearch(force = false): Promise<{ runDate: strin
       }
     }
 
-    // Always update the cache for this run-date (including empty array) so a successful
-    // rerun with no zero-result boards clears any stale alerts from a prior failed run.
-    boardAlertsCache.set(runDate, [...boardCrashAlerts, ...zeroBoardAlerts]);
+    // Append this country's alerts for this run-date rather than overwrite — a day
+    // may now run multiple countries, and each already names itself in its own
+    // alert text (e.g. "...for Germany"), so a later country's alerts must not
+    // wipe out an earlier country's from the same runDate.
+    boardAlertsCache.set(runDate, [...(boardAlertsCache.get(runDate) ?? []), ...boardCrashAlerts, ...zeroBoardAlerts]);
 
     let rows: any[] = [];
     if (allFindings.length === 0) {
@@ -592,13 +652,13 @@ ${profile}
 VACANCIES FOUND TODAY (grouped by job board):
 ${findingsText}
 
-Select the 10 opportunities with the HIGHEST CHANCE OF THE CANDIDATE GETTING SHORTLISTED. That is the primary criterion — not seniority or domain purity:
+Select the ${targetCount} opportunities with the HIGHEST CHANCE OF THE CANDIDATE GETTING SHORTLISTED. That is the primary criterion — not seniority or domain purity:
 - Seniority is NOT a bar: roles asking for 5-6+ years of experience are fine if the candidate would be a strong applicant.
 - Domain is NOT a bar: fintech, e-commerce, automotive, construction, and other industries are all fine if the candidate's transferable skills give a high chance of shortlisting.
 - Judge realistically: does the candidate meet the stated must-haves, and would a recruiter screening CVs likely advance them?
 
 SHORTLISTING PREFERENCE RULES (apply in this priority order):
-1. Prefer roles where the working language is English (deprioritize postings requiring local languages).
+1. STRONGLY PRIORITIZE roles where the working language is English — this is the single biggest factor in ${country}, a market where English is not the default working language for most local roles. Actively favor English-language multinational/tech postings over comparable ones that require the local language; only include a local-language-required posting if there is nothing comparably strong in English.
 2. Prefer companies that provide visa sponsorship or explicitly welcome international candidates.
 ${learnings ? `\nADMIN PREFERENCES LEARNED FROM PAST ANSWERS (weigh these when deciding what to shortlist, not just how to word the CV — e.g. if a past answer reveals the candidate would never accept a role requiring relocation or a certain trade-off, deprioritize or exclude similar roles here):\n${learnings}\n` : ''}
 EXCLUSION RULES (hard):
@@ -607,7 +667,7 @@ EXCLUSION RULES (hard):
 
 Discard anything without a real company name and a plausible direct URL to an individual job ad.
 
-Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Set "source" to the board name exactly as shown in the section header above:
+Return ONLY a JSON array (no markdown) of up to ${targetCount} objects, best match first. Set "source" to the board name exactly as shown in the section header above:
 [{"title": "...", "company": "...", "location": "city", "country": "...", "source": "LinkedIn|Indeed|JobStreet|Randstad|Hays|Adzuna|Google Jobs|Other", "url": "https://...", "description": "1-3 sentence summary of the role and key requirements", "matchScore": <0-100>, "matchReason": "1-2 sentences on why this fits the candidate"}]`,
       }],
     });
@@ -687,23 +747,23 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Se
     }
     } // end of board-findings branch
 
-    // Phase 5 (fallback rounds): if fewer than MIN_DAILY_JOBS live opportunities,
+    // Phase 5 (fallback rounds): if fewer than targetCount live opportunities,
     // run supplemental search rounds to backfill — the show must go on.
     let finalRows = rows;
     let round = 0;
     let consecutiveEmptyRounds = 0;
     // Up to 6 rounds, but stop early after 2 consecutive rounds that add
     // nothing new — more rounds would just re-find excluded/dead postings.
-    while (finalRows.length < MIN_DAILY_JOBS && round < 6 && consecutiveEmptyRounds < 2) {
+    while (finalRows.length < targetCount && round < 6 && consecutiveEmptyRounds < 2) {
       round++;
       const countBefore = finalRows.length;
-      console.log(`[JOB SEARCH] Only ${finalRows.length}/${MIN_DAILY_JOBS} live jobs — supplemental round ${round}`);
+      console.log(`[JOB SEARCH] Only ${finalRows.length}/${targetCount} live jobs — supplemental round ${round}`);
       try {
         const excludeCompanies = [
           ...recentCompanies,
           ...finalRows.map((r) => r.company),
         ];
-        const extra = await supplementalSearch(client, country, roles, profile, excludeCompanies, MIN_DAILY_JOBS - finalRows.length, boardConfigs);
+        const extra = await supplementalSearch(client, country, roles, profile, excludeCompanies, targetCount - finalRows.length, boardConfigs);
         const seenCompanies = new Set(finalRows.map((r) => r.company.toLowerCase()));
         const seenUrls = new Set(finalRows.map((r) => (r.url || '').toLowerCase()).filter(Boolean));
         const extraDeduped = extra.filter((j: any) => {
@@ -734,49 +794,53 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Se
             matchScore: Number.isFinite(Number(j.matchScore)) ? Math.max(0, Math.min(100, Math.round(Number(j.matchScore)))) : null,
             matchReason: j.matchReason ? String(j.matchReason) : null,
           })),
-        ].slice(0, Math.max(MIN_DAILY_JOBS, 10));
+        ].slice(0, targetCount);
       } catch (e) {
         console.error(`[JOB SEARCH] Supplemental round ${round} failed (continuing):`, e);
       }
       consecutiveEmptyRounds = finalRows.length > countBefore ? 0 : consecutiveEmptyRounds + 1;
     }
-    if (finalRows.length < MIN_DAILY_JOBS) {
-      console.warn(`[JOB SEARCH] Could not reach ${MIN_DAILY_JOBS} live jobs after ${round} extra rounds — saving ${finalRows.length}`);
+    if (finalRows.length < targetCount) {
+      console.warn(`[JOB SEARCH] Could not reach ${targetCount} live jobs after ${round} extra rounds — saving ${finalRows.length}`);
       // Surface the shortfall in the UI alerts panel, with the likely causes,
       // instead of burying it in server logs.
       const causes: string[] = [];
       if (getGoogleDiscoveryStatus()) causes.push('Google discovery is unavailable (see the red banner)');
       causes.push(`companies from the last ${COMPANY_COOLDOWN_DAYS} days are excluded by the no-repeat rule`);
-      const existing = boardAlertsCache.get(runDate) ?? [];
+      const existingAlerts = boardAlertsCache.get(runDate) ?? [];
       boardAlertsCache.set(runDate, [
-        ...existing,
-        `Shortfall: only ${finalRows.length} of ${MIN_DAILY_JOBS} live close-match jobs found for ${country} after ${round} extra search rounds. Likely causes: ${causes.join('; ')}. All ${finalRows.length} saved jobs are verified live.`,
+        ...existingAlerts,
+        `Shortfall: only ${finalRows.length} of ${targetCount} live close-match jobs found for ${country} after ${round} extra search rounds. Likely causes: ${causes.join('; ')}. All ${finalRows.length} saved jobs are verified live.`,
       ]);
     }
 
     if (finalRows.length === 0) {
-      console.error(`[JOB SEARCH] No live jobs found at all for ${runDate} — keeping any existing shortlist`);
+      console.error(`[JOB SEARCH] No live jobs found at all for ${runDate}/${country} — keeping any existing shortlist`);
       await recordRoleSearchLog(runDate, country, roles, []);
-      return { runDate, count: 0 };
+      return { count: 0 };
     }
 
-    // Atomic replace: never leave the day empty if the insert fails
+    // Atomic replace: never leave this country's day empty if the insert fails.
+    // Scoped to (runDate, country) so forcing a re-run of ONE scheduled country
+    // never deletes a sibling country's already-saved rows for the same day.
     await db.transaction(async (tx) => {
       if (force) {
-        await tx.delete(jobMatches).where(eq(jobMatches.runDate, runDate));
+        await tx.delete(jobMatches).where(and(eq(jobMatches.runDate, runDate), eq(jobMatches.country, country)));
       }
       await tx.insert(jobMatches).values(finalRows);
     });
 
-    console.log(`[JOB SEARCH] Saved ${finalRows.length} shortlisted jobs for ${runDate}`);
+    console.log(`[JOB SEARCH] Saved ${finalRows.length} shortlisted jobs for ${runDate}/${country}`);
 
     // Record today's searched roles vs. what actually got shortlisted, so
     // future runs' Phase 1 can see which anchor titles are chronically
-    // unproductive (see titlePerformanceNote).
+    // unproductive for THIS country (see titlePerformanceNote).
     await recordRoleSearchLog(runDate, country, roles, finalRows.map((r) => r.title));
 
     // Phase 6: auto-generate a tailored CV for every shortlisted opportunity,
     // one by one, with retry + status tracking. A failure never stops the run.
+    // Scans by runDate only (across all countries scheduled today), so it's
+    // safe/idempotent to call again after each country's insert.
     await autoGenerateCvsForDate(runDate);
 
     // Phase 7: auto-discover contacts (HR + hiring manager) for every shortlisted
@@ -784,7 +848,87 @@ Return ONLY a JSON array (no markdown) of up to 10 objects, best match first. Se
     // blocks the rest of the pipeline.
     await autoDiscoverContactsForDate(runDate);
 
-    return { runDate, count: finalRows.length, boardAlerts: zeroBoardAlerts.length > 0 ? zeroBoardAlerts : undefined };
+    return { count: finalRows.length, boardAlerts: zeroBoardAlerts.length > 0 ? zeroBoardAlerts : undefined };
+}
+
+/**
+ * Orchestrates one calendar day's run across every country scheduled for
+ * today (see getScheduleForDay) — a day may have zero, one, or several
+ * countries, each with its own shortlist target. One country's failure
+ * never blocks the others; if any failed, the aggregate error is re-thrown
+ * at the end so the cron retry wrapper (server/index.ts) re-attempts — and
+ * thanks to the per-country idempotence check below, a retry only re-runs
+ * the countries that didn't already succeed.
+ */
+export async function runDailyJobSearch(force = false): Promise<{
+  runDate: string; count: number; skipped?: boolean; boardAlerts?: string[];
+  countries?: Array<{ country: string; count: number; skipped?: boolean }>;
+}> {
+  const runDate = todayKL();
+
+  // Cross-process lock: only one process may run the pipeline at a time
+  const lockResult: any = await db.execute(sql`SELECT pg_try_advisory_lock(${RUN_LOCK_KEY}) AS locked`);
+  const locked = lockResult?.rows?.[0]?.locked ?? lockResult?.[0]?.locked;
+  if (!locked) {
+    console.log('[JOB SEARCH] Another process is already running the daily search; skipping');
+    return { runDate, count: 0, skipped: true };
+  }
+
+  try {
+    const schedule = await getScheduleForDay(getDayOfWeekKL());
+    if (schedule.length === 0) {
+      console.log(`[JOB SEARCH] No countries scheduled for ${runDate} — nothing to do`);
+      return { runDate, count: 0, skipped: true };
+    }
+
+    const client = getClient();
+    const profile = profileSummary();
+    let totalCount = 0;
+    let anyRan = false;
+    const allAlerts: string[] = [];
+    const countryResults: Array<{ country: string; count: number; skipped?: boolean }> = [];
+    const failures: string[] = [];
+
+    for (const { country, shortlistCount } of schedule) {
+      // Idempotence per (runDate, country) — checked while holding the lock:
+      // don't duplicate a country's shortlist for today unless forced. This
+      // is scoped per-country (not per-day) so one scheduled country already
+      // having run today never blocks a DIFFERENT country scheduled the same day.
+      const existingForCountry = await db.select({ count: sql<number>`count(*)` }).from(jobMatches)
+        .where(and(eq(jobMatches.runDate, runDate), eq(jobMatches.country, country)));
+      const existingCount = Number(existingForCountry[0]?.count) || 0;
+      if (existingCount > 0 && !force) {
+        countryResults.push({ country, count: existingCount, skipped: true });
+        totalCount += existingCount;
+        continue;
+      }
+
+      anyRan = true;
+      try {
+        const result = await runJobSearchForCountry(client, profile, runDate, country, shortlistCount, force);
+        totalCount += result.count;
+        if (result.boardAlerts) allAlerts.push(...result.boardAlerts);
+        countryResults.push({ country, count: result.count });
+      } catch (e) {
+        // One scheduled country failing must never block the others — the
+        // failure is recorded and re-thrown (see below) only after every
+        // other scheduled country has had its chance to run.
+        console.error(`[JOB SEARCH] Run failed for ${country} (continuing with other scheduled countries):`, e);
+        const msg = e instanceof Error ? e.message : String(e);
+        failures.push(`${country}: ${msg}`);
+        countryResults.push({ country, count: 0 });
+      }
+    }
+
+    if (failures.length > 0) {
+      throw new Error(`Job search failed for ${failures.length} of ${schedule.length} scheduled countr${failures.length === 1 ? 'y' : 'ies'}: ${failures.join(' | ')}`);
+    }
+
+    return {
+      runDate, count: totalCount, skipped: !anyRan,
+      boardAlerts: allAlerts.length > 0 ? allAlerts : undefined,
+      countries: countryResults,
+    };
   } finally {
     await db.execute(sql`SELECT pg_advisory_unlock(${RUN_LOCK_KEY})`).catch(() => {});
   }
@@ -799,6 +943,11 @@ const REGIONAL_SOURCES: Record<string, string[]> = {
   Switzerland:   ['jobs.ch', 'jobup.ch', 'jobscout24.ch'],
   Sweden:        ['arbetsformedlingen.se', 'thehub.io', 'jobbsafari.se'],
   Poland:        ['pracuj.pl', 'justjoin.it', 'nofluffjobs.com', 'rocketjobs.pl', 'bulldogjob.pl'],
+  Luxembourg:    ['jobs.lu', 'moovijob.com', 'monster.lu'],
+  Netherlands:   ['nationalevacaturebank.nl', 'intermediair.nl', 'werk.nl'],
+  Spain:         ['infojobs.net', 'tecnoempleo.com', 'jobtoday.com'],
+  Germany:       ['stepstone.de', 'xing.com/jobs', 'arbeitsagentur.de'],
+  Norway:        ['finn.no/job', 'nav.no', 'karrierestart.no'],
 };
 
 /**
@@ -964,13 +1113,17 @@ const DIRECT_ATS_DOMAINS: readonly string[] = [
 ];
 
 // Adzuna country coverage (subset relevant to this pipeline). Countries not
-// listed here (Malaysia, Ireland) have no Adzuna market — skipped with a log.
+// listed here (Malaysia, Ireland, Luxembourg, Norway — Adzuna has no market
+// in either of the latter two) have no Adzuna market — skipped with a log.
 const ADZUNA_COUNTRY_CODE: Record<string, string> = {
   Australia: 'au',
   'New Zealand': 'nz',
   Switzerland: 'ch',
   Sweden: 'se',
   Poland: 'pl',
+  Netherlands: 'nl',
+  Spain: 'es',
+  Germany: 'de',
 };
 
 // Countries where Google Jobs still exists (verified live 2026-08). Google
@@ -1197,7 +1350,7 @@ async function supplementalSearch(
 Search broadly — company career pages, greenhouse/lever/workday ATS pages, major job boards, AND these regional ${country} job boards: ${regional.join(', ') || 'any local boards you know'}. Every result MUST be a direct URL to an individual live job ad (never a search page or careers homepage).
 ${googleHints.length ? `\nCANDIDATE URLS discovered via Google (verify each is live, a direct job ad, and a good match before including — extract the real company name):\n${googleHints.slice(0, 20).map((h) => `- ${h.title}: ${h.url}`).join('\n')}\n` : ''}
 Do NOT include these companies: ${excludeCompanies.slice(0, 80).join(', ')}.
-Prefer English-language roles and companies open to international candidates.
+STRONGLY PRIORITIZE English-language roles over comparable local-language ones (especially important in non-English-speaking markets) and companies open to international candidates.
 The candidate: ${profile.slice(0, 2000)}
 Return ONLY a JSON array: [{"title","company","location","country","url","description","matchScore":<0-100>,"matchReason"}]`,
     }],
@@ -1812,6 +1965,12 @@ const HAYS_TLD: Record<string, string> = {
   Switzerland:   'hays.ch',
   Sweden:        'hays.se',
   Poland:        'hays.pl',
+  Netherlands:   'hays.nl',
+  Spain:         'hays.es',
+  Germany:       'hays.de',
+  Norway:        'hays.no',
+  // Hays has no Luxembourg operation — falls back to hays.com (generic
+  // domain) via the `?? 'hays.com'` default in getBoardConfigs().
 };
 
 /**
@@ -2646,6 +2805,14 @@ const RANDSTAD_TLD: Record<string, string> = {
   Switzerland:   'randstad.ch',
   Sweden:        'randstad.se',
   Poland:        'randstad.pl',
+  Netherlands:   'randstad.nl',
+  Spain:         'randstad.es',
+  Germany:       'randstad.de',
+  Luxembourg:    'randstad.lu',
+  // Randstad has no Norway operation — falls back to randstad.com via the
+  // `?? 'randstad.com'` default in getBoardConfigs(). Note: none of these new
+  // TLDs are searched via Randstad until a verified live posting URL is added
+  // to RANDSTAD_CANARY_URLS below — see the comment there.
 };
 
 
@@ -2671,7 +2838,7 @@ Accepted URL pattern: ${board.urlHint}
 Reject: search-results pages, category pages, homepages, or URLs without a unique job identifier.
 
 SKIP postings from these recently-shortlisted companies: ${recentCompanies.slice(0, 40).join(', ') || 'none'}
-PREFER English-language postings. Note any mention of visa sponsorship or relocation support.
+STRONGLY PRIORITIZE English-language postings (the working language of the role, not just the page chrome) — favor these over comparable postings in the local language, especially in non-English-speaking markets. Note any mention of visa sponsorship or relocation support.
 
 Return ONLY a valid JSON array (empty array [] if nothing valid was found — do NOT apologise or explain):
 [{"title":"...","company":"...","location":"city, country","url":"https://...","description":"1-2 sentence summary; include visa/relocation notes if present"}]`;
@@ -2781,6 +2948,11 @@ export const RANDSTAD_CANARY_URLS: Record<string, string> = {
   // URLs are confirmed. As of 2026-08: randstad.ie redirects all /jobs/ paths to
   // randstad.co.uk/ireland/ (site migration), and randstad.pl returns 404 for all /jobs/
   // paths (domain restructure). Add entries once valid regional URLs are available.
+  // NOTE — randstad.nl, randstad.es, randstad.de, and randstad.lu (added to RANDSTAD_TLD
+  // above for the Netherlands/Spain/Germany/Luxembourg schedule countries) are likewise
+  // omitted here for the same reason: no live direct-posting URL has been verified for
+  // them yet. Until a canary is added, Randstad is simply excluded from search for those
+  // countries (see the warning getBoardConfigs() logs) — LinkedIn/Indeed/Hays still run.
 };
 
 /**

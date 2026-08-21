@@ -5,6 +5,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   timestamp,
   varchar,
   text,
@@ -118,15 +119,42 @@ export type UpsertJobMatch = typeof jobMatches.$inferInsert;
  * unproductive (searched repeatedly, never shortlisted) instead of re-deriving
  * titles from the resume with no memory of what has actually worked.
  */
+// Composite-keyed on (runDate, country) — a day can now run MULTIPLE
+// countries (see countrySchedule below), so runDate alone can no longer
+// uniquely identify a row without one country's log silently clobbering
+// another's on the same day.
 export const roleSearchLog = pgTable("role_search_log", {
-  runDate: varchar("run_date").primaryKey(), // YYYY-MM-DD (Asia/Kuala_Lumpur)
+  runDate: varchar("run_date").notNull(), // YYYY-MM-DD (Asia/Kuala_Lumpur)
   country: varchar("country").notNull(),
   roles: jsonb("roles").$type<string[]>().notNull(),
   shortlistedTitles: jsonb("shortlisted_titles").$type<string[]>().notNull(),
   createdAt: timestamp("created_at").defaultNow(),
-});
+}, (table) => [
+  primaryKey({ columns: [table.runDate, table.country] }),
+]);
 
 export type RoleSearchLog = typeof roleSearchLog.$inferSelect;
+
+/**
+ * Configurable job-discovery schedule: which countries run on which day of
+ * the week (0=Sunday..6=Saturday, Asia/Kuala_Lumpur reference), and how many
+ * opportunities to shortlist per country per day. A day may have zero, one,
+ * or multiple country rows; the same country may also appear on multiple
+ * different days. Empty table = fall back to the built-in default schedule
+ * (see DEFAULT_COUNTRY_SCHEDULE in jobMatchService.ts).
+ */
+export const countrySchedule = pgTable("country_schedule", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  dayOfWeek: integer("day_of_week").notNull(),
+  country: varchar("country").notNull(),
+  shortlistCount: integer("shortlist_count").notNull().default(10),
+  createdAt: timestamp("created_at").defaultNow(),
+}, (table) => [
+  index("idx_country_schedule_day").on(table.dayOfWeek),
+]);
+
+export type CountrySchedule = typeof countrySchedule.$inferSelect;
+export type UpsertCountrySchedule = typeof countrySchedule.$inferInsert;
 
 // Questions the AI needs the admin to answer for a specific opportunity.
 // Answered questions become "learnings" injected into future prompts so
