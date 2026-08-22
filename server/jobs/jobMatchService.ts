@@ -11,6 +11,7 @@ import {
   jobMatches, jobQuestions, jobContacts, roleSearchLog, countrySchedule,
   type JobMatch, type JobQuestion, type CountrySchedule,
 } from '../../shared/schema.js';
+import { completeWithFallback } from './aiClient.js';
 import { eq, and, desc, sql } from 'drizzle-orm';
 import { discoverContactsForJob } from './contactDiscoveryService.js';
 
@@ -481,7 +482,7 @@ export function _resetGoogleDiscoveryStatus(): void {
  * below was already correctly scoped per-country; only the caller changed.
  */
 async function runJobSearchForCountry(
-  client: Anthropic, profile: string, runDate: string, country: string, targetCount: number, force: boolean,
+  profile: string, runDate: string, country: string, targetCount: number, force: boolean,
 ): Promise<{ count: number; boardAlerts?: string[] }> {
     console.log(`[JOB SEARCH] Starting job search for ${runDate} — country: ${country}, target: ${targetCount}`);
 
@@ -512,17 +513,13 @@ async function runJobSearchForCountry(
 
     // Phase 1: derive suitable role titles from the profile (not restricted to examples)
     const titleNote = await titlePerformanceNote(country);
-    const rolesResponse = await client.messages.create({
-      model: MODEL,
-      max_tokens: 1024,
-      messages: [{
-        role: 'user',
-        content: `Given this candidate profile, list the 12 most suitable job titles to search for. Include but do not limit yourself to: ${EXAMPLE_ROLES.join(', ')}. Consider adjacent roles the profile strongly qualifies for (e.g. AI product roles, platform product roles, transformation/innovation roles).${titleNote ? `\n\n${titleNote}` : ''} Return ONLY a JSON array of strings.\n\nPROFILE:\n${profile}`,
-      }],
-    });
     let roles: string[] = EXAMPLE_ROLES;
     try {
-      const parsed = parseJsonLoose(extractText(rolesResponse));
+      const { text: rolesText } = await completeWithFallback(
+        `Given this candidate profile, list the 12 most suitable job titles to search for. Include but do not limit yourself to: ${EXAMPLE_ROLES.join(', ')}. Consider adjacent roles the profile strongly qualifies for (e.g. AI product roles, platform product roles, transformation/innovation roles).${titleNote ? `\n\n${titleNote}` : ''} Return ONLY a JSON array of strings.\n\nPROFILE:\n${profile}`,
+        { maxTokens: 1024 },
+      );
+      const parsed = parseJsonLoose(rolesText);
       if (Array.isArray(parsed) && parsed.length > 0) roles = parsed.filter((r) => typeof r === 'string').slice(0, 14);
     } catch (e) {
       console.error('[JOB SEARCH] Role derivation failed, using defaults:', e);
@@ -553,7 +550,7 @@ async function runJobSearchForCountry(
     const boardCrashAlerts: string[] = [];
     for (const board of boardConfigs) {
       try {
-        boardResultSets.push(await searchSingleBoard(client, board, country, roles, recentCompanies));
+        boardResultSets.push(await searchSingleBoard(board, country, roles, recentCompanies));
       } catch (e) {
         // One board crashing must never kill the whole run — the remaining
         // boards and the supplemental backfill rounds are the fallback.
@@ -639,12 +636,8 @@ async function runJobSearchForCountry(
 
     // Phase 3: rank and shortlist top 10 against the profile
     const learnings = await getLearnings();
-    const rankResponse = await client.messages.create({
-      model: MODEL,
-      max_tokens: 4096,
-      messages: [{
-        role: 'user',
-        content: `You are shortlisting job opportunities for this candidate.
+    const { text: rankText } = await completeWithFallback(
+      `You are shortlisting job opportunities for this candidate.
 
 CANDIDATE PROFILE:
 ${profile}
@@ -669,10 +662,10 @@ Discard anything without a real company name and a plausible direct URL to an in
 
 Return ONLY a JSON array (no markdown) of up to ${targetCount} objects, best match first. Set "source" to the board name exactly as shown in the section header above:
 [{"title": "...", "company": "...", "location": "city", "country": "...", "source": "LinkedIn|Indeed|JobStreet|Randstad|Hays|Adzuna|Google Jobs|Other", "url": "https://...", "description": "1-3 sentence summary of the role and key requirements", "matchScore": <0-100>, "matchReason": "1-2 sentences on why this fits the candidate"}]`,
-      }],
-    });
+      { maxTokens: 4096 },
+    );
 
-    const ranked = parseJsonLoose(extractText(rankResponse));
+    const ranked = parseJsonLoose(rankText);
     if (!Array.isArray(ranked) || ranked.length === 0) throw new Error('Ranking step returned no results');
 
     // Re-derive 'source' from the URL hostname — do not trust the ranker's self-reported label,
@@ -763,7 +756,7 @@ Return ONLY a JSON array (no markdown) of up to ${targetCount} objects, best mat
           ...recentCompanies,
           ...finalRows.map((r) => r.company),
         ];
-        const extra = await supplementalSearch(client, country, roles, profile, excludeCompanies, targetCount - finalRows.length, boardConfigs);
+        const extra = await supplementalSearch(country, roles, profile, excludeCompanies, targetCount - finalRows.length, boardConfigs);
         const seenCompanies = new Set(finalRows.map((r) => r.company.toLowerCase()));
         const seenUrls = new Set(finalRows.map((r) => (r.url || '').toLowerCase()).filter(Boolean));
         const extraDeduped = extra.filter((j: any) => {
@@ -881,7 +874,6 @@ export async function runDailyJobSearch(force = false): Promise<{
       return { runDate, count: 0, skipped: true };
     }
 
-    const client = getClient();
     const profile = profileSummary();
     let totalCount = 0;
     let anyRan = false;
@@ -905,7 +897,7 @@ export async function runDailyJobSearch(force = false): Promise<{
 
       anyRan = true;
       try {
-        const result = await runJobSearchForCountry(client, profile, runDate, country, shortlistCount, force);
+        const result = await runJobSearchForCountry(profile, runDate, country, shortlistCount, force);
         totalCount += result.count;
         if (result.boardAlerts) allAlerts.push(...result.boardAlerts);
         countryResults.push({ country, count: result.count });
@@ -1331,7 +1323,6 @@ export async function googleJobsDiscoverJobs(
 
 // Supplemental search round used when the day's live-job count is below minimum
 async function supplementalSearch(
-  client: Anthropic,
   country: string,
   roles: string[],
   profile: string,
@@ -1341,40 +1332,30 @@ async function supplementalSearch(
 ): Promise<any[]> {
   const regional = REGIONAL_SOURCES[country] || [];
   const googleHints = await googleDiscoverJobUrls(country, roles);
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 8192,
-    messages: [{
-      role: 'user',
-      content: `Find ${needed + 3} MORE currently open job vacancies in ${country} for these roles: ${roles.join(', ')}.
+  const { text } = await completeWithFallback(
+    `Find ${needed + 3} MORE currently open job vacancies in ${country} for these roles: ${roles.join(', ')}.
 Search broadly — company career pages, greenhouse/lever/workday ATS pages, major job boards, AND these regional ${country} job boards: ${regional.join(', ') || 'any local boards you know'}. Every result MUST be a direct URL to an individual live job ad (never a search page or careers homepage).
 ${googleHints.length ? `\nCANDIDATE URLS discovered via Google (verify each is live, a direct job ad, and a good match before including — extract the real company name):\n${googleHints.slice(0, 20).map((h) => `- ${h.title}: ${h.url}`).join('\n')}\n` : ''}
 Do NOT include these companies: ${excludeCompanies.slice(0, 80).join(', ')}.
 STRONGLY PRIORITIZE English-language roles over comparable local-language ones (especially important in non-English-speaking markets) and companies open to international candidates.
 The candidate: ${profile.slice(0, 2000)}
 Return ONLY a JSON array: [{"title","company","location","country","url","description","matchScore":<0-100>,"matchReason"}]`,
-    }],
-    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 10 } as any],
-  });
-  const text = extractText(response);
+    { maxTokens: 8192, webSearch: { maxUses: 10 } },
+  );
   let parsed: any = null;
   try {
     parsed = parseJsonLoose(text);
   } catch {
-    // Claude sometimes answers in prose. Recovery pass: ask it (without web
-    // search) to convert its own findings into the required JSON array.
+    // The model sometimes answers in prose. Recovery pass: ask it (without
+    // web search) to convert its own findings into the required JSON array.
     console.warn(`[JOB SEARCH] Supplemental: response not parseable (${text.length} chars) — running JSON recovery pass`);
     console.warn(`[JOB SEARCH] Supplemental raw response preview: ${text.slice(0, 500).replace(/\n/g, ' | ')}`);
     try {
-      const fixResponse = await client.messages.create({
-        model: MODEL,
-        max_tokens: 4096,
-        messages: [{
-          role: 'user',
-          content: `Convert the following job-search findings into ONLY a JSON array of the form [{"title","company","location","country","url","description","matchScore":<0-100>,"matchReason"}]. Include only entries that have a direct job-ad URL. If there are none, return [].\n\nFINDINGS:\n${text.slice(0, 6000)}`,
-        }],
-      });
-      parsed = parseJsonLoose(extractText(fixResponse));
+      const { text: fixText } = await completeWithFallback(
+        `Convert the following job-search findings into ONLY a JSON array of the form [{"title","company","location","country","url","description","matchScore":<0-100>,"matchReason"}]. Include only entries that have a direct job-ad URL. If there are none, return [].\n\nFINDINGS:\n${text.slice(0, 6000)}`,
+        { maxTokens: 4096 },
+      );
+      parsed = parseJsonLoose(fixText);
     } catch (e2) {
       console.error('[JOB SEARCH] Supplemental: JSON recovery pass also failed:', e2);
       return [];
@@ -1805,17 +1786,11 @@ async function doTailorCv(matchId: string): Promise<JobMatch> {
   if (!job) throw new Error('Job match not found');
   if (job.tailoredCv) return job;
 
-  const client = getClient();
   const resumes = loadResumes();
   const learnings = await getLearnings();
 
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 8192,
-    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 } as any],
-    messages: [{
-      role: 'user',
-      content: `You are an expert CV writer. Prepare a tailored CV for this job opportunity, drawing on the candidate's real experience from the source CVs below. NEVER invent experience, employers, dates, or qualifications the candidate does not have — only reframe, reorder, and emphasize genuinely existing experience to fit the job description.
+  const { text: cvResponseText } = await completeWithFallback(
+    `You are an expert CV writer. Prepare a tailored CV for this job opportunity, drawing on the candidate's real experience from the source CVs below. NEVER invent experience, employers, dates, or qualifications the candidate does not have — only reframe, reorder, and emphasize genuinely existing experience to fit the job description.
 
 FIRST, use web search (up to 3 searches) to check what type of CV gets shortlisted at ${job.company} for ${job.title}-type roles and what CV norms apply in ${job.country || 'the target country'} (screening process, ATS usage, expected format/length, what recruiters there look for). Apply what you learn.
 
@@ -1856,10 +1831,10 @@ QUESTIONS POLICY: Work autonomously. If information is missing, first try to fin
 
 The VERY FIRST line of your response must be exactly: "BASE CV: <name of the source CV you used as the base>" followed by a blank line, then the CV itself.
 If (and only if) admin input is truly required, append at the VERY END a line "ADMIN QUESTIONS:" followed by a JSON array of question strings (max 3). Otherwise do not include that section.`,
-    }],
-  });
+    { maxTokens: 8192, webSearch: { maxUses: 3 } },
+  );
 
-  let tailoredCv = extractText(response);
+  let tailoredCv = cvResponseText;
   if (!tailoredCv || tailoredCv.length < 500) throw new Error('CV generation returned insufficient content');
 
   // Extract the role→CV mapping declared on the "BASE CV:" line. Claude
@@ -1897,12 +1872,8 @@ If (and only if) admin input is truly required, append at the VERY END a line "A
   const hasPreamble = /based on my research|key findings/i.test(tailoredCv.slice(0, 600));
   if (wordCount > 1000 || hasDupSection || hasPreamble) {
     console.log(`[CV] Enforcement pass for ${job.company} (words=${wordCount}, dupSection=${hasDupSection}, preamble=${hasPreamble})`);
-    const fixResponse = await client.messages.create({
-      model: MODEL,
-      max_tokens: 8192,
-      messages: [{
-        role: 'user',
-        content: `Edit this CV to satisfy ALL of these rules, changing nothing else and inventing nothing:
+    const { text: fixText } = await completeWithFallback(
+      `Edit this CV to satisfy ALL of these rules, changing nothing else and inventing nothing:
 - Maximum 900 words total (2 printed pages). Trim by cutting bullets from older roles first (oldest roles keep 1-2 bullets, 2 most recent roles keep up to 5).
 - Professional summary: 3-4 lines max.
 - Remove any "Key Achievements" section; if it contains a fact not already in a role's bullets, move that fact into the right role instead.
@@ -1914,9 +1885,9 @@ Return ONLY the edited CV in clean Markdown — no preamble, no explanation.
 
 CV:
 ${tailoredCv}`,
-      }],
-    });
-    const condensed = extractText(fixResponse).trim();
+      { maxTokens: 8192 },
+    );
+    const condensed = fixText.trim();
     // Only accept the rewrite if it actually satisfies the rules it enforces
     const okLength = condensed.split(/\s+/).length <= 1000;
     const okNoDup = !/^#{0,3}[ \t*_]*key achievements/im.test(condensed);
@@ -2818,7 +2789,6 @@ const RANDSTAD_TLD: Record<string, string> = {
 
 /** Run one Claude API call targeting a single job board. Returns structured findings. */
 async function searchSingleBoard(
-  client: Anthropic,
   board: BoardConfig,
   country: string,
   roles: string[],
@@ -2844,13 +2814,7 @@ Return ONLY a valid JSON array (empty array [] if nothing valid was found — do
 [{"title":"...","company":"...","location":"city, country","url":"https://...","description":"1-2 sentence summary; include visa/relocation notes if present"}]`;
 
   try {
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 3072,
-      messages: [{ role: 'user', content: prompt }],
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 } as any],
-    });
-    const text = extractText(response);
+    const { text } = await completeWithFallback(prompt, { maxTokens: 3072, webSearch: { maxUses: 6 } });
     const parsed = parseJsonLoose(text);
     if (!Array.isArray(parsed)) return [];
     return parsed

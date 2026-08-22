@@ -10,7 +10,6 @@
  *  4. Dead-post protection: the apply route is liveness-verified before any
  *     application is prepared.
  */
-import Anthropic from '@anthropic-ai/sdk';
 import fs from 'fs';
 import path from 'path';
 import { db } from '../db';
@@ -21,21 +20,7 @@ import {
 } from '../../shared/schema.js';
 import { eq, desc, inArray, sql } from 'drizzle-orm';
 import { probeUrlLive } from './jobMatchService.js';
-
-const MODEL = 'claude-sonnet-4-5';
-
-function getClient(): Anthropic {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured.');
-  return new Anthropic({ apiKey, timeout: 5 * 60 * 1000, maxRetries: 1 });
-}
-
-function extractText(response: Anthropic.Message): string {
-  return response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
-}
+import { completeWithFallback } from './aiClient.js';
 
 function parseJsonLoose(text: string): any {
   const trimmed = text.trim();
@@ -331,14 +316,8 @@ export async function resolveApplyRoute(job: JobMatch): Promise<ResolvedRoute> {
 
   let candidate: { url: string; confidence: string; reason: string } | null = null;
   try {
-    const client = getClient();
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 2048,
-      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 6 } as any],
-      messages: [{
-        role: 'user',
-        content: `Find the OFFICIAL company careers-page posting for this job (the company's own careers site or its ATS — Greenhouse, Lever, Ashby, SmartRecruiters, Workday, iCIMS, Taleo, etc. — NOT a job board like LinkedIn/Indeed/Glassdoor/JobStreet).
+    const { text } = await completeWithFallback(
+      `Find the OFFICIAL company careers-page posting for this job (the company's own careers site or its ATS — Greenhouse, Lever, Ashby, SmartRecruiters, Workday, iCIMS, Taleo, etc. — NOT a job board like LinkedIn/Indeed/Glassdoor/JobStreet).
 
 JOB:
 Title: ${job.title}
@@ -352,9 +331,9 @@ RULES:
 - If you cannot find the official posting, return null — that is a valid answer.
 
 Respond ONLY with JSON: {"url": "https://..." | null, "confidence": "high"|"medium"|"low", "reason": "one sentence"}`,
-      }],
-    });
-    const parsed = parseJsonLoose(extractText(response));
+      { maxTokens: 2048, webSearch: { maxUses: 6 } },
+    );
+    const parsed = parseJsonLoose(text);
     if (parsed?.url && isValidHttpUrl(parsed.url)) {
       candidate = { url: parsed.url, confidence: parsed.confidence || 'low', reason: parsed.reason || '' };
     }
@@ -457,13 +436,8 @@ export async function countTodaysEmailSends(): Promise<number> {
 }
 
 export async function draftApplicationEmail(job: JobMatch, profile: CandidateProfile, recipientName: string): Promise<{ subject: string; body: string }> {
-  const client = getClient();
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 1024,
-    messages: [{
-      role: 'user',
-      content: `Draft a concise, professional job-application email (max 160 words). Plain text, no markdown. Truthful — only claims supported by the profile below. Simple English. The tailored CV is attached as a PDF.
+  const { text } = await completeWithFallback(
+    `Draft a concise, professional job-application email (max 160 words). Plain text, no markdown. Truthful — only claims supported by the profile below. Simple English. The tailored CV is attached as a PDF.
 
 ROLE: ${job.title} at ${job.company} (${job.location || ''} ${job.country || ''})
 RECIPIENT: ${recipientName}
@@ -471,9 +445,9 @@ CANDIDATE: ${profile.fullName || 'the candidate'} — ${profile.email || ''} ${p
 WHY THE ROLE FITS (from shortlisting): ${job.matchReason || 'n/a'}
 
 Respond ONLY with JSON: {"subject": "...", "body": "..."} — body ends with a signature block (name, phone, LinkedIn).`,
-    }],
-  });
-  const parsed = parseJsonLoose(extractText(response));
+    { maxTokens: 1024 },
+  );
+  const parsed = parseJsonLoose(text);
   if (!parsed?.subject || !parsed?.body) throw new Error('Email draft generation returned no subject/body');
   return { subject: String(parsed.subject).slice(0, 300), body: String(parsed.body).slice(0, 6000) };
 }

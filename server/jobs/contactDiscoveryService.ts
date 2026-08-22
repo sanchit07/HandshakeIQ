@@ -11,26 +11,12 @@
  *  3. Every stored email carries a status: verified | unverified |
  *     listed_in_posting | not_found. The UI must show this label.
  */
-import Anthropic from '@anthropic-ai/sdk';
 import { db } from '../db';
 import { jobContacts, jobMatches, type JobContact } from '@shared/schema';
 import { eq } from 'drizzle-orm';
+import { completeWithFallback } from './aiClient.js';
 
-const MODEL = 'claude-sonnet-4-5';
 const EXPLORIUM_BASE = 'https://api.explorium.ai/v1';
-
-function getClient(): Anthropic {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not configured.');
-  return new Anthropic({ apiKey, timeout: 5 * 60 * 1000, maxRetries: 1 });
-}
-
-function extractText(response: Anthropic.Message): string {
-  return response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n');
-}
 
 function parseJsonLoose(text: string): any {
   const trimmed = text.trim();
@@ -230,15 +216,9 @@ export async function lookupEmailViaExplorium(
  * manager (or department head) for a role, requiring live public evidence.
  */
 async function identifyPeople(job: { title: string; company: string; location: string | null; country: string | null; description: string | null; url: string | null }): Promise<IdentifiedPerson[]> {
-  const client = getClient();
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kuala_Lumpur' }).format(new Date());
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 4096,
-    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 } as any],
-    messages: [{
-      role: 'user',
-      content: `Today is ${today}. Identify real, currently-employed contacts for this job opening. ACCURACY IS CRITICAL: only include a person if you found a public web source (LinkedIn profile, company team page, press release, conference bio) that confirms they hold the stated role at ${job.company} NOW — not a former employee, not an old cached page. If you cannot confirm someone, OMIT them. An empty list is a valid and preferred answer over a guess.
+  const { text } = await completeWithFallback(
+    `Today is ${today}. Identify real, currently-employed contacts for this job opening. ACCURACY IS CRITICAL: only include a person if you found a public web source (LinkedIn profile, company team page, press release, conference bio) that confirms they hold the stated role at ${job.company} NOW — not a former employee, not an old cached page. If you cannot confirm someone, OMIT them. An empty list is a valid and preferred answer over a guess.
 
 JOB:
 Title: ${job.title}
@@ -263,9 +243,8 @@ RULES:
 Respond with ONLY a JSON array (no prose):
 [{"contact_role":"hr"|"hiring_manager"|"department_head","full_name":"...","title":"...","linkedin_url":"..."|null,"evidence_url":"...","evidence_note":"..."}]
 If no one can be confirmed, respond with [].`,
-    }],
-  });
-  const text = extractText(response);
+    { maxTokens: 4096, webSearch: { maxUses: 8 } },
+  );
   let people: IdentifiedPerson[];
   try {
     people = parseJsonLoose(text);
