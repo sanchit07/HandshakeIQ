@@ -221,6 +221,18 @@ const JobScheduleSection: React.FC<{ countryAuth: CountryAuthRecord[] | null }> 
         } catch (e: any) { setError(e.message); } finally { setSaving(false); }
     };
 
+    const handleUseRecommended = async () => {
+        if (!window.confirm(`Replace your entire schedule with all ${countries.length} supported countries spread across the week (10/day each)? This discards your current schedule.`)) return;
+        setSaving(true); setError(null);
+        try {
+            const res = await fetch('/api/schedule/recommended', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ shortlistCount: 10 }) });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.message || 'Failed to apply recommended schedule');
+            setRows(data.schedule || []);
+            setSavedAt(new Date().toLocaleTimeString());
+        } catch (e: any) { setError(e.message); } finally { setSaving(false); }
+    };
+
     if (loading) return (
         <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg">
             <p className="text-xs text-gray-400">Loading job search schedule…</p>
@@ -238,12 +250,19 @@ const JobScheduleSection: React.FC<{ countryAuth: CountryAuthRecord[] | null }> 
 
     return (
         <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg space-y-3">
-            <h3 className="font-exo text-lg text-cyan-300">Job Search Schedule</h3>
-            <p className="text-xs text-gray-500">
-                Pick which countries run on which day of the week, and how many opportunities to shortlist for each. A day can run
-                more than one country (e.g. 2 countries × 10 each = 20 that day), and the same country can appear on multiple different days.
-                Default is 10 per country per day.
-            </p>
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                    <h3 className="font-exo text-lg text-cyan-300">Job Search Schedule</h3>
+                    <p className="text-xs text-gray-500 mt-1">
+                        Pick which countries run on which day of the week, and how many opportunities to shortlist for each. A day can run
+                        more than one country (e.g. 2 countries × 10 each = 20 that day), and the same country can appear on multiple different days.
+                        Default is 10 per country per day.
+                    </p>
+                </div>
+                <button onClick={handleUseRecommended} disabled={saving} className="shrink-0 px-3 py-1.5 text-xs text-cyan-300 border border-cyan-400/50 rounded-full hover:bg-cyan-900/50 disabled:opacity-50 transition-colors whitespace-nowrap">
+                    Use Recommended Schedule (all {countries.length || '…'} countries)
+                </button>
+            </div>
             {error && <p className="text-sm text-red-400 bg-red-900/20 border border-red-500/30 rounded-lg p-3">{error}</p>}
             {uncoveredCountries.length > 0 && (
                 <p className="text-xs text-amber-300 bg-amber-900/20 border border-amber-500/30 rounded-lg p-3">

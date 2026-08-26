@@ -31,6 +31,19 @@ export const SUPPORTED_COUNTRIES: readonly string[] = [
 ];
 
 /**
+ * A one-click alternative to manually configuring every day: every currently
+ * supported country, round-robin spread across the week (day = index % 7) so
+ * a week with more than 7 countries just runs 2 on some days instead of
+ * leaving countries out. Pure and deterministic — used by the "Use
+ * Recommended Schedule" action, which REPLACES the entire existing schedule
+ * (same semantics as saveCountrySchedule), so it's only ever invoked by an
+ * explicit user action, never automatically.
+ */
+export function recommendedCountrySchedule(shortlistCount = 10): Array<{ dayOfWeek: number; country: string; shortlistCount: number }> {
+  return SUPPORTED_COUNTRIES.map((country, i) => ({ dayOfWeek: i % 7, country, shortlistCount }));
+}
+
+/**
  * Built-in default schedule, used ONLY to seed the countrySchedule table the
  * first time it's read empty — one country per day, Sunday → Saturday,
  * matching the original fixed rotation (Malaysia gets Sunday as top

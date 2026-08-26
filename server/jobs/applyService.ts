@@ -302,6 +302,47 @@ export async function saveDraftedScreeningAnswer(question: string, answer: strin
  * Seed personal basics from the resume text files (deterministic extraction,
  * no AI) for user confirmation. Only fills fields that are currently empty.
  */
+/**
+ * AI-extracts structured Work History / Education entries from free-text
+ * resume prose (name/email/phone/etc. above are deterministic regex — dates,
+ * job titles, and description text don't have a fixed format to regex
+ * against, so this genuinely needs a model). Grounded strictly in the given
+ * text — the prompt explicitly forbids inventing anything not present.
+ * Fails soft: returns empty arrays (never throws) on any AI error or
+ * malformed response, so a failure here can never break the rest of
+ * seedProfileFromResume's (already-working) deterministic extraction.
+ */
+async function extractStructuredCvDetails(resumeText: string): Promise<{ workHistory: WorkHistoryEntry[]; education: EducationEntry[] }> {
+  const empty = { workHistory: [], education: [] };
+  if (!resumeText.trim()) return empty;
+  try {
+    const { text } = await completeWithFallback(
+      `Extract this candidate's work history and education into structured JSON. Use ONLY what's stated in the text below — never invent an employer, title, school, or date not present.
+
+RULES:
+- Dates: "YYYY-MM" (month precision) only. If only a year is given, use "YYYY-01". If a date is genuinely unknown, omit that field entirely (don't guess).
+- isCurrent: true only if the text says "present", "current", or similar for that entry.
+- List every distinct role/position separately, even at the same employer.
+- description: 1-2 sentences max, summarizing that entry's own text — do not copy the whole bullet list verbatim.
+
+RESUME TEXT:
+${resumeText.slice(0, 8000)}
+
+Respond with ONLY this JSON shape, no markdown:
+{"workHistory":[{"jobTitle":"...","employer":"...","location":"...","startDate":"YYYY-MM","endDate":"YYYY-MM","isCurrent":false,"description":"..."}],"education":[{"school":"...","degree":"...","fieldOfStudy":"...","startDate":"YYYY-MM","endDate":"YYYY-MM","isCurrent":false,"description":"..."}]}`,
+      { maxTokens: 3072 },
+    );
+    const parsed = parseJsonLoose(text);
+    return {
+      workHistory: validateWorkHistory(parsed?.workHistory),
+      education: validateEducation(parsed?.education),
+    };
+  } catch (e) {
+    console.warn(`[CV SEED] Structured work-history/education extraction failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    return empty;
+  }
+}
+
 export async function seedProfileFromResume(): Promise<CandidateProfile> {
   const resumePath = path.join(process.cwd(), 'server', 'jobs', 'resumes', 'general.txt');
   const text = fs.existsSync(resumePath) ? fs.readFileSync(resumePath, 'utf-8') : '';
@@ -314,6 +355,13 @@ export async function seedProfileFromResume(): Promise<CandidateProfile> {
   const name = lines[0]?.trim() || '';
 
   const existing = await getProfile();
+  // Only spend an AI call when there's genuinely nothing there yet — matches
+  // the "only fills fields that are currently empty" rule already applied to
+  // every other field below, and avoids re-extracting (and re-prompting-for-
+  // review) content the admin may have already reviewed/edited themselves.
+  const needsStructuredSeed = (existing?.workHistory?.length ?? 0) === 0 && (existing?.education?.length ?? 0) === 0;
+  const structured = needsStructuredSeed ? await extractStructuredCvDetails(text) : null;
+
   const seed: Partial<typeof candidateProfile.$inferInsert> = {
     fullName: existing?.fullName || name || undefined,
     email: existing?.email || emailMatch?.[1]?.trim(),
@@ -322,6 +370,8 @@ export async function seedProfileFromResume(): Promise<CandidateProfile> {
     githubUrl: existing?.githubUrl || githubMatch?.[1]?.trim(),
     city: existing?.city || locationMatch?.[1]?.trim().split(',')[0]?.trim(),
     country: existing?.country || locationMatch?.[1]?.trim().split(',')[1]?.trim(),
+    ...(structured?.workHistory.length ? { workHistory: structured.workHistory } : {}),
+    ...(structured?.education.length ? { education: structured.education } : {}),
     seededFromResume: true,
     updatedAt: new Date(),
   };

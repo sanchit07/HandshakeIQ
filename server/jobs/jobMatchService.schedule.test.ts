@@ -14,7 +14,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { db, client } from '../db.js';
 import { countrySchedule, type CountrySchedule } from '../../shared/schema.js';
-import { getCountrySchedule, saveCountrySchedule, SUPPORTED_COUNTRIES } from './jobMatchService.js';
+import { getCountrySchedule, saveCountrySchedule, SUPPORTED_COUNTRIES, recommendedCountrySchedule } from './jobMatchService.js';
 
 let snapshot: CountrySchedule[] = [];
 
@@ -62,6 +62,35 @@ describe('getCountrySchedule (default seeding)', () => {
     const rows = await getCountrySchedule();
     assert.equal(rows.length, 1, 'a deliberately minimal schedule must not be padded back out to 7 defaults');
     assert.equal(rows[0].country, 'Germany');
+  });
+});
+
+describe('recommendedCountrySchedule', () => {
+  it('includes every supported country exactly once', () => {
+    const rec = recommendedCountrySchedule();
+    assert.equal(rec.length, SUPPORTED_COUNTRIES.length);
+    const countries = rec.map((r) => r.country).sort();
+    assert.deepEqual(countries, [...SUPPORTED_COUNTRIES].sort());
+  });
+
+  it('spreads across all 7 days rather than piling everything on one day', () => {
+    const rec = recommendedCountrySchedule();
+    const daysUsed = new Set(rec.map((r) => r.dayOfWeek));
+    assert.equal(daysUsed.size, 7, 'with 13 countries, every day of the week should get at least one');
+    for (const r of rec) {
+      assert.ok(r.dayOfWeek >= 0 && r.dayOfWeek <= 6);
+    }
+  });
+
+  it('respects a custom shortlistCount', () => {
+    const rec = recommendedCountrySchedule(5);
+    assert.ok(rec.every((r) => r.shortlistCount === 5));
+  });
+
+  it('round-trips through saveCountrySchedule (real DB) with every country intact', async () => {
+    const saved = await saveCountrySchedule(recommendedCountrySchedule());
+    const countries = saved.map((r) => r.country).sort();
+    assert.deepEqual(countries, [...SUPPORTED_COUNTRIES].sort());
   });
 });
 

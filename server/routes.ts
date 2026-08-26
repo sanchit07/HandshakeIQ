@@ -119,7 +119,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ===== Job Hunt (admin only) =====
   const {
     runDailyJobSearch, getShortlist, getShortlistDates, tailorCvForJob, clearTailoredCv, getQuestionsForJob, answerQuestion, getBoardAlerts, getGoogleDiscoveryStatus,
-    getCountrySchedule, saveCountrySchedule, SUPPORTED_COUNTRIES,
+    getCountrySchedule, saveCountrySchedule, SUPPORTED_COUNTRIES, recommendedCountrySchedule,
   } = await import('./jobs/jobMatchService');
 
   app.get('/api/schedule', requireAdmin, async (_req, res) => {
@@ -138,6 +138,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error: any) {
       console.error('[JOBS] Error saving country schedule:', error);
       res.status(500).json({ message: error?.message || 'Failed to save country schedule' });
+    }
+  });
+
+  // One-click alternative to manually configuring every day: every currently
+  // supported country, spread across the week. REPLACES the entire existing
+  // schedule (same as PUT /api/schedule) — only ever called from an explicit
+  // "Use Recommended Schedule" button click, never automatically.
+  app.post('/api/schedule/recommended', requireAdmin, async (req: any, res) => {
+    try {
+      const raw = Number(req.body?.shortlistCount);
+      const shortlistCount = Number.isFinite(raw) ? Math.max(1, Math.min(50, Math.round(raw))) : 10;
+      res.json({ schedule: await saveCountrySchedule(recommendedCountrySchedule(shortlistCount)) });
+    } catch (error: any) {
+      console.error('[JOBS] Error applying recommended country schedule:', error);
+      res.status(500).json({ message: error?.message || 'Failed to apply recommended schedule' });
     }
   });
 

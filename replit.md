@@ -45,6 +45,12 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 
 ## Recent Changes
 
+### August 26, 2026 (8) - Less manual setup: AI-extracted CV details + one-click schedule
+Two changes reducing how much has to be typed by hand into Profile Vault before the pipeline is useful.
+- **`server/jobs/applyService.ts`**: "Fill from my CV" (`seedProfileFromResume`) now also AI-extracts structured Work History and Education entries from the resume text (deterministic regex only ever covered name/email/phone/etc. — job titles, employers, and dates in free-text prose genuinely need a model) via the existing Claude→Gemini fallback. Only attempted when the profile has no entries yet — an admin's own edits are never touched — and fails soft (empty arrays, never a thrown error) so a bad AI response can't break the deterministic fields that already worked.
+- **`server/jobs/jobMatchService.ts` / `routes.ts` / `components/ProfileVault.tsx`**: new `recommendedCountrySchedule()` + `POST /api/schedule/recommended` + a "Use Recommended Schedule (all N countries)" button — one click spreads every `SUPPORTED_COUNTRIES` entry across the week (round-robin, 10/day) instead of adding 13 rows by hand. Explicit action only (confirms before replacing the existing schedule), matching `PUT /api/schedule`'s existing replace-the-whole-thing semantics.
+- New `applyService.seedResume.test.ts` (real DB + mocked Gemini fallback) and 4 new `jobMatchService.schedule.test.ts` cases (including a real round-trip through `saveCountrySchedule`); the new endpoint was also verified over real HTTP with an admin session.
+
 ### August 26, 2026 (7) - Added India as a schedulable country
 Country coverage expanded from 12 to 13: `SUPPORTED_COUNTRIES` gains India, with regional search-source hints (Naukri, Foundit, Shine, Instahyre) and an Adzuna country code (`in`). Not auto-added to anyone's Job Search Schedule — it's just available in the schedule dropdown now; add a day/count for it yourself in Profile Vault. Deliberately conservative on two boards: Hays' only India presence found is an internal offshore delivery center, not a public candidate-facing jobs board, so it's left unmapped (falls back to the generic hays.com domain, same as Luxembourg); Randstad genuinely does have a public India board (randstad.in) but is left excluded until a verified individual-posting canary URL is added, matching the existing policy for randstad.ie/randstad.pl.
 
