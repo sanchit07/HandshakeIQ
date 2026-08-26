@@ -320,6 +320,7 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     const [seeding, setSeeding] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [savedAt, setSavedAt] = useState<string | null>(null);
+    const [cvSeedNote, setCvSeedNote] = useState<string | null>(null);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -337,12 +338,13 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
     const set = (field: keyof Profile, value: any) => { setProfile((p) => ({ ...p, [field]: value })); setSavedAt(null); };
 
     const handleSeed = async () => {
-        setSeeding(true); setError(null);
+        setSeeding(true); setError(null); setCvSeedNote(null);
         try {
             const res = await fetch('/api/profile/seed', { method: 'POST' });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data.message || 'Seeding failed');
             setProfile({ ...EMPTY, ...data, countryAuth: data.countryAuth || [], screeningAnswers: data.screeningAnswers || [], eeoAnswers: data.eeoAnswers || {}, workHistory: data.workHistory || [], education: data.education || [], channelModes: data.channelModes || {} });
+            if (data.cvSeedNote) setCvSeedNote(data.cvSeedNote);
         } catch (e: any) { setError(e.message); } finally { setSeeding(false); }
     };
 
@@ -410,6 +412,9 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                     </div>
                     {profile.seededFromResume && !profile.confirmedAt && (
                         <p className="text-xs text-amber-300 bg-amber-900/20 border border-amber-500/30 rounded p-2">These basics were pre-filled from your CV — please check them and press Save to confirm.</p>
+                    )}
+                    {cvSeedNote && (
+                        <p className="text-xs text-amber-300 bg-amber-900/20 border border-amber-500/30 rounded p-2">⚠ Work History / Education: {cvSeedNote}</p>
                     )}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <div><label className={labelCls}>Full name</label><input className={inputCls} value={profile.fullName || ''} onChange={(e) => set('fullName', e.target.value)} /></div>

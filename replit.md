@@ -45,6 +45,13 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 
 ## Recent Changes
 
+### August 26, 2026 (9) - Surfaced why CV-based Work History/Education extraction fails
+Triggered by a real report: "Fill from my CV" ran with no error, but Work History/Education stayed empty — with the previous fail-soft design there was no way to tell, from the UI, whether the AI extraction actually ran and returned nothing usable, returned malformed output, or errored outright.
+- **`server/jobs/applyService.ts`**: `extractStructuredCvDetails` now always returns a `note` describing what happened — a genuinely malformed (non-JSON) AI response is now distinguished from a well-formed-but-empty response, both logged with the raw AI text (truncated) so the actual cause is visible server-side. `seedProfileFromResume` (and the already-skipped case where Work History/Education already had entries) surfaces this as a `cvSeedNote` on its response.
+- **`components/ProfileVault.tsx`**: shows that note as a visible (non-blocking) banner next to the "Fill from my CV" button, instead of the silent no-op it was before.
+- Bumped the extraction's `maxTokens` (3072 → 6144) as a defensive margin against truncated JSON on longer resumes.
+- 2 new tests in `applyService.seedResume.test.ts` covering the malformed-response and total-failure note paths.
+
 ### August 26, 2026 (8) - Less manual setup: AI-extracted CV details + one-click schedule
 Two changes reducing how much has to be typed by hand into Profile Vault before the pipeline is useful.
 - **`server/jobs/applyService.ts`**: "Fill from my CV" (`seedProfileFromResume`) now also AI-extracts structured Work History and Education entries from the resume text (deterministic regex only ever covered name/email/phone/etc. — job titles, employers, and dates in free-text prose genuinely need a model) via the existing Claude→Gemini fallback. Only attempted when the profile has no entries yet — an admin's own edits are never touched — and fails soft (empty arrays, never a thrown error) so a bad AI response can't break the deterministic fields that already worked.

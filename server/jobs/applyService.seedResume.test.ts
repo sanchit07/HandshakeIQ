@@ -95,3 +95,20 @@ test('a failed AI extraction never breaks the deterministic contact-field seedin
   assert.ok(row.fullName, 'deterministic name extraction must still work');
   assert.ok(row.email, 'deterministic email extraction must still work');
 });
+
+test('a failed AI extraction surfaces a visible reason instead of failing silently', async () => {
+  // Both keys unset — completeWithFallback throws before ever calling fetch.
+  const row = await seedProfileFromResume();
+  assert.ok(row.cvSeedNote, 'must surface SOME reason when structured extraction produced nothing');
+  assert.match(row.cvSeedNote!, /extraction failed/i);
+});
+
+test('a malformed (non-JSON) AI response surfaces a distinct, debuggable reason', async () => {
+  process.env.GEMINI_API_KEY = 'test-gemini-key';
+  mock.method(globalThis, 'fetch', mockGeminiFetch('Sorry, I cannot help with that.'));
+
+  const row = await seedProfileFromResume();
+  assert.equal(row.workHistory?.length ?? 0, 0);
+  assert.ok(row.cvSeedNote, 'must surface a reason');
+  assert.match(row.cvSeedNote!, /could not be parsed/i);
+});

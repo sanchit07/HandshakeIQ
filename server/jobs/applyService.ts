@@ -308,13 +308,14 @@ export async function saveDraftedScreeningAnswer(question: string, answer: strin
  * job titles, and description text don't have a fixed format to regex
  * against, so this genuinely needs a model). Grounded strictly in the given
  * text — the prompt explicitly forbids inventing anything not present.
- * Fails soft: returns empty arrays (never throws) on any AI error or
- * malformed response, so a failure here can never break the rest of
- * seedProfileFromResume's (already-working) deterministic extraction.
+ * Fails soft on the CALLER's DB write (never throws out of here — a bad AI
+ * response can never break the deterministic fields that already worked),
+ * but always reports what happened via `note` so the caller/UI can surface
+ * it — a previous version failed completely silently, which made a real
+ * failure indistinguishable from "nothing to extract" with no way to debug it.
  */
-async function extractStructuredCvDetails(resumeText: string): Promise<{ workHistory: WorkHistoryEntry[]; education: EducationEntry[] }> {
-  const empty = { workHistory: [], education: [] };
-  if (!resumeText.trim()) return empty;
+async function extractStructuredCvDetails(resumeText: string): Promise<{ workHistory: WorkHistoryEntry[]; education: EducationEntry[]; note: string | null }> {
+  if (!resumeText.trim()) return { workHistory: [], education: [], note: 'No resume text found to extract from.' };
   try {
     const { text } = await completeWithFallback(
       `Extract this candidate's work history and education into structured JSON. Use ONLY what's stated in the text below — never invent an employer, title, school, or date not present.
@@ -330,20 +331,30 @@ ${resumeText.slice(0, 8000)}
 
 Respond with ONLY this JSON shape, no markdown:
 {"workHistory":[{"jobTitle":"...","employer":"...","location":"...","startDate":"YYYY-MM","endDate":"YYYY-MM","isCurrent":false,"description":"..."}],"education":[{"school":"...","degree":"...","fieldOfStudy":"...","startDate":"YYYY-MM","endDate":"YYYY-MM","isCurrent":false,"description":"..."}]}`,
-      { maxTokens: 3072 },
+      { maxTokens: 6144 },
     );
-    const parsed = parseJsonLoose(text);
-    return {
-      workHistory: validateWorkHistory(parsed?.workHistory),
-      education: validateEducation(parsed?.education),
-    };
+    let parsed: any;
+    try {
+      parsed = parseJsonLoose(text);
+    } catch (parseErr) {
+      console.warn(`[CV SEED] AI response wasn't valid JSON: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}. Raw response (first 500 chars): ${text.slice(0, 500)}`);
+      return { workHistory: [], education: [], note: 'The AI response could not be parsed as JSON — check server logs for the raw response.' };
+    }
+    const workHistory = validateWorkHistory(parsed?.workHistory);
+    const education = validateEducation(parsed?.education);
+    if (workHistory.length === 0 && education.length === 0) {
+      console.warn(`[CV SEED] AI returned valid JSON but zero usable entries. Parsed: ${JSON.stringify(parsed).slice(0, 500)}`);
+      return { workHistory, education, note: 'The AI ran but returned no usable work history/education entries — check server logs for what it actually returned.' };
+    }
+    return { workHistory, education, note: null };
   } catch (e) {
-    console.warn(`[CV SEED] Structured work-history/education extraction failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
-    return empty;
+    const msg = e instanceof Error ? e.message : String(e);
+    console.warn(`[CV SEED] Structured work-history/education extraction failed (non-fatal): ${msg}`);
+    return { workHistory: [], education: [], note: `Work history/education extraction failed: ${msg}` };
   }
 }
 
-export async function seedProfileFromResume(): Promise<CandidateProfile> {
+export async function seedProfileFromResume(): Promise<CandidateProfile & { cvSeedNote?: string }> {
   const resumePath = path.join(process.cwd(), 'server', 'jobs', 'resumes', 'general.txt');
   const text = fs.existsSync(resumePath) ? fs.readFileSync(resumePath, 'utf-8') : '';
   const lines = text.split('\n').slice(0, 10);
@@ -361,6 +372,9 @@ export async function seedProfileFromResume(): Promise<CandidateProfile> {
   // review) content the admin may have already reviewed/edited themselves.
   const needsStructuredSeed = (existing?.workHistory?.length ?? 0) === 0 && (existing?.education?.length ?? 0) === 0;
   const structured = needsStructuredSeed ? await extractStructuredCvDetails(text) : null;
+  const cvSeedNote = needsStructuredSeed
+    ? (structured?.note ?? undefined)
+    : 'Work history/education already has entries — left untouched (extraction only runs when both are empty).';
 
   const seed: Partial<typeof candidateProfile.$inferInsert> = {
     fullName: existing?.fullName || name || undefined,
@@ -375,12 +389,10 @@ export async function seedProfileFromResume(): Promise<CandidateProfile> {
     seededFromResume: true,
     updatedAt: new Date(),
   };
-  if (existing) {
-    const [row] = await db.update(candidateProfile).set(seed).where(eq(candidateProfile.id, existing.id)).returning();
-    return row;
-  }
-  const [row] = await db.insert(candidateProfile).values(seed).returning();
-  return row;
+  const row = existing
+    ? (await db.update(candidateProfile).set(seed).where(eq(candidateProfile.id, existing.id)).returning())[0]
+    : (await db.insert(candidateProfile).values(seed).returning())[0];
+  return cvSeedNote ? { ...row, cvSeedNote } : row;
 }
 
 /** Returns the vault's work-auth record for a country (case-insensitive), or null. */
