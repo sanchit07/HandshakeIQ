@@ -45,6 +45,12 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 
 ## Recent Changes
 
+### August 26, 2026 (4) - Recover applications stuck mid-submit after a crash/restart
+A process crash or restart while an application was in state `submitting` had no recovery path at all — nothing else ever re-examines a `submitting` row, so it stayed permanently stuck: no retry, no way back to review, invisible in every summary that only counts recognized states.
+- **`server/jobs/applyService.ts`**: new `recoverStuckSubmissions()` finds applications stuck in `submitting` for 20+ minutes (comfortably above the 10-minute CAPTCHA hand-off timeout, so a genuinely in-flight submission mid-hand-off is never disturbed) and transitions them to `needs_user`. The reason explicitly warns that whether the employer's system actually received the submission is unknown, so the user checks before retrying rather than risking a duplicate application.
+- **`server/index.ts`**: runs once at startup (catches a crash from the previous process) and every 15 minutes thereafter (catches a crash mid-run without a restart).
+- New `server/jobs/applyService.recoverStuck.test.ts` (`npm run test:recover-stuck`, real DB) — a stuck fixture gets recovered with the duplicate-application warning; a recent, still-legitimately-in-flight one is left untouched.
+
 ### August 26, 2026 (3) - Fixed the mid-wizard session-expiry password-leak risk
 A dropped/expired Workday-class portal session mid-application silently returns to a sign-in page — previously undetected, so that page's fields (including the password input) would be observed and filled exactly like any other wizard step, pausing with a message inviting the admin to save the REAL portal password under Screening Answers, a vault fuzzy-matched and reused across every future application on every OTHER employer's portal too (and, since today's AI-drafted-answers feature landed a few hours earlier, potentially even AI-drafted for).
 - **`server/jobs/atsSubmitter/loginWalled.ts`**: `fillWizardPage` now re-runs `ensureAuthenticated` on every wizard step, not just once before the wizard starts. A genuine wizard page pays only the cost of one page-classification call; a page that's reverted to sign-in gets silently re-authenticated with the vaulted credential via the same robust logic already used for the initial login (including its automated password-reset fallback), before ever reaching the generic field-fill path.

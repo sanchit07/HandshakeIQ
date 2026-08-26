@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import cron from "node-cron";
 import { registerRoutes } from "./routes";
 import { runDailyJobSearch, recheckRecentShortlist, recheckContactEvidence, verifyBoardPatterns, resolveCanaryFinalUrl } from "./jobs/jobMatchService";
+import { recoverStuckSubmissions } from "./jobs/applyService";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -57,6 +58,24 @@ const isProduction = process.env.NODE_ENV === 'production';
     verifyBoardPatterns(undefined, undefined, undefined, undefined, resolveCanaryFinalUrl).catch((err) =>
       console.error('[BOARD PATTERN] Startup probe failed unexpectedly:', err),
     );
+    // Recover any application left stuck in 'submitting' by a crash/restart
+    // of the PREVIOUS process — this boot is exactly when that's most likely.
+    recoverStuckSubmissions().then((r) => {
+      if (r.recovered > 0) console.log(`[APPLY] Startup: recovered ${r.recovered} application(s) stuck in 'submitting'`);
+    }).catch((err) => console.error('[APPLY] Startup stuck-submission recovery failed:', err));
+  });
+
+  // Recovers an application stuck in 'submitting' (crash/restart mid-submit)
+  // within one sweep interval instead of leaving it stuck forever — the only
+  // other check is the one-time startup sweep above, which doesn't help a
+  // crash that happens hours into a long-running process.
+  cron.schedule('*/15 * * * *', async () => {
+    try {
+      const r = await recoverStuckSubmissions();
+      if (r.recovered > 0) console.log(`[APPLY] Periodic sweep: recovered ${r.recovered} application(s) stuck in 'submitting'`);
+    } catch (err) {
+      console.error('[APPLY] Periodic stuck-submission sweep failed:', err);
+    }
   });
 
   // Daily job search — every day at 7:00 AM Malaysia time

@@ -94,6 +94,46 @@ export async function transitionApplication(
   return updated[0];
 }
 
+/**
+ * A process crash/restart while an application is mid-submit (state
+ * 'submitting') previously had no recovery path at all — no other code ever
+ * re-examines a 'submitting' row, so it stayed stuck there permanently: no
+ * retry, no way back to review, invisible in every summary that only counts
+ * recognized states. Run periodically (see server/index.ts) and once at
+ * startup, so a crash is recovered within one sweep interval instead of
+ * forever. A crash mid-submit is genuinely ambiguous about whether the
+ * real-world submission went through — the recovery reason says so
+ * explicitly, so the user checks before risking a duplicate application.
+ */
+// A legitimate in-flight submit run can include a CAPTCHA hand-off (up to
+// HANDOFF_TIMEOUT_MS = 10 minutes) with no other write to the row in the
+// meantime — this needs a comfortable margin above that so the sweep never
+// races a real hand-off still waiting for the user.
+export const STUCK_SUBMITTING_TIMEOUT_MINUTES = 20;
+
+export async function recoverStuckSubmissions(
+  timeoutMinutes = STUCK_SUBMITTING_TIMEOUT_MINUTES,
+): Promise<{ recovered: number }> {
+  const stuck = await db.select({ id: applications.id }).from(applications)
+    .where(sql`${applications.state} = 'submitting' AND ${applications.updatedAt} < now() - (${String(timeoutMinutes)} || ' minutes')::interval`);
+  let recovered = 0;
+  for (const row of stuck) {
+    try {
+      await transitionApplication(row.id, 'needs_user', 'stuck_submitting_recovered',
+        `Recovered from a stuck 'submitting' state after ${timeoutMinutes}+ minutes with no update`, {
+          needsUserReason: 'A previous submission attempt was interrupted (e.g. a server restart) while this application was mid-submit. It\'s unclear whether the employer\'s system actually received it — check the portal account or your email for a confirmation before retrying, to avoid submitting a duplicate application.',
+        });
+      recovered++;
+      console.log(`[APPLY] Recovered stuck submitting application ${row.id}`);
+    } catch (e) {
+      // A concurrent transition (the original run actually finished just as
+      // the sweep looked at it) throws here — that's fine, leave it be.
+      console.error(`[APPLY] Failed to recover stuck submitting application ${row.id}:`, e);
+    }
+  }
+  return { recovered };
+}
+
 // ── ATS classification (pure, testable) ──────────────────────────────────────
 
 const ATS_PATTERNS: Array<[RegExp, string]> = [
