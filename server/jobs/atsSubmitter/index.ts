@@ -24,11 +24,12 @@ import { eq, sql } from 'drizzle-orm';
 import type { Page, Locator } from 'playwright-core';
 import {
   transitionApplication, getProfile, workAuthBlockReason,
+  draftScreeningAnswer, saveDraftedScreeningAnswer,
   type AssistedPacket, type PacketAnswer,
 } from '../applyService.js';
 import { probeUrlLive } from '../jobMatchService.js';
 import {
-  buildCanonicalValues, resolveField, classifyField, isTransientError,
+  buildCanonicalValues, resolveField, classifyField, isTransientError, isAiAnswerableField,
   looksLikeConfirmation, looksLikeAlreadyApplied, jitterMs, RETRY_ATTEMPTS, RETRY_JITTER,
   DAILY_ATS_SUBMIT_CAP, SUPPORTED_ATS, LOGIN_WALLED_ATS, computeAnswersHash,
   classifySubmitOutcome,
@@ -503,7 +504,26 @@ export async function fillFieldsInScope(
         continue;
       }
 
-      const res = resolveField(field, canon);
+      let res = resolveField(field, canon);
+      let aiDrafted = false;
+      // No vault/screening-answer match for a free-text question (e.g. "why
+      // this company", "years of experience with X") — draft it from the
+      // candidate's own CV/vault data and this job's own description, rather
+      // than immediately pausing. Never attempted for sensitive/denylisted
+      // fields (excluded by isAiAnswerableField) or non-text-kind fields
+      // (radio/checkbox/select — more likely a legal attestation).
+      if (res.unmatchedScreening && isAiAnswerableField(field)) {
+        const drafted = await draftScreeningAnswer(field.label, job, profile);
+        if (drafted) {
+          res = { value: drafted, source: 'vault', blockReason: null, unmatchedScreening: false };
+          aiDrafted = true;
+          await saveDraftedScreeningAnswer(field.label, drafted).catch((e) =>
+            console.warn(`[SCREENING AI] Failed to save drafted answer to vault: ${e instanceof Error ? e.message : String(e)}`));
+        }
+        // Drafting failed/refused (NOT_ANSWERABLE or AI unavailable) — fall
+        // through to the original blockReason/pause below, exactly as if no
+        // AI drafting had been attempted. Never silently skip a required field.
+      }
       if (res.blockReason) {
         return { status: 'needs_user', reason: res.blockReason, answers };
       }
@@ -583,7 +603,7 @@ export async function fillFieldsInScope(
         if (/^yes$/i.test(res.value)) { await loc.check({ force: true }); answers.push({ label: field.label, value: 'Yes', source: 'vault' }); }
       } else {
         await humanType(loc, res.value);
-        answers.push({ label: field.label, value: res.value, source: 'vault' });
+        answers.push({ label: field.label, value: res.value, source: aiDrafted ? 'ai_drafted' : 'vault' });
       }
       await humanPause();
     }

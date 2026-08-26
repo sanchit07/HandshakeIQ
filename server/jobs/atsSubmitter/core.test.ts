@@ -12,6 +12,7 @@ import {
   guardrailKeyForUrl, looksLikeBotBlockText, looksLikeAlreadyApplied,
   classifyExperienceRole, classifyEducationRole, groupEntryFields,
   parseMonthIso, formatMonthYear, experienceRoleValue, educationRoleValue,
+  isAiAnswerableField,
   EXPERIENCE_SECTION_HEADING_RE, EDUCATION_SECTION_HEADING_RE,
   ADD_ANOTHER_EXPERIENCE_RE, ADD_ANOTHER_EDUCATION_RE,
   type ObservedField, type CanonicalValues,
@@ -99,6 +100,45 @@ test('required known field missing from vault blocks', () => {
   const noPhone = buildCanonicalValues({ ...profile, phone: null } as any, job);
   const r = resolveField(field({ label: 'Phone' }), noPhone);
   assert.ok(r.blockReason);
+});
+
+// ── AI-drafted screening answers ─────────────────────────────────────────────
+
+test('unmatchedScreening is true ONLY for the generic no-vault-match fallthrough', () => {
+  // Unknown free-text question with no vault match → eligible for AI drafting.
+  const unmatched = resolveField(field({ label: 'Why do you want to work here?', required: false }), canon);
+  assert.equal(unmatched.unmatchedScreening, true);
+
+  // A screening-answer vault match is NOT "unmatched".
+  const matched = resolveField(field({ label: 'Years of experience with Python?' }), canon);
+  assert.equal(matched.unmatchedScreening, false);
+
+  // Sensitive fields are never AI-eligible, matched or not.
+  const sensitive = resolveField(field({ label: 'Do you require sponsorship?' }), canon);
+  assert.equal(sensitive.unmatchedScreening, false);
+
+  // A known canonical field (even if missing from the vault) is not a
+  // "screening question" — AI must never draft a phone number.
+  const noPhone = buildCanonicalValues({ ...profile, phone: null } as any, job);
+  const knownMissing = resolveField(field({ label: 'Phone' }), noPhone);
+  assert.equal(knownMissing.unmatchedScreening, false);
+});
+
+test('isAiAnswerableField allows only free-text/textarea, open-ended questions', () => {
+  assert.equal(isAiAnswerableField(field({ label: 'Why do you want to work here?', kind: 'text' })), true);
+  assert.equal(isAiAnswerableField(field({ label: 'Describe a relevant project you led', kind: 'textarea' })), true);
+
+  // Never for non-text-kind fields — more likely a legal attestation.
+  assert.equal(isAiAnswerableField(field({ label: 'Why do you want to work here?', kind: 'select', options: ['A', 'B'] })), false);
+  assert.equal(isAiAnswerableField(field({ label: 'I agree to the terms', kind: 'checkbox' })), false);
+  assert.equal(isAiAnswerableField(field({ label: 'Preferred contact method', kind: 'radio' })), false);
+
+  // Denylisted categories stay vault-only-or-pause even as free text.
+  assert.equal(isAiAnswerableField(field({ label: 'What is your salary expectation?', kind: 'text' })), false);
+  assert.equal(isAiAnswerableField(field({ label: 'What is your notice period?', kind: 'text' })), false);
+  assert.equal(isAiAnswerableField(field({ label: 'List any professional certifications', kind: 'textarea' })), false);
+  assert.equal(isAiAnswerableField(field({ label: 'Have you ever had a background check performed?', kind: 'text' })), false);
+  assert.equal(isAiAnswerableField(field({ label: 'Do you have any relatives working at this company?', kind: 'textarea' })), false);
 });
 
 // ── GDPR / data-processing consent ───────────────────────────────────────────

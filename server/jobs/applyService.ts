@@ -240,6 +240,25 @@ export async function saveProfile(input: Partial<typeof candidateProfile.$inferI
 }
 
 /**
+ * Appends one AI-drafted screening question/answer pair to the vault's
+ * Screening Answers list, so future applications reuse it via the existing
+ * fuzzy-match path (matchScreeningAnswer in core.ts) instead of drafting it
+ * again — and so the admin can review/edit it like any other vault answer.
+ * A duplicate of an already-saved question (fuzzy-matched the same way the
+ * fill engine matches) is skipped rather than appended again.
+ */
+export async function saveDraftedScreeningAnswer(question: string, answer: string): Promise<void> {
+  const existing = await getProfile();
+  if (!existing) return;
+  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const nq = norm(question);
+  const current = existing.screeningAnswers ?? [];
+  if (current.some((s) => { const e = norm(s.question); return e && (nq.includes(e) || e.includes(nq)); })) return;
+  const updated = [...current, { question: question.slice(0, 500), answer: answer.slice(0, 2000) }];
+  await db.update(candidateProfile).set({ screeningAnswers: updated, updatedAt: new Date() }).where(eq(candidateProfile.id, existing.id));
+}
+
+/**
  * Seed personal basics from the resume text files (deterministic extraction,
  * no AI) for user confirmation. Only fills fields that are currently empty.
  */
@@ -452,9 +471,62 @@ Respond ONLY with JSON: {"subject": "...", "body": "..."} — body ends with a s
   return { subject: String(parsed.subject).slice(0, 300), body: String(parsed.body).slice(0, 6000) };
 }
 
+/**
+ * Drafts an answer to a free-text screening question NOT already covered by
+ * an exact/fuzzy Screening Answers vault match — e.g. "why this company",
+ * "years of experience with X", "describe a relevant project". Grounded
+ * strictly in the candidate's own work history/education and this job's own
+ * title/company/description; never invents a fact, employer, or credential.
+ * Never called for sensitive (visa/EEO/GDPR) or denylisted (salary, notice
+ * period, certifications, background checks, conflict-of-interest) fields —
+ * those stay vault-only-or-pause, gated upstream by isAiAnswerableField().
+ * Fails soft: returns null (never throws) on any AI error or refusal, so the
+ * caller always has a real fallback (pause for manual review) available.
+ */
+export async function draftScreeningAnswer(question: string, job: JobMatch, profile: CandidateProfile): Promise<string | null> {
+  const workHistoryText = (profile.workHistory ?? []).map((w) =>
+    `- ${w.jobTitle} at ${w.employer}${w.location ? ` (${w.location})` : ''}, ${w.startDate || '?'}–${w.isCurrent ? 'present' : (w.endDate || '?')}${w.description ? `: ${w.description}` : ''}`,
+  ).join('\n') || '(none on file)';
+  const educationText = (profile.education ?? []).map((e) =>
+    `- ${[e.degree, e.fieldOfStudy ? `in ${e.fieldOfStudy}` : ''].filter(Boolean).join(' ')} — ${e.school}`.trim(),
+  ).join('\n') || '(none on file)';
+
+  try {
+    const { text } = await completeWithFallback(
+      `You are drafting ONE short answer to a job-application screening question, for the applicant to review and edit before anything is ever submitted.
+
+STRICT RULES:
+- Use ONLY the facts given below (candidate's work history, education, and this job's own title/company/description). NEVER invent a fact, number, employer, credential, or years-of-experience figure not directly supported by the facts given.
+- If the question genuinely cannot be answered from the facts given, respond with exactly: NOT_ANSWERABLE
+- 2-4 sentences, plain text, no markdown, first person, professional tone.
+
+QUESTION: "${question}"
+
+ROLE APPLYING FOR: ${job.title} at ${job.company}
+JOB DESCRIPTION (what the company/role does): ${(job.description || '').slice(0, 2000) || '(not provided)'}
+WHY THIS ROLE WAS SHORTLISTED: ${job.matchReason || 'n/a'}
+
+CANDIDATE WORK HISTORY:
+${workHistoryText}
+
+CANDIDATE EDUCATION:
+${educationText}
+
+Respond with ONLY the answer text (or NOT_ANSWERABLE) — no preamble, no quotes, no markdown.`,
+      { maxTokens: 400 },
+    );
+    const answer = text.trim().replace(/^["']|["']$/g, '');
+    if (!answer || /^NOT_ANSWERABLE\b/i.test(answer)) return null;
+    return answer.slice(0, 2000);
+  } catch (e) {
+    console.warn(`[SCREENING AI] Failed to draft answer for "${question}": ${e instanceof Error ? e.message : String(e)}`);
+    return null;
+  }
+}
+
 // ── Assisted-apply packet ────────────────────────────────────────────────────
 
-export interface PacketAnswer { label: string; value: string; source: 'vault' | 'cv' | 'missing' }
+export interface PacketAnswer { label: string; value: string; source: 'vault' | 'cv' | 'missing' | 'ai_drafted' }
 export interface AssistedPacket {
   applyUrl: string;
   answers: PacketAnswer[];

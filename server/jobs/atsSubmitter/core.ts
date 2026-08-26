@@ -133,6 +133,13 @@ export interface FieldResolution {
   source: 'vault' | 'unanswered';
   /** Non-null ⇒ the whole application must pause with this reason */
   blockReason: string | null;
+  /**
+   * True only for the generic screening-question fallthrough (not a known
+   * canonical field, not sensitive) with no vault match — the sole case the
+   * impure fill layer may attempt an AI-drafted answer for, via
+   * isAiAnswerableField(), before honoring blockReason/pausing.
+   */
+  unmatchedScreening: boolean;
 }
 
 function matchVaultEeoAnswer(label: string, eeoAnswers: Record<string, string>): string | null {
@@ -144,6 +151,29 @@ function matchVaultEeoAnswer(label: string, eeoAnswers: Record<string, string>):
     if (l.includes(nq) || nq.includes(l)) return a;
   }
   return null;
+}
+
+/**
+ * Free-text screening questions the AI must NEVER draft, even though they
+ * are not "sensitive" in the visa/EEO/GDPR sense above — each is either a
+ * legally consequential attestation or a fact the engine cannot verify from
+ * the CV/job description, so it stays vault-only-or-pause exactly like a
+ * sensitive field.
+ */
+const AI_DRAFTING_DENYLIST_RE = /salary|compensation|pay expectation|expected pay|remuneration|notice[\s_-]*period|earliest start|when (?:can|could) you start|availab\w* to start|certificat|licen[sc]|background check|criminal record|conviction|reference check|relative|related to (?:anyone|someone)|family member|friends? (?:or|and) (?:family|relatives)|conflict[\s_-]*of[\s_-]*interest/i;
+
+/**
+ * True only for a field the AI may draft an answer for when no vault match
+ * exists: free-text/textarea only (never a radio/checkbox/dropdown, which
+ * are far more likely to be a legal attestation than an open-ended answer),
+ * and not one of the denylisted categories above. Sensitive fields never
+ * reach this — resolveField() resolves or blocks them before the screening
+ * fallthrough this feeds.
+ */
+export function isAiAnswerableField(field: ObservedField): boolean {
+  if (field.kind !== 'text' && field.kind !== 'textarea') return false;
+  if (AI_DRAFTING_DENYLIST_RE.test(field.label)) return false;
+  return true;
 }
 
 function matchScreeningAnswer(label: string, screening: { question: string; answer: string }[]): string | null {
@@ -165,42 +195,46 @@ function matchScreeningAnswer(label: string, screening: { question: string; answ
  */
 export function resolveField(field: ObservedField, canon: CanonicalValues): FieldResolution {
   const cls = classifyField(field.label, field.name);
-  const pause = (reason: string): FieldResolution => ({ value: null, source: 'unanswered', blockReason: reason });
-  const skipOrPause = (reason: string): FieldResolution =>
-    field.required ? pause(reason) : { value: null, source: 'unanswered', blockReason: null };
+  const pause = (reason: string, unmatchedScreening = false): FieldResolution =>
+    ({ value: null, source: 'unanswered', blockReason: reason, unmatchedScreening });
+  const skipOrPause = (reason: string, unmatchedScreening = false): FieldResolution =>
+    field.required ? pause(reason, unmatchedScreening) : { value: null, source: 'unanswered', blockReason: null, unmatchedScreening };
 
   if (cls.sensitive) {
     if (cls.key === 'eeo') {
       const ans = matchVaultEeoAnswer(field.label, canon.eeoAnswers);
-      if (ans) return { value: ans, source: 'vault', blockReason: null };
+      if (ans) return { value: ans, source: 'vault', blockReason: null, unmatchedScreening: false };
       // EEO questions are optional-by-design on most forms; a REQUIRED one with
       // no vault answer must pause — "prefer not to say" is a user choice.
       return skipOrPause(`Required demographic question "${field.label}" has no answer in your Profile Vault. Add it (e.g. "Prefer not to say"), then retry — these answers are never guessed.`);
     }
     if (cls.key === 'dataConsent') {
       const v = canon.values.dataConsent;
-      if (v) return { value: v, source: 'vault', blockReason: null };
+      if (v) return { value: v, source: 'vault', blockReason: null, unmatchedScreening: false };
       return skipOrPause(`This form's data-processing/privacy consent ("${field.label}") requires your explicit approval. Enable "Data processing consent" in the Profile Vault, then retry — this is never auto-checked without it.`);
     }
     const v = cls.key ? canon.values[cls.key] : undefined;
-    if (v) return { value: v, source: 'vault', blockReason: null };
+    if (v) return { value: v, source: 'vault', blockReason: null, unmatchedScreening: false };
     return pause(`Sensitive question "${field.label}" has no matching Profile Vault answer for this country. Add your work-authorization record, then retry — visa/sponsorship answers are never guessed.`);
   }
 
   if (cls.key && cls.key !== 'resume' && cls.key !== 'coverLetter') {
     const v = canon.values[cls.key];
-    if (v) return { value: v, source: 'vault', blockReason: null };
+    if (v) return { value: v, source: 'vault', blockReason: null, unmatchedScreening: false };
     return skipOrPause(`Required field "${field.label}" is empty in your Profile Vault. Fill it in, then retry.`);
   }
 
   if (cls.key === 'resume' || cls.key === 'coverLetter') {
     // Handled specially by the browser layer (file upload / generated note)
-    return { value: null, source: 'unanswered', blockReason: null };
+    return { value: null, source: 'unanswered', blockReason: null, unmatchedScreening: false };
   }
 
   const screen = matchScreeningAnswer(field.label, canon.screeningAnswers);
-  if (screen) return { value: screen, source: 'vault', blockReason: null };
-  return skipOrPause(`The form asks "${field.label}" and there is no saved answer for it. Add it under Screening Answers in the Profile Vault, then retry — the engine never invents answers.`);
+  if (screen) return { value: screen, source: 'vault', blockReason: null, unmatchedScreening: false };
+  // No exact/fuzzy vault match — the sole case the impure fill layer may
+  // attempt an AI-drafted answer for (via isAiAnswerableField), before
+  // honoring this pause/skip as a last resort.
+  return skipOrPause(`The form asks "${field.label}" and there is no saved answer for it. Add it under Screening Answers in the Profile Vault, then retry — the engine never invents answers.`, true);
 }
 
 // ── Structured Work Experience / Education entry sections ───────────────────

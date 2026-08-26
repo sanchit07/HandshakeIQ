@@ -171,7 +171,7 @@ interface ScheduleRow {
 
 const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-const JobScheduleSection: React.FC = () => {
+const JobScheduleSection: React.FC<{ countryAuth: CountryAuthRecord[] | null }> = ({ countryAuth }) => {
     const [rows, setRows] = useState<ScheduleRow[]>([]);
     const [countries, setCountries] = useState<string[]>([]);
     const [loading, setLoading] = useState(true);
@@ -227,6 +227,15 @@ const JobScheduleSection: React.FC = () => {
         </section>
     );
 
+    // Every job shortlisted for a scheduled country pauses at "needs your
+    // input" unless a Work Authorization record exists for that exact
+    // country (visa/sponsorship answers are never guessed) — surface the gap
+    // here, where it's fixable, instead of letting it show up one job at a
+    // time in the Job Opportunities list.
+    const scheduledCountries = Array.from(new Set(rows.map((r) => r.country).filter(Boolean)));
+    const authedCountries = new Set((countryAuth || []).map((a) => a.country));
+    const uncoveredCountries = scheduledCountries.filter((c) => !authedCountries.has(c));
+
     return (
         <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg space-y-3">
             <h3 className="font-exo text-lg text-cyan-300">Job Search Schedule</h3>
@@ -236,6 +245,12 @@ const JobScheduleSection: React.FC = () => {
                 Default is 10 per country per day.
             </p>
             {error && <p className="text-sm text-red-400 bg-red-900/20 border border-red-500/30 rounded-lg p-3">{error}</p>}
+            {uncoveredCountries.length > 0 && (
+                <p className="text-xs text-amber-300 bg-amber-900/20 border border-amber-500/30 rounded-lg p-3">
+                    ⚠ No Work Authorization record for {uncoveredCountries.join(', ')} — every job shortlisted there will pause as
+                    "needs your input" (visa/sponsorship answers are never guessed). Add a record for {uncoveredCountries.length > 1 ? 'each' : 'it'} below to let those applications proceed automatically.
+                </p>
+            )}
 
             {DAY_LABELS.map((label, day) => {
                 const dayRows = rows.map((r, i) => ({ r, i })).filter(({ r }) => r.dayOfWeek === day);
@@ -364,7 +379,7 @@ const ProfileVault: React.FC<{ onBack: () => void }> = ({ onBack }) => {
                 {error && <p className="text-sm text-red-400 bg-red-900/20 border border-red-500/30 rounded-lg p-3">{error}</p>}
 
                 {/* Job search schedule (which countries run on which day, and how many) */}
-                <JobScheduleSection />
+                <JobScheduleSection countryAuth={profile.countryAuth} />
 
                 {/* Basics */}
                 <section className="p-4 bg-gray-900/50 border border-cyan-600/20 rounded-lg space-y-3">

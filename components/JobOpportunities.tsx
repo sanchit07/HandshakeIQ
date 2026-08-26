@@ -68,7 +68,7 @@ interface Application {
     emailToStatus: string | null;
     emailSubject: string | null;
     emailBody: string | null;
-    packet: { applyUrl: string; answers: { label: string; value: string }[]; coverNote: string | null; missing: string[] } | null;
+    packet: { applyUrl: string; answers: { label: string; value: string; source?: string }[]; coverNote: string | null; missing: string[] } | null;
     needsUserReason: string | null;
     errorReason: string | null;
     submittedAt: string | null;
@@ -211,6 +211,22 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
     const [viewingHandoff, setViewingHandoff] = useState<HandoffMeta | null>(null);
     const [verifyLinks, setVerifyLinks] = useState<Record<string, string>>({});
     const [savingLinkId, setSavingLinkId] = useState<string | null>(null);
+    const [authedCountries, setAuthedCountries] = useState<Set<string> | null>(null);
+
+    // Work-authorization coverage (once per page load) — cross-referenced
+    // below against today's jobs so a "needs your input" wave caused by a
+    // missing per-country vault record is explained inline, not just as an
+    // opaque per-job badge.
+    useEffect(() => {
+        (async () => {
+            try {
+                const res = await fetch('/api/profile');
+                if (!res.ok) return;
+                const data = await res.json();
+                setAuthedCountries(new Set((data?.countryAuth || []).map((a: { country: string }) => a.country)));
+            } catch { /* noop — banner just stays hidden */ }
+        })();
+    }, []);
 
     // Poll for live CAPTCHA hand-off sessions (cheap; only while page is open)
     useEffect(() => {
@@ -531,6 +547,16 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
         );
     }
 
+    // Countries among TODAY's shortlist that have at least one "needs your
+    // input" application and no Work Authorization record — the single most
+    // common reason a whole day's batch pauses instead of auto-applying.
+    const missingAuthCountries = authedCountries ? Array.from(new Set(
+        jobs
+            .filter((j) => j.country && (apps[j.id] || []).some((a) => a.state === 'needs_user'))
+            .map((j) => j.country as string)
+            .filter((c) => !authedCountries.has(c)),
+    )) : [];
+
     return (
         <div className="h-full flex flex-col p-4 bg-black/30 border border-cyan-500/20 rounded-lg backdrop-blur-md overflow-y-auto animate-fade-in">
             <div className="flex-shrink-0 flex items-center justify-between mb-6">
@@ -597,6 +623,17 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                         <span className="px-2 py-0.5 bg-red-900/40 text-red-300 border border-red-500/30 rounded-full">{applySummary.needsUser} need input</span>
                         {applySummary.failed > 0 && <span className="px-2 py-0.5 bg-red-900/40 text-red-300 border border-red-500/30 rounded-full">{applySummary.failed} failed</span>}
                         <span className="px-2 py-0.5 bg-gray-800 text-gray-400 border border-gray-600/40 rounded-full">{applySummary.notStarted + applySummary.inProgress} not prepared yet</span>
+                    </div>
+                )}
+
+                {missingAuthCountries.length > 0 && (
+                    <div className="bg-amber-900/20 border border-amber-500/40 rounded-lg p-3">
+                        <p className="text-xs font-bold text-amber-300 uppercase tracking-wide">⚠ Missing Work Authorization</p>
+                        <p className="text-xs text-amber-200/90 mt-1">
+                            No Work Authorization record for {missingAuthCountries.join(', ')} — that's why the jobs above need your input:
+                            visa/sponsorship answers are never guessed, so every job in {missingAuthCountries.length > 1 ? 'these countries' : 'this country'} pauses
+                            until you add a record. Add it in Profile Vault → Work Authorization, then re-prepare.
+                        </p>
                     </div>
                 )}
 
@@ -852,6 +889,9 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                             <>
                                 <h3 className="font-exo text-xl text-white">Review Auto-Filled Application</h3>
                                 <p className="text-xs text-gray-400">The form on {reviewingApp.atsType ? `the ${reviewingApp.atsType} page` : 'the ATS page'} was filled with the answers below (see the pre-submit screenshot). Nothing is submitted until you approve.</p>
+                                {(reviewingApp.packet?.answers || []).some((a) => a.source === 'ai_drafted') && (
+                                    <p className="text-xs text-amber-300">✦ AI-drafted answers are flagged below — check them before approving. They're saved to your Screening Answers vault for reuse.</p>
+                                )}
                                 {(screenshots[reviewingApp.id] || []).filter((s) => s.kind === 'pre_submit').slice(-1).map((s) => (
                                     <img key={s.id} src={`/api/applications/${reviewingApp.id}/screenshots/${s.id}`} alt="Pre-submit screenshot of the filled application form" className="w-full border border-cyan-500/30 rounded-lg" />
                                 ))}
@@ -860,6 +900,9 @@ const JobOpportunities: React.FC<JobOpportunitiesProps> = ({ onBack }) => {
                                         <div key={i} className="flex items-start gap-2 text-sm p-2 bg-gray-900/60 border border-cyan-600/20 rounded">
                                             <span className="text-cyan-300 min-w-[40%] text-xs pt-0.5">{ans.label}</span>
                                             <span className="text-white flex-1">{ans.value}</span>
+                                            {ans.source === 'ai_drafted' && (
+                                                <span className="text-[10px] font-bold text-amber-300 bg-amber-400/10 border border-amber-400/30 rounded px-1.5 py-0.5 whitespace-nowrap" title="Drafted by AI from your CV and this job's description — review before approving">✦ AI-drafted</span>
+                                            )}
                                         </div>
                                     ))}
                                 </div>
