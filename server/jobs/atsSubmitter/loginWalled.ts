@@ -442,7 +442,18 @@ async function ensureAuthenticated(ctx: FlowCtx, page: Page): Promise<'ok' | App
 }
 
 /** Advance the wizard by one page: fill visible fields, then click next. */
-async function fillWizardPage(ctx: FlowCtx, page: Page): Promise<'advanced' | 'review' | Application> {
+/** Exported for integration tests (mid-wizard session-expiry fixtures). */
+export async function fillWizardPage(ctx: FlowCtx, page: Page): Promise<'advanced' | 'review' | Application> {
+  // Re-verify the session is still authenticated on EVERY wizard step, not
+  // just once before the wizard starts. A portal session dropping mid-wizard
+  // (timeout, forced re-auth) silently redirects back to a sign_in page —
+  // without this check, that page's fields (including the password input)
+  // would be observed and filled like any other wizard page. ensureAuthenticated
+  // is a no-op (immediate 'ok', one classification call) for a genuine wizard
+  // page; it only does real work when the page has actually reverted to auth.
+  const auth = await ensureAuthenticated(ctx, page);
+  if (auth !== 'ok') return auth;
+
   const scope = (await resolveFormScope(page, 'form, [role="main"], main')) ?? 'body';
   let fields = await observeFields(page, scope);
 

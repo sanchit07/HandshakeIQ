@@ -21,8 +21,9 @@
     "test:cv-checker": "node --import tsx/esm --test server/jobs/cvParseChecker.test.ts",
     "test:recheck": "node --import tsx/esm --test server/jobs/recheckShortlist.test.ts",
     "test:recheck-live": "node --import tsx/esm --test server/jobs/jobMatchService.recheckProtection.test.ts",
+    "test:session-expiry": "node --import tsx/esm --test server/jobs/atsSubmitter/sessionExpiry.test.ts",
     "test:aggregators": "node --import tsx/esm --test server/jobs/aggregatorDiscovery.test.ts",
-    "test:apply": "node --import tsx/esm --test server/jobs/aiClient.test.ts server/jobs/applyService.test.ts server/jobs/applyService.dedup.test.ts server/jobs/atsSubmitter/core.test.ts server/jobs/atsSubmitter/browser.test.ts server/jobs/atsSubmitter/fill.test.ts server/jobs/atsSubmitter/experienceFill.test.ts server/jobs/atsSubmitter/screeningAnswer.test.ts server/jobs/atsSubmitter/vault.test.ts server/jobs/atsSubmitter/handoff.test.ts server/jobs/atsSubmitter/passwordReset.test.ts",
+    "test:apply": "node --import tsx/esm --test server/jobs/aiClient.test.ts server/jobs/applyService.test.ts server/jobs/applyService.dedup.test.ts server/jobs/atsSubmitter/core.test.ts server/jobs/atsSubmitter/browser.test.ts server/jobs/atsSubmitter/fill.test.ts server/jobs/atsSubmitter/experienceFill.test.ts server/jobs/atsSubmitter/screeningAnswer.test.ts server/jobs/atsSubmitter/sessionExpiry.test.ts server/jobs/atsSubmitter/vault.test.ts server/jobs/atsSubmitter/handoff.test.ts server/jobs/atsSubmitter/passwordReset.test.ts",
     "test:components": "vitest run --config vite.config.ts"
   },
   "dependencies": {

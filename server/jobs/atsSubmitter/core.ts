@@ -40,7 +40,7 @@ export interface ObservedField {
 export type CanonicalKey =
   | 'fullName' | 'firstName' | 'lastName' | 'email' | 'phone' | 'location'
   | 'linkedin' | 'github' | 'portfolio' | 'noticePeriod' | 'resume' | 'coverLetter'
-  | 'salary' | 'relocation' | 'rightToWork' | 'sponsorship' | 'eeo' | 'dataConsent';
+  | 'salary' | 'relocation' | 'rightToWork' | 'sponsorship' | 'eeo' | 'dataConsent' | 'password';
 
 export interface FieldClassification {
   key: CanonicalKey | null;
@@ -48,6 +48,17 @@ export interface FieldClassification {
 }
 
 const SENSITIVE_PATTERNS: Array<[RegExp, CanonicalKey]> = [
+  // A password/passphrase field reaching the generic fill path is a strong
+  // signal something has gone wrong — a genuine application form never asks
+  // for a portal password (only account SIGN-UP/SIGN-IN pages do, which the
+  // browser layer handles separately via the credential vault, never through
+  // this generic path). Most likely cause: a dropped/expired portal session
+  // silently returned to a login page mid-wizard. Classified here so it can
+  // NEVER be mistaken for an ordinary screening question — never AI-drafted,
+  // never matched against (or written into) the Screening Answers vault,
+  // which would otherwise risk a real portal password ending up as
+  // plaintext, globally reusable "vault" data (see resolveField below).
+  [/\bpassword\b|\bpass\s*phrase\b/i, 'password'],
   [/sponsor|sponsorship/i, 'sponsorship'],
   [/right to work|work (?:authori[sz]ation|permit)|legally (?:authori[sz]ed|entitled|allowed) to work|authori[sz]ed to work|eligib\w* to work|visa status|require.*visa|work visa/i, 'rightToWork'],
   [/gender|race|ethnicit|hispanic|latin|veteran|disabilit|sexual orientation|lgbtq|pronouns|transgender|religio|demographic|equal employment|\beeo\b|diversity survey/i, 'eeo'],
@@ -212,6 +223,16 @@ export function resolveField(field: ObservedField, canon: CanonicalValues): Fiel
       const v = canon.values.dataConsent;
       if (v) return { value: v, source: 'vault', blockReason: null, unmatchedScreening: false };
       return skipOrPause(`This form's data-processing/privacy consent ("${field.label}") requires your explicit approval. Enable "Data processing consent" in the Profile Vault, then retry — this is never auto-checked without it.`);
+    }
+    if (cls.key === 'password') {
+      // Hard pause, unconditionally (not gated on field.required — never type
+      // anything into a password-labeled field via this path). No vault
+      // value ever exists for this key, and the message deliberately never
+      // suggests saving anything under Screening Answers, unlike the generic
+      // messages below — that field is fuzzy-matched and reused across every
+      // future application, so a real password typed in there would leak
+      // into completely unrelated employers' portals.
+      return pause(`This form is asking for a password ("${field.label}") — most likely the portal session expired and returned to a login page mid-application. This is never filled automatically and never saved as a Screening Answer. Sign in yourself using the account saved in your Profile Vault (Portal Credentials), then retry.`);
     }
     const v = cls.key ? canon.values[cls.key] : undefined;
     if (v) return { value: v, source: 'vault', blockReason: null, unmatchedScreening: false };

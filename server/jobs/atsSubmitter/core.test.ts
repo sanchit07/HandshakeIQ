@@ -102,6 +102,27 @@ test('required known field missing from vault blocks', () => {
   assert.ok(r.blockReason);
 });
 
+// ── Password fields (session-expiry defense-in-depth) ────────────────────────
+
+test('password/passphrase fields classify as sensitive, never as an ordinary field', () => {
+  assert.deepEqual(classifyField('Password'), { key: 'password', sensitive: true });
+  assert.deepEqual(classifyField('', 'password'), { key: 'password', sensitive: true });
+  assert.equal(classifyField('Confirm Password').key, 'password');
+  assert.equal(classifyField('Enter your passphrase').key, 'password');
+});
+
+test('a password field always pauses (required or not) and is never AI-eligible or vault-writable', () => {
+  const req = resolveField(field({ label: 'Password', required: true }), canon);
+  assert.ok(req.blockReason, 'must always pause — never typed automatically');
+  assert.equal(req.value, null);
+  assert.equal(req.unmatchedScreening, false, 'must never be treated as a generic unmatched screening question (never AI-drafted, never vault-reused)');
+  assert.doesNotMatch(req.blockReason!, /Screening Answers/i, 'must never invite saving a real password into the globally-reused Screening Answers vault');
+
+  const opt = resolveField(field({ label: 'Password', required: false }), canon);
+  assert.ok(opt.blockReason, 'must pause even when the field is marked optional');
+  assert.equal(opt.value, null);
+});
+
 // ── AI-drafted screening answers ─────────────────────────────────────────────
 
 test('unmatchedScreening is true ONLY for the generic no-vault-match fallthrough', () => {
