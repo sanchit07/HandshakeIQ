@@ -45,6 +45,11 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 
 ## Recent Changes
 
+### August 26, 2026 (6) - CAPTCHA hand-offs now email a notification when they open
+A live hand-off opened during an unattended run (cron, or simply nobody currently on the app) had zero out-of-band signal — the only indication was the in-app modal itself, so every hand-off that opened while no one was watching just timed out after 10 minutes.
+- **`server/jobs/atsSubmitter/handoff.ts`**: `openHandoff` now fires (never awaited, so a slow/failed send can't delay publishing the hand-off's first frame) a best-effort email through the same Gmail connector already used for application emails — subject names the job/company, body explains what's blocking and how long is left. Failure (most commonly: Gmail isn't connected, a normal state) is caught and logged, never allowed to affect the hand-off session itself.
+- Verified against the existing `handoff.test.ts` suite (all 11 tests, unmodified, still pass) that a failed notification never blocks or delays open/resolve/timeout/relay behavior.
+
 ### August 26, 2026 (5) - Distinguished a genuine AI outage from a quiet search day
 A total Claude+Gemini outage during the daily search previously returned success with `count: 0` — indistinguishable from a day that genuinely had no good matches — and still recorded a `role_search_log` entry as if the search had actually run, poisoning `titlePerformanceNote`'s per-title "chronically unproductive" learning with a false signal for roles that were never actually searched.
 - **`server/jobs/jobMatchService.ts`**: `runJobSearchForCountry` now tracks whether Claude AND Gemini were BOTH confirmed unavailable (`isAnthropicUnavailableError`, not an ordinary content/parsing hiccup) at any point during the run — role derivation, per-board search, or aggregator search. When the run ends with 0 results AND that flag is set, the role-search-log write is skipped entirely (so it can't poison future learning) and a distinct, unmissable alert is pushed through the existing board-alerts channel: "AI provider outage ... so 0 results does NOT mean a quiet day."

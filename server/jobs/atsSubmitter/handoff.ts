@@ -18,7 +18,9 @@ import crypto from 'crypto';
 import type { Page } from 'playwright-core';
 import { and, eq, gt, sql } from 'drizzle-orm';
 import { db } from '../../db.js';
-import { handoffSessions } from '../../../shared/schema.js';
+import { handoffSessions, applications, jobMatches } from '../../../shared/schema.js';
+import { getProfile } from '../applyService.js';
+import { sendApplicationEmail } from '../emailSender.js';
 
 export const HANDOFF_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes to respond
 const PUMP_INTERVAL_MS = 1200;
@@ -97,6 +99,36 @@ function settleLocal(id: string, resolution: HandoffResolution): void {
 }
 
 /**
+ * An unattended run (cron, or anyone not currently watching the app) has no
+ * way to know a hand-off opened at all until it's already timed out — the
+ * only prior signal was the in-app modal itself. Best-effort email through
+ * the same Gmail connector already used for application emails; NEVER
+ * allowed to affect the hand-off itself (Gmail may simply not be connected,
+ * which is a normal, expected state here, not a failure to surface).
+ * Fire-and-forget from the caller — never awaited, so a slow/failed send can
+ * never delay publishing the hand-off's first frame.
+ */
+async function notifyHandoffOpened(applicationId: string, reason: string): Promise<void> {
+  try {
+    const profile = await getProfile();
+    if (!profile?.email) return; // nothing configured to notify
+    const [row] = await db.select({ title: jobMatches.title, company: jobMatches.company })
+      .from(applications).innerJoin(jobMatches, eq(applications.jobMatchId, jobMatches.id))
+      .where(eq(applications.id, applicationId));
+    const jobLabel = row ? `${row.title} at ${row.company}` : 'an application';
+    const minutes = Math.round(HANDOFF_TIMEOUT_MS / 60_000);
+    await sendApplicationEmail({
+      to: profile.email,
+      subject: `Action needed: verification required — ${jobLabel}`,
+      body: `HandshakeIQ hit a human-verification step (CAPTCHA or similar) while applying to ${jobLabel} and needs you to solve it.\n\n${reason}\n\nOpen HandshakeIQ and go to Job Opportunities to take over. You have about ${minutes} minutes before this hand-off expires and the application pauses for manual review instead.`,
+    });
+    console.log(`[HANDOFF] Notified ${profile.email} of a live hand-off for application ${applicationId}`);
+  } catch (e) {
+    console.warn(`[HANDOFF] Could not send hand-off notification (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
  * Register a live hand-off for a blocked page and wait for the user (or the
  * timeout). Runs on the replica that owns the browser session; the returned
  * `done` promise settles when the user resolves it (from any replica) or the
@@ -122,6 +154,7 @@ export async function openHandoff(applicationId: string, page: Page, reason: str
     id, applicationId, reason: reason.slice(0, 1000), status: 'open', expiresAt: new Date(expiresAt),
     frameB64: initialFrame, frameAt: initialFrame ? new Date() : null,
   });
+  void notifyHandoffOpened(applicationId, reason);
 
   let resolveFn!: (r: HandoffResolution) => void;
   const done = new Promise<HandoffResolution>((r) => { resolveFn = r; });
