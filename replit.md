@@ -45,6 +45,9 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 
 ## Recent Changes
 
+### August 26, 2026 (7) - Added India as a schedulable country
+Country coverage expanded from 12 to 13: `SUPPORTED_COUNTRIES` gains India, with regional search-source hints (Naukri, Foundit, Shine, Instahyre) and an Adzuna country code (`in`). Not auto-added to anyone's Job Search Schedule — it's just available in the schedule dropdown now; add a day/count for it yourself in Profile Vault. Deliberately conservative on two boards: Hays' only India presence found is an internal offshore delivery center, not a public candidate-facing jobs board, so it's left unmapped (falls back to the generic hays.com domain, same as Luxembourg); Randstad genuinely does have a public India board (randstad.in) but is left excluded until a verified individual-posting canary URL is added, matching the existing policy for randstad.ie/randstad.pl.
+
 ### August 26, 2026 (6) - CAPTCHA hand-offs now email a notification when they open
 A live hand-off opened during an unattended run (cron, or simply nobody currently on the app) had zero out-of-band signal — the only indication was the in-app modal itself, so every hand-off that opened while no one was watching just timed out after 10 minutes.
 - **`server/jobs/atsSubmitter/handoff.ts`**: `openHandoff` now fires (never awaited, so a slow/failed send can't delay publishing the hand-off's first frame) a best-effort email through the same Gmail connector already used for application emails — subject names the job/company, body explains what's blocking and how long is left. Failure (most commonly: Gmail isn't connected, a normal state) is caught and logged, never allowed to affect the hand-off session itself.

@@ -42,6 +42,7 @@ describe('SUPPORTED_COUNTRIES', () => {
     for (const c of ['Luxembourg', 'Netherlands', 'Spain', 'Germany', 'Norway']) {
       assert.ok(SUPPORTED_COUNTRIES.includes(c), `missing new country: ${c}`);
     }
+    assert.ok(SUPPORTED_COUNTRIES.includes('India'), 'missing India');
   });
 });
 

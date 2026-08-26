@@ -27,7 +27,7 @@ const MODEL = 'claude-sonnet-4-5';
  */
 export const SUPPORTED_COUNTRIES: readonly string[] = [
   'Malaysia', 'Australia', 'New Zealand', 'Ireland', 'Switzerland', 'Sweden', 'Poland',
-  'Luxembourg', 'Netherlands', 'Spain', 'Germany', 'Norway',
+  'Luxembourg', 'Netherlands', 'Spain', 'Germany', 'Norway', 'India',
 ];
 
 /**
@@ -963,6 +963,7 @@ const REGIONAL_SOURCES: Record<string, string[]> = {
   Spain:         ['infojobs.net', 'tecnoempleo.com', 'jobtoday.com'],
   Germany:       ['stepstone.de', 'xing.com/jobs', 'arbeitsagentur.de'],
   Norway:        ['finn.no/job', 'nav.no', 'karrierestart.no'],
+  India:         ['naukri.com', 'foundit.in', 'shine.com', 'instahyre.com'],
 };
 
 /**
@@ -1139,6 +1140,7 @@ const ADZUNA_COUNTRY_CODE: Record<string, string> = {
   Netherlands: 'nl',
   Spain: 'es',
   Germany: 'de',
+  India: 'in',
 };
 
 // Countries where Google Jobs still exists (verified live 2026-08). Google
@@ -1999,6 +2001,14 @@ const HAYS_TLD: Record<string, string> = {
   Norway:        'hays.no',
   // Hays has no Luxembourg operation — falls back to hays.com (generic
   // domain) via the `?? 'hays.com'` default in getBoardConfigs().
+  // India: Hays' India presence (hbs.hays.in) is an internal offshore
+  // delivery center, not a public candidate-facing jobs board — no verified
+  // domain to add here, so this also falls back to hays.com.
+  // Randstad DOES have a real public India jobs board (randstad.in/jobs/)
+  // but is deliberately left out of RANDSTAD_TLD/RANDSTAD_CANARY_URLS below:
+  // enabling it requires a verified individual-posting canary URL first (see
+  // the comment at getBoardConfigs) and none has been confirmed yet — same
+  // "excluded until verified" treatment as randstad.ie/randstad.pl.
 };
 
 /**
