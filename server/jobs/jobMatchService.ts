@@ -8,11 +8,11 @@ import fs from 'fs';
 import path from 'path';
 import { db } from '../db';
 import {
-  jobMatches, jobQuestions, jobContacts, roleSearchLog, countrySchedule,
+  jobMatches, jobQuestions, jobContacts, roleSearchLog, countrySchedule, applications,
   type JobMatch, type JobQuestion, type CountrySchedule,
 } from '../../shared/schema.js';
 import { completeWithFallback } from './aiClient.js';
-import { eq, and, desc, sql } from 'drizzle-orm';
+import { eq, and, desc, sql, notExists, inArray } from 'drizzle-orm';
 import { discoverContactsForJob } from './contactDiscoveryService.js';
 
 const MODEL = 'claude-sonnet-4-5';
@@ -1518,22 +1518,39 @@ export interface RemovedJob {
 }
 
 /**
+ * Application states that must NEVER have their underlying job_matches row
+ * deleted by the recheck below: applications.jobMatchId cascades ON DELETE,
+ * so deleting the job would silently destroy the application AND its
+ * screenshot evidence (application_screenshots also cascades) — real,
+ * irreversible loss of a submitted or in-flight application's record just
+ * because the posting later went dead. A job whose only application is
+ * still queued/being reviewed/needs_user/failed has taken no irreversible
+ * real-world action yet, so it's still safe to remove along with a dead
+ * posting (continuing to prepare an application for a dead job is moot).
+ */
+const RECHECK_PROTECTED_APP_STATES = ['approved', 'submitting', 'submitted', 'submitted_unconfirmed'] as const;
+
+/**
  * Re-verifies shortlisted jobs from the last `lookbackDays` days.
  *
  * Today's run is excluded — those URLs were checked moments ago during
  * discovery. Older shortlisted jobs can die after being stored (posting
  * closed, company withdrew, aggregator page expired).
  *
- * Dead or stale rows are deleted. Because jobContacts and jobQuestions
- * reference jobMatches with ON DELETE CASCADE, related rows are removed
- * automatically by the database.
+ * Dead or stale rows are deleted — EXCEPT ones with an application in
+ * RECHECK_PROTECTED_APP_STATES (see above), which are never even considered
+ * as delete candidates, regardless of whether their posting is still live.
+ * Because jobContacts and jobQuestions reference jobMatches with ON DELETE
+ * CASCADE, related rows are removed automatically by the database for
+ * everything else.
  *
  * UI alerts for today's run-date are updated so removals surface in the
  * alerts panel without requiring a log search.
  *
  * @param lookbackDays   Window size in days (default: RECHECK_LOOKBACK_DAYS).
  * @param liveCheckFn    Injectable for tests; defaults to checkUrlLive.
- * @param queryFn        Injectable DB query for tests; defaults to real DB.
+ * @param queryFn        Injectable DB query for tests; defaults to real DB
+ *                        (already excludes RECHECK_PROTECTED_APP_STATES jobs).
  * @param deleteFn       Injectable DB delete for tests; defaults to real DB.
  */
 export async function recheckRecentShortlist(
@@ -1559,9 +1576,23 @@ export async function recheckRecentShortlist(
       })
       .from(jobMatches)
       .where(
-        sql`${jobMatches.runDate} >= (${excludeDate}::date - (${String(days)} || ' days')::interval)::date
-            AND ${jobMatches.runDate} < ${excludeDate}
-            AND ${jobMatches.url} IS NOT NULL`,
+        and(
+          // run_date is stored as varchar ("YYYY-MM-DD"), not a native date
+          // column — an unqualified comparison against a ::date value throws
+          // "operator does not exist: character varying >= date" at the DB
+          // level. Both sides of every comparison need an explicit cast.
+          sql`${jobMatches.runDate}::date >= (${excludeDate}::date - (${String(days)} || ' days')::interval)::date
+              AND ${jobMatches.runDate}::date < ${excludeDate}::date
+              AND ${jobMatches.url} IS NOT NULL`,
+          notExists(
+            db.select({ one: sql`1` }).from(applications).where(
+              and(
+                eq(applications.jobMatchId, jobMatches.id),
+                inArray(applications.state, RECHECK_PROTECTED_APP_STATES as unknown as string[]),
+              ),
+            ),
+          ),
+        ),
       )
       .orderBy(jobMatches.runDate, jobMatches.rank);
 
@@ -1684,7 +1715,10 @@ export async function recheckContactEvidence(
     })
       .from(jobContacts)
       .innerJoin(jobMatches, eq(jobContacts.jobMatchId, jobMatches.id))
-      .where(sql`${jobMatches.runDate} >= (${runDate}::date - (${String(lookbackDays)} || ' days')::interval)::date
+      // run_date is varchar, not a native date column — see the matching
+      // comment in recheckRecentShortlist's defaultQuery above for why both
+      // sides of the comparison need an explicit ::date cast.
+      .where(sql`${jobMatches.runDate}::date >= (${runDate}::date - (${String(lookbackDays)} || ' days')::interval)::date
                  AND ${jobContacts.evidenceStatus} != 'stale'
                  AND ${jobContacts.evidenceUrl} IS NOT NULL`);
   const defaultMark = async (id: string) => {
