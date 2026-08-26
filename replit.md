@@ -45,6 +45,11 @@ HandshakeIQ utilizes a full-stack architecture with a React (TypeScript) fronten
 
 ## Recent Changes
 
+### August 26, 2026 (5) - Distinguished a genuine AI outage from a quiet search day
+A total Claude+Gemini outage during the daily search previously returned success with `count: 0` — indistinguishable from a day that genuinely had no good matches — and still recorded a `role_search_log` entry as if the search had actually run, poisoning `titlePerformanceNote`'s per-title "chronically unproductive" learning with a false signal for roles that were never actually searched.
+- **`server/jobs/jobMatchService.ts`**: `runJobSearchForCountry` now tracks whether Claude AND Gemini were BOTH confirmed unavailable (`isAnthropicUnavailableError`, not an ordinary content/parsing hiccup) at any point during the run — role derivation, per-board search, or aggregator search. When the run ends with 0 results AND that flag is set, the role-search-log write is skipped entirely (so it can't poison future learning) and a distinct, unmissable alert is pushed through the existing board-alerts channel: "AI provider outage ... so 0 results does NOT mean a quiet day."
+- Live-verified end-to-end against the real pipeline with every AI/aggregator key unset: confirmed the outage alert appears, and confirmed directly against the database that no `role_search_log` row was written for that day/country.
+
 ### August 26, 2026 (4) - Recover applications stuck mid-submit after a crash/restart
 A process crash or restart while an application was in state `submitting` had no recovery path at all — nothing else ever re-examines a `submitting` row, so it stayed permanently stuck: no retry, no way back to review, invisible in every summary that only counts recognized states.
 - **`server/jobs/applyService.ts`**: new `recoverStuckSubmissions()` finds applications stuck in `submitting` for 20+ minutes (comfortably above the 10-minute CAPTCHA hand-off timeout, so a genuinely in-flight submission mid-hand-off is never disturbed) and transitions them to `needs_user`. The reason explicitly warns that whether the employer's system actually received the submission is unknown, so the user checks before retrying rather than risking a duplicate application.

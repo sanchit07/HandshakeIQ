@@ -11,7 +11,7 @@ import {
   jobMatches, jobQuestions, jobContacts, roleSearchLog, countrySchedule, applications,
   type JobMatch, type JobQuestion, type CountrySchedule,
 } from '../../shared/schema.js';
-import { completeWithFallback } from './aiClient.js';
+import { completeWithFallback, isAnthropicUnavailableError } from './aiClient.js';
 import { eq, and, desc, sql, notExists, inArray } from 'drizzle-orm';
 import { discoverContactsForJob } from './contactDiscoveryService.js';
 
@@ -486,6 +486,14 @@ async function runJobSearchForCountry(
 ): Promise<{ count: number; boardAlerts?: string[] }> {
     console.log(`[JOB SEARCH] Starting job search for ${runDate} — country: ${country}, target: ${targetCount}`);
 
+    // True only when Claude AND Gemini were BOTH confirmed unavailable at
+    // some point during this run (not an ordinary content/parsing hiccup on
+    // one call) — distinguishes "AI outage silently produced zero results"
+    // from "AI worked fine and genuinely found nothing today", which
+    // otherwise look identical and would poison the per-title zero-result
+    // learning log (titlePerformanceNote) with a false "unproductive" signal.
+    let aiUnavailableDuringRun = false;
+
     // History for dedup rules: past vacancies (never repeat) and recent companies (4-week cooldown)
     const pastVacancies = await db
       .select({ title: jobMatches.title, company: jobMatches.company, url: jobMatches.url, country: jobMatches.country })
@@ -523,6 +531,7 @@ async function runJobSearchForCountry(
       if (Array.isArray(parsed) && parsed.length > 0) roles = parsed.filter((r) => typeof r === 'string').slice(0, 14);
     } catch (e) {
       console.error('[JOB SEARCH] Role derivation failed, using defaults:', e);
+      if (isAnthropicUnavailableError(e)) aiUnavailableDuringRun = true;
     }
     console.log(`[JOB SEARCH] Target roles: ${roles.join(', ')}`);
 
@@ -557,6 +566,7 @@ async function runJobSearchForCountry(
         console.error(`[JOB SEARCH] Board search crashed for ${board.name} (continuing with other boards):`, e);
         boardCrashAlerts.push(`Board search crashed for ${board.name}: ${e instanceof Error ? e.message : String(e)}. Other boards and backfill rounds still ran.`);
         boardResultSets.push([]);
+        if (isAnthropicUnavailableError(e)) aiUnavailableDuringRun = true;
       }
     }
 
@@ -607,6 +617,7 @@ async function runJobSearchForCountry(
         // An aggregator crashing must never kill the run — boards and backfill remain.
         console.error(`[JOB SEARCH] Aggregator search failed for ${src.name} (continuing):`, e);
         boardCrashAlerts.push(`Aggregator search failed for ${src.name}: ${e instanceof Error ? e.message : String(e)}. Boards and backfill rounds still ran.`);
+        if (isAnthropicUnavailableError(e)) aiUnavailableDuringRun = true;
       }
     }
 
@@ -808,6 +819,18 @@ Return ONLY a JSON array (no markdown) of up to ${targetCount} objects, best mat
     }
 
     if (finalRows.length === 0) {
+      if (aiUnavailableDuringRun) {
+        // A confirmed Claude+Gemini outage during this run means today's zero
+        // result is NOT evidence of a genuinely quiet day — recording it as
+        // one would poison titlePerformanceNote's per-title learning with a
+        // false "unproductive" signal for roles that were never actually
+        // searched. Skip the log entry and surface a distinct, unmissable
+        // alert instead of returning a silent, indistinguishable count:0.
+        console.error(`[JOB SEARCH] AI outage during ${runDate}/${country} — 0 results is NOT meaningful, skipping role-search-log`);
+        const msg = `AI provider outage for ${country}: Claude and Gemini were both unavailable during today's search, so 0 results does NOT mean a quiet day — no role-performance learning data was recorded. Retry once AI access is restored.`;
+        boardAlertsCache.set(runDate, [...(boardAlertsCache.get(runDate) ?? []), msg]);
+        return { count: 0, boardAlerts: [msg] };
+      }
       console.error(`[JOB SEARCH] No live jobs found at all for ${runDate}/${country} — keeping any existing shortlist`);
       await recordRoleSearchLog(runDate, country, roles, []);
       return { count: 0 };
